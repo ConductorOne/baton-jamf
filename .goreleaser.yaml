@@ -1,0 +1,83 @@
+project_name: baton-jamf
+builds:
+  - binary: baton-jamf
+    env:
+      - CGO_ENABLED=0
+    id: linux
+    main: ./cmd/baton-jamf
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+  - binary: baton-jamf
+    env:
+      - CGO_ENABLED=0
+    id: macos-amd64
+    main: ./cmd/baton-jamf
+    goos:
+      - darwin
+    goarch:
+      - amd64
+    hooks:
+      post:
+        - gon .gon-amd64.json
+        - mv dist/baton-jamf-darwin-amd64.signed.zip dist/macos-amd64_darwin_amd64_v1/baton-jamf
+  - binary: baton-jamf
+    env:
+      - CGO_ENABLED=0
+    id: macos-arm64
+    main: ./cmd/baton-jamf
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    hooks:
+      post:
+        - gon .gon-arm64.json
+        - mv dist/baton-jamf-darwin-arm64.signed.zip dist/macos-arm64_darwin_arm64/baton-jamf
+archives:
+  - id: linux-archive
+    builds:
+      - linux
+    format: tar.gz
+    name_template: "{{ .ProjectName }}-v{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - none*
+  - id: darwin-archive
+    builds:
+      - macos-amd64
+      - macos-arm64
+    format: binary
+    name_template: "{{ .ProjectName }}-v{{ .Version }}-{{ .Os }}-{{ .Arch }}.zip"
+    files:
+      - none*
+release:
+  ids:
+    - linux-archive
+    - darwin-archive
+snapshot:
+  name_template: "{{ incpatch .Version }}-dev"
+checksum:
+  ids:
+    - linux-archive
+  extra_files:
+    - glob: ./dist/*-darwin-amd64.zip
+    - glob: ./dist/*-darwin-arm64.zip
+brews:
+  - tap:
+      owner: conductorone
+      name: homebrew-baton
+    folder: Formula
+    homepage: https://conductorone.com
+    test: |
+      system "#{bin}/baton-jamf -v"
+    install: |-
+      bin.install "baton-jamf"
+changelog:
+  filters:
+    exclude:
+      - '^docs:'
+      - typo
+      - lint
+      - Merge pull request
