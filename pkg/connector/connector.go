@@ -80,6 +80,7 @@ func New(ctx context.Context, username string, password string, serverInstance s
 func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
 	return &v2.ConnectorMetadata{
 		DisplayName: "Jamf",
+		Description: "Connector syncing groups, users, user accounts, user groups, sites, and roles from Jamf Pro to Baton",
 	}, nil
 }
 
