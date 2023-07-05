@@ -20,7 +20,7 @@ baton resources
 ## docker
 
 ```
-docker run --rm -v $(pwd):/out -e BATON_USERNAME=jamfUsername BATON_PASSWORD=jamfPassword BATON_SERVER_INSTANCE=jamfProServerUrl ghcr.io/conductorone/baton-jamf:latest -f "/out/sync.c1z"
+docker run --rm -v $(pwd):/out -e BATON_USERNAME=jamfUsername BATON_PASSWORD=jamfPassword BATON_INSTANCE_URL=https://jamfProServerUrl.example.com ghcr.io/conductorone/baton-jamf:latest -f "/out/sync.c1z"
 docker run --rm -v $(pwd):/out ghcr.io/conductorone/baton:latest -f "/out/sync.c1z" resources
 ```
 
@@ -30,7 +30,7 @@ docker run --rm -v $(pwd):/out ghcr.io/conductorone/baton:latest -f "/out/sync.c
 go install github.com/conductorone/baton/cmd/baton@main
 go install github.com/conductorone/baton-jamf/cmd/baton-jamf@main
 
-BATON_USERNAME=jamfUsername BATON_PASSWORD=jamfPassword BATON_SERVER_INSTANCE=jamfProServerUrl
+BATON_USERNAME=jamfUsername BATON_PASSWORD=jamfPassword BATON_INSTANCE_URL=https://jamfProServerUrl.example.com
 baton resources
 ```
 
@@ -69,7 +69,7 @@ Flags:
       --log-format string        The output format for logs: json, console ($BATON_LOG_FORMAT) (default "json")
       --log-level string         The log level: debug, info, warn, error ($BATON_LOG_LEVEL) (default "info")
       --password string          Password for your Jamf Pro instance. ($BATON_PASSWORD)
-      --server-instance string   URL of your Jamf server. ($BATON_SERVER_INSTANCE)
+      --server-instance string   URL of your Jamf server. ($BATON_INSTANCE_URL)
       --username string          Username for your Jamf Pro instance. ($BATON_USERNAME)
   -v, --version                  version for baton-jamf
 
