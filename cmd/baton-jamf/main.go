@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ConductorOne/baton-jamf/pkg/connector"
+	"github.com/conductorone/baton-jamf/pkg/connector"
 	"github.com/conductorone/baton-sdk/pkg/cli"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/types"
@@ -38,7 +38,7 @@ func main() {
 func getConnector(ctx context.Context, cfg *config) (types.ConnectorServer, error) {
 	l := ctxzap.Extract(ctx)
 
-	cb, err := connector.New(ctx, cfg.Username, cfg.Password, cfg.ServerInstance)
+	cb, err := connector.New(ctx, cfg.Username, cfg.Password, cfg.InstanceURL)
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err

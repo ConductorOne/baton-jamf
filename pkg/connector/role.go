@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/ConductorOne/baton-jamf/pkg/jamf"
+	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
@@ -72,8 +72,8 @@ func (o *roleResourceType) Entitlements(_ context.Context, resource *v2.Resource
 
 	privilegeOptions := []ent.EntitlementOption{
 		ent.WithGrantableTo(resourceTypeUserAccount, resourceTypeGroup),
-		ent.WithDescription(fmt.Sprintf("Priviledge set of %s", resource.DisplayName)),
-		ent.WithDisplayName(fmt.Sprintf("%s priviledge %s", resource.DisplayName, memberEntitlement)),
+		ent.WithDescription(fmt.Sprintf("Privilege set of %s", resource.DisplayName)),
+		ent.WithDisplayName(fmt.Sprintf("%s privilege set %s", resource.DisplayName, memberEntitlement)),
 	}
 
 	priviledgesEn := ent.NewPermissionEntitlement(resource, memberEntitlement, privilegeOptions...)
