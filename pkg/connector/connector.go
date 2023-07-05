@@ -59,21 +59,21 @@ type Jamf struct {
 	client *jamf.Client
 }
 
-func New(ctx context.Context, username string, password string, serverInstance string) (*Jamf, error) {
+func New(ctx context.Context, username string, password string, instanceURL string) (*Jamf, error) {
 	httpClient, err := uhttp.NewClient(ctx, uhttp.WithLogger(true, ctxzap.Extract(ctx)))
 	if err != nil {
 		return nil, err
 	}
 
-	token, err := jamf.CreateBearerToken(ctx, username, password, serverInstance)
+	token, err := jamf.CreateBearerToken(ctx, username, password, instanceURL)
 	if err != nil {
 		return nil, fmt.Errorf("jamf-connector: failed to get token: %w", err)
 	}
 
-	baseUrl := fmt.Sprintf("%s/JSSResource", serverInstance)
+	baseUrl := fmt.Sprintf("%s/JSSResource", instanceURL)
 
 	return &Jamf{
-		client: jamf.NewClient(httpClient, token, baseUrl, serverInstance),
+		client: jamf.NewClient(httpClient, token, baseUrl, instanceURL),
 	}, nil
 }
 

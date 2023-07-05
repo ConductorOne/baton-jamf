@@ -13,18 +13,18 @@ import (
 )
 
 type Client struct {
-	httpClient     *http.Client
-	token          string
-	baseUrl        string
-	serverInstance string
+	httpClient  *http.Client
+	token       string
+	baseUrl     string
+	instanceURL string
 }
 
-func NewClient(httpClient *http.Client, token string, baseUrl string, serverInstance string) *Client {
+func NewClient(httpClient *http.Client, token string, baseUrl string, instanceURL string) *Client {
 	return &Client{
-		httpClient:     httpClient,
-		token:          token,
-		baseUrl:        baseUrl,
-		serverInstance: serverInstance,
+		httpClient:  httpClient,
+		token:       token,
+		baseUrl:     baseUrl,
+		instanceURL: instanceURL,
 	}
 }
 
@@ -65,7 +65,7 @@ func CreateBearerToken(ctx context.Context, username string, password string, se
 
 // GetTokenDetails gets authorization details associated with the current api token.
 func (c *Client) GetTokenDetails(ctx context.Context) (TokenDetails, error) {
-	url := fmt.Sprintf("%s/api/v1/auth", c.serverInstance)
+	url := fmt.Sprintf("%s/api/v1/auth", c.instanceURL)
 
 	var res TokenDetails
 	if err := c.doRequest(ctx, url, &res); err != nil {

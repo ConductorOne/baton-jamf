@@ -12,9 +12,9 @@ import (
 type config struct {
 	cli.BaseConfig `mapstructure:",squash"` // Puts the base config options in the same place as the connector options
 
-	Username       string `mapstructure:"username"`
-	Password       string `mapstructure:"password"`
-	ServerInstance string `mapstructure:"server-instance"`
+	Username    string `mapstructure:"username"`
+	Password    string `mapstructure:"password"`
+	InstanceURL string `mapstructure:"instance-url"`
 }
 
 // validateConfig is run after the configuration is loaded, and should return an error if it isn't valid.
@@ -25,8 +25,8 @@ func validateConfig(ctx context.Context, cfg *config) error {
 	if cfg.Password == "" {
 		return fmt.Errorf("password is missing")
 	}
-	if cfg.ServerInstance == "" {
-		return fmt.Errorf("server instance is missing")
+	if cfg.InstanceURL == "" {
+		return fmt.Errorf("instance URL is missing")
 	}
 
 	return nil
@@ -36,5 +36,5 @@ func validateConfig(ctx context.Context, cfg *config) error {
 func cmdFlags(cmd *cobra.Command) {
 	cmd.PersistentFlags().String("username", "", "Username for your Jamf Pro instance. ($BATON_USERNAME)")
 	cmd.PersistentFlags().String("password", "", "Password for your Jamf Pro instance. ($BATON_PASSWORD)")
-	cmd.PersistentFlags().String("server-instance", "", "URL of your Jamf server. ($BATON_SERVER_INSTANCE)")
+	cmd.PersistentFlags().String("instance-url", "", "URL of your Jamf Pro instance. ($BATON_SERVER_INSTANCE)")
 }
