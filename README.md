@@ -1,4 +1,5 @@
 # baton-jamf
+
 `baton-jamf` is a connector for Jamf built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the Jamf API to sync data about users, groups and roles.
 
 Check out [Baton](https://github.com/conductorone/baton) to learn more the project in general.
