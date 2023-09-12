@@ -44,6 +44,7 @@ func userResource(user *jamf.User, parentResourceID *v2.ResourceId) (*v2.Resourc
 	userTraitOptions := []rs.UserTraitOption{
 		rs.WithUserProfile(profile),
 		rs.WithEmail(user.Email, true),
+		rs.WithStatus(v2.UserTrait_Status_STATUS_ENABLED),
 	}
 
 	ret, err := rs.NewUserResource(
