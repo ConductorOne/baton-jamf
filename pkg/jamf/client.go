@@ -15,7 +15,7 @@ const (
 	authUrlPath       = "/api/v1/auth"
 	groupUrlPath      = "/JSSResource/accounts/groupid/%d"
 	sitesUrlPath      = "/JSSResource/sites"
-	tokenUrlPath      = "/api/v1/auth/token"
+	tokenUrlPath      = "/api/v1/auth/token" //nolint:golint,gosec // not a token
 	userGroupUrlPath  = "/JSSResource/usergroups/id/%d"
 	userGroupsUrlPath = "/JSSResource/usergroups"
 	userUrlPath       = "/JSSResource/users/id/%d"
@@ -76,7 +76,12 @@ func (c *Client) CreateBearerToken(
 	request.SetBasicAuth(username, password)
 
 	var target TokenResponse
-	if _, err = c.wrapper.Do(request, uhttp.WithJSONResponse(target)); err != nil {
+	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(target))
+	if err != nil {
+		return "", err
+	}
+	err = response.Body.Close()
+	if err != nil {
 		return "", err
 	}
 	return target.Token, nil
@@ -301,7 +306,12 @@ func (c *Client) doRequest(
 		return err
 	}
 
-	if _, err := c.wrapper.Do(request, uhttp.WithJSONResponse(target)); err != nil {
+	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(target))
+	if err != nil {
+		return err
+	}
+	err = response.Body.Close()
+	if err != nil {
 		return err
 	}
 	return nil
