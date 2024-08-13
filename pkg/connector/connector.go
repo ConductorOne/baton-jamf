@@ -67,16 +67,19 @@ func New(ctx context.Context, username string, password string, instanceURL stri
 		return nil, err
 	}
 
-	token, err := jamf.CreateBearerToken(ctx, username, password, instanceURL)
+	client := jamf.NewClient(
+		uhttp.NewBaseHttpClient(httpClient),
+		"",
+		instanceURL,
+	)
+
+	token, err := client.CreateBearerToken(ctx, username, password)
 	if err != nil {
 		return nil, fmt.Errorf("jamf-connector: failed to get token: %w", err)
 	}
+	client.SetBearerToken(token)
 
-	baseUrl := fmt.Sprintf("%s/JSSResource", instanceURL)
-
-	return &Jamf{
-		client: jamf.NewClient(httpClient, token, baseUrl, instanceURL),
-	}, nil
+	return &Jamf{client: client}, nil
 }
 
 func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
