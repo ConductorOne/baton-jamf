@@ -2,226 +2,221 @@ package jamf
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
-	"strconv"
+	liburl "net/url"
 
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+)
+
+const (
+	accountUrlPath    = "/JSSResource/accounts/userid/%d"
+	accountsUrlPath   = "/JSSResource/accounts"
+	authUrlPath       = "/api/v1/auth"
+	groupUrlPath      = "/JSSResource/accounts/groupid/%d"
+	sitesUrlPath      = "/JSSResource/sites"
+	tokenUrlPath      = "/api/v1/auth/token"
+	userGroupUrlPath  = "/JSSResource/usergroups/id/%d"
+	userGroupsUrlPath = "/JSSResource/usergroups"
+	userUrlPath       = "/JSSResource/users/id/%d"
+	usersUrlPath      = "/JSSResource/users"
 )
 
 type Client struct {
-	httpClient  *http.Client
+	wrapper     *uhttp.BaseHttpClient
 	token       string
-	baseUrl     string
 	instanceURL string
 }
 
-func NewClient(httpClient *http.Client, token string, baseUrl string, instanceURL string) *Client {
+func NewClient(
+	wrapper *uhttp.BaseHttpClient,
+	token string,
+	instanceURL string,
+) *Client {
 	return &Client{
-		httpClient:  httpClient,
+		wrapper:     wrapper,
 		token:       token,
-		baseUrl:     baseUrl,
 		instanceURL: instanceURL,
 	}
 }
 
+func (c *Client) SetBearerToken(token string) {
+	c.token = token
+}
+
+func (c *Client) getUrl(path string) (*liburl.URL, error) {
+	urlString, err := liburl.JoinPath(c.instanceURL, path)
+	if err != nil {
+		return nil, err
+	}
+	return liburl.Parse(urlString)
+}
+
 // CreateBearerToken creates bearer token needed to use the Jamf API.
-func CreateBearerToken(ctx context.Context, username string, password string, serverInstance string) (string, error) {
-	httpClient, err := uhttp.NewClient(ctx, uhttp.WithLogger(true, ctxzap.Extract(ctx)))
+func (c *Client) CreateBearerToken(
+	ctx context.Context,
+	username string,
+	password string,
+) (string, error) {
+	url, err := c.getUrl(tokenUrlPath)
 	if err != nil {
 		return "", err
 	}
 
-	url := fmt.Sprintf("%s/api/v1/auth/token", serverInstance)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	request, err := c.wrapper.NewRequest(
+		ctx,
+		http.MethodPost,
+		url,
+		uhttp.WithAcceptJSONHeader(),
+		uhttp.WithContentTypeJSONHeader(),
+	)
 	if err != nil {
 		return "", err
 	}
+	request.SetBasicAuth(username, password)
 
-	req.Header.Add("accept", "application/json")
-	req.Header.Add("content-type", "application/json")
-	req.SetBasicAuth(username, password)
-	resp, err := httpClient.Do(req)
-	if err != nil {
+	var target TokenResponse
+	if _, err = c.wrapper.Do(request, uhttp.WithJSONResponse(target)); err != nil {
 		return "", err
 	}
-
-	defer resp.Body.Close()
-
-	var res struct {
-		Token   string `json:"token"`
-		Expires string `json:"expires"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return "", err
-	}
-
-	return res.Token, nil
+	return target.Token, nil
 }
 
 // GetTokenDetails gets authorization details associated with the current api token.
-func (c *Client) GetTokenDetails(ctx context.Context) (TokenDetails, error) {
-	url := fmt.Sprintf("%s/api/v1/auth", c.instanceURL)
-
-	var res TokenDetails
-	if err := c.doRequest(ctx, url, &res); err != nil {
-		return TokenDetails{}, err
+func (c *Client) GetTokenDetails(ctx context.Context) (*TokenDetails, error) {
+	url, err := c.getUrl(authUrlPath)
+	if err != nil {
+		return nil, err
 	}
 
-	return res, nil
+	var target TokenDetails
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
+	}
+
+	return &target, nil
 }
 
 func (c *Client) getBaseUsers(ctx context.Context) ([]BaseType, error) {
-	usersUrl, err := url.JoinPath(c.baseUrl, "/users")
+	url, err := c.getUrl(usersUrlPath)
 	if err != nil {
 		return nil, err
 	}
 
-	var res struct {
-		Users []BaseType `json:"users"`
-	}
-
-	if err := c.doRequest(ctx, usersUrl, &res); err != nil {
+	var target UsersResponse
+	if err := c.doRequest(ctx, url, &target); err != nil {
 		return nil, err
 	}
 
-	return res.Users, nil
+	return target.Users, nil
 }
 
-func (c *Client) getUserDetails(ctx context.Context, userId int) (User, error) {
-	userIdString := strconv.Itoa(userId)
-	usersUrl, err := url.JoinPath(c.baseUrl, "/users/id/", userIdString)
+func (c *Client) getUserDetails(ctx context.Context, userId int) (*User, error) {
+	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userId))
 	if err != nil {
-		return User{}, err
+		return nil, err
 	}
 
-	var res struct {
-		User User `json:"user"`
+	var target UserResponse
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
 	}
 
-	if err := c.doRequest(ctx, usersUrl, &res); err != nil {
-		return User{}, err
-	}
-
-	return res.User, nil
+	return &target.User, nil
 }
 
-func (c *Client) getBaseAccounts(ctx context.Context) (BaseAccount, error) {
-	accountsUrl, err := url.JoinPath(c.baseUrl, "/accounts")
+func (c *Client) getBaseAccounts(ctx context.Context) (*BaseAccount, error) {
+	url, err := c.getUrl(accountsUrlPath)
 	if err != nil {
-		return BaseAccount{}, err
+		return nil, err
 	}
 
-	var res struct {
-		Accounts BaseAccount `json:"accounts"`
+	var target AccountsResponse
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
 	}
 
-	if err := c.doRequest(ctx, accountsUrl, &res); err != nil {
-		return BaseAccount{}, err
-	}
-
-	return res.Accounts, nil
+	return &target.Accounts, nil
 }
 
 // GetGroupDetails returns Jamf group details.
-func (c *Client) GetGroupDetails(ctx context.Context, groupId int) (Group, error) {
-	groupIdString := strconv.Itoa(groupId)
-	usersUrl, err := url.JoinPath(c.baseUrl, "/accounts/groupid/", groupIdString)
+func (c *Client) GetGroupDetails(ctx context.Context, groupId int) (*Group, error) {
+	url, err := c.getUrl(fmt.Sprintf(groupUrlPath, groupId))
 	if err != nil {
-		return Group{}, err
+		return nil, err
 	}
 
-	var res struct {
-		Group Group `json:"group"`
+	var target GroupResponse
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
 	}
 
-	if err := c.doRequest(ctx, usersUrl, &res); err != nil {
-		return Group{}, err
-	}
-
-	return res.Group, nil
+	return &target.Group, nil
 }
 
 // GetUserAccountDetails returns Jamf user account details.
-func (c *Client) GetUserAccountDetails(ctx context.Context, userId int) (UserAccount, error) {
-	userIdString := strconv.Itoa(userId)
-	usersUrl, err := url.JoinPath(c.baseUrl, "/accounts/userid/", userIdString)
+func (c *Client) GetUserAccountDetails(ctx context.Context, userId int) (*UserAccount, error) {
+	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, userId))
 	if err != nil {
-		return UserAccount{}, err
+		return nil, err
 	}
 
-	var res struct {
-		UserAccount UserAccount `json:"account"`
+	var target UserAccountResponse
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
 	}
 
-	if err := c.doRequest(ctx, usersUrl, &res); err != nil {
-		return UserAccount{}, err
-	}
-
-	return res.UserAccount, nil
+	return &target.UserAccount, nil
 }
 
 // GetSites returns all Jamf sites.
-func (c *Client) GetSites(ctx context.Context) ([]Site, error) {
-	sitesUrl, err := url.JoinPath(c.baseUrl, "/sites")
+func (c *Client) GetSites(ctx context.Context) (*[]Site, error) {
+	url, err := c.getUrl(sitesUrlPath)
 	if err != nil {
 		return nil, err
 	}
 
-	var res struct {
-		Sites []Site `json:"sites"`
-	}
-
-	if err := c.doRequest(ctx, sitesUrl, &res); err != nil {
+	var target SitesResponse
+	if err := c.doRequest(ctx, url, &target); err != nil {
 		return nil, err
 	}
 
-	return res.Sites, nil
+	return &target.Sites, nil
 }
 
 func (c *Client) getBaseUserGroups(ctx context.Context) ([]UserGroup, error) {
-	accountsUrl, err := url.JoinPath(c.baseUrl, "/usergroups")
+	url, err := c.getUrl(userGroupsUrlPath)
 	if err != nil {
 		return nil, err
 	}
 
-	var res struct {
-		UserGroups []UserGroup `json:"user_groups"`
-	}
+	var target UserGroupsResponse
 
-	if err := c.doRequest(ctx, accountsUrl, &res); err != nil {
+	if err := c.doRequest(ctx, url, &target); err != nil {
 		return nil, err
 	}
 
-	return res.UserGroups, nil
+	return target.UserGroups, nil
 }
 
 // GetUserGroupDetails returns Jamf user group details.
-func (c *Client) GetUserGroupDetails(ctx context.Context, userGroupId int) (UserGroup, error) {
-	groupIdString := strconv.Itoa(userGroupId)
-	usersUrl, err := url.JoinPath(c.baseUrl, "/usergroups/id/", groupIdString)
+func (c *Client) GetUserGroupDetails(ctx context.Context, userGroupId int) (*UserGroup, error) {
+	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, userGroupId))
 	if err != nil {
-		return UserGroup{}, err
+		return nil, err
 	}
 
-	var res struct {
-		UserGroup UserGroup `json:"user_group"`
+	var target UserGroupResponse
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
 	}
 
-	if err := c.doRequest(ctx, usersUrl, &res); err != nil {
-		return UserGroup{}, err
-	}
-
-	return res.UserGroup, nil
+	return &target.UserGroup, nil
 }
 
 // GetUsers returns all Jamf users.
-func (c *Client) GetUsers(ctx context.Context) ([]User, error) {
-	var users []User
+func (c *Client) GetUsers(ctx context.Context) ([]*User, error) {
+	var users []*User
 	baseUsers, err := c.getBaseUsers(ctx)
 	if err != nil {
 		return nil, err
@@ -239,8 +234,8 @@ func (c *Client) GetUsers(ctx context.Context) ([]User, error) {
 }
 
 // GetUserGroups returns all Jamf user groups.
-func (c *Client) GetUserGroups(ctx context.Context) ([]UserGroup, error) {
-	var userGroups []UserGroup
+func (c *Client) GetUserGroups(ctx context.Context) ([]*UserGroup, error) {
+	var userGroups []*UserGroup
 	baseUserGroup, err := c.getBaseUserGroups(ctx)
 	if err != nil {
 		return nil, err
@@ -257,10 +252,12 @@ func (c *Client) GetUserGroups(ctx context.Context) ([]UserGroup, error) {
 	return userGroups, nil
 }
 
-// GetUsers returns all Jamf accounts.
-func (c *Client) GetAccounts(ctx context.Context) ([]UserAccount, []Group, error) {
-	var userAccounts []UserAccount
-	var groups []Group
+// GetAccounts returns all Jamf accounts.
+// TODO(marcos): The Jamf API doesn't have pagination, but this method could
+// benefit from parallelization.
+func (c *Client) GetAccounts(ctx context.Context) ([]*UserAccount, []*Group, error) {
+	var userAccounts []*UserAccount
+	var groups []*Group
 	baseAccounts, err := c.getBaseAccounts(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -285,24 +282,27 @@ func (c *Client) GetAccounts(ctx context.Context) ([]UserAccount, []Group, error
 	return userAccounts, groups, nil
 }
 
-func (c *Client) doRequest(ctx context.Context, url string, res interface{}) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (c *Client) doRequest(
+	ctx context.Context,
+	url *liburl.URL,
+	target interface{},
+) error {
+	request, err := c.wrapper.NewRequest(
+		ctx,
+		http.MethodGet,
+		url,
+		uhttp.WithAcceptJSONHeader(),
+		uhttp.WithHeader(
+			"Authorization",
+			fmt.Sprintf("Bearer %s", c.token),
+		),
+	)
 	if err != nil {
 		return err
 	}
 
-	req.Header.Add("Accept", "application/json")
-	req.Header.Add("Authorization", fmt.Sprintf("Bearer %s", c.token))
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
+	if _, err := c.wrapper.Do(request, uhttp.WithJSONResponse(target)); err != nil {
 		return err
 	}
-
-	defer resp.Body.Close()
-
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return err
-	}
-
 	return nil
 }

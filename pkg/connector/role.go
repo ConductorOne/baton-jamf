@@ -9,8 +9,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
-	grant "github.com/conductorone/baton-sdk/pkg/types/grant"
-	resource "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/conductorone/baton-sdk/pkg/types/grant"
+	"github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
 type roleResourceType struct {
@@ -76,8 +76,8 @@ func (o *roleResourceType) Entitlements(_ context.Context, resource *v2.Resource
 		ent.WithDisplayName(fmt.Sprintf("%s privilege set %s", resource.DisplayName, memberEntitlement)),
 	}
 
-	priviledgesEn := ent.NewPermissionEntitlement(resource, memberEntitlement, privilegeOptions...)
-	rv = append(rv, priviledgesEn)
+	privilegesEn := ent.NewPermissionEntitlement(resource, memberEntitlement, privilegeOptions...)
+	rv = append(rv, privilegesEn)
 
 	return rv, "", nil, nil
 }
@@ -92,7 +92,7 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 
 	for _, group := range groups {
 		groupCopy := group
-		gr, err := groupResource(&groupCopy, resource.Id)
+		gr, err := groupResource(groupCopy, resource.Id)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -105,7 +105,7 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 
 	for _, userAccount := range userAccounts {
 		userAccountCopy := userAccount
-		gr, err := userAccountResource(&userAccountCopy, resource.Id)
+		gr, err := userAccountResource(userAccountCopy, resource.Id)
 		if err != nil {
 			return nil, "", nil, err
 		}

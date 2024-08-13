@@ -60,7 +60,7 @@ func (o *userResourceType) List(ctx context.Context, parentId *v2.ResourceId, to
 	var rv []*v2.Resource
 	for _, baseUser := range users {
 		baseUserCopy := baseUser
-		ur, err := userResource(&baseUserCopy, parentId)
+		ur, err := userResource(baseUserCopy, parentId)
 		if err != nil {
 			return nil, "", nil, err
 		}

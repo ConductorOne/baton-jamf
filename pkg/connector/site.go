@@ -10,7 +10,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
-	grant "github.com/conductorone/baton-sdk/pkg/types/grant"
+	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
@@ -44,7 +44,7 @@ func (g *siteResourceType) List(ctx context.Context, parentId *v2.ResourceId, to
 	}
 
 	var rv []*v2.Resource
-	for _, site := range sites {
+	for _, site := range *sites {
 		siteCopy := site
 		ur, err := siteResource(&siteCopy, parentId)
 		if err != nil {
@@ -81,7 +81,7 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 
 	for _, user := range users {
 		userCopy := user
-		ur, err := userResource(&userCopy, resource.Id)
+		ur, err := userResource(userCopy, resource.Id)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -101,7 +101,7 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 
 	for _, userGroup := range userGroups {
 		userGroupCopy := userGroup
-		ugr, err := userGroupResource(&userGroupCopy, resource.Id)
+		ugr, err := userGroupResource(userGroupCopy, resource.Id)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -119,7 +119,7 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 
 	for _, userAccount := range userAccounts {
 		userAccountCopy := userAccount
-		uar, err := userAccountResource(&userAccountCopy, resource.Id)
+		uar, err := userAccountResource(userAccountCopy, resource.Id)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -132,7 +132,7 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 
 	for _, group := range groups {
 		groupCopy := group
-		gr, err := groupResource(&groupCopy, resource.Id)
+		gr, err := groupResource(groupCopy, resource.Id)
 		if err != nil {
 			return nil, "", nil, err
 		}

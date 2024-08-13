@@ -68,7 +68,7 @@ func (o *userAccountResourceType) List(ctx context.Context, parentId *v2.Resourc
 
 	for _, user := range userAccounts {
 		userCopy := user
-		ur, err := userAccountResource(&userCopy, parentId)
+		ur, err := userAccountResource(userCopy, parentId)
 		if err != nil {
 			return nil, "", nil, err
 		}
