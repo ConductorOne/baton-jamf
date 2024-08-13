@@ -24,10 +24,18 @@ func WithGrantMetadata(metadata map[string]interface{}) GrantOption {
 			return err
 		}
 
+		meta := &v2.GrantMetadata{Metadata: md}
 		annos := annotations.Annotations(g.Annotations)
-		annos.Update(md)
+		annos.Update(meta)
 		g.Annotations = annos
 
+		return nil
+	}
+}
+
+func WithExternalPrincipalID(externalID *v2.ExternalId) GrantOption {
+	return func(g *v2.Grant) error {
+		g.Principal.ExternalId = externalID
 		return nil
 	}
 }
