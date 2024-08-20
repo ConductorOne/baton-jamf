@@ -3,11 +3,11 @@ package connector
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/helpers"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
@@ -23,17 +23,7 @@ func (o *userResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 
 // Create a new connector resource for a Jamf user.
 func userResource(user *jamf.User, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
-	names := strings.SplitN(user.FullName, " ", 2)
-	var firstName, lastName string
-
-	switch len(names) {
-	case 1:
-		firstName = names[0]
-	case 2:
-		firstName = names[0]
-		lastName = names[1]
-	}
-
+	firstName, lastName := helpers.SplitFullName(user.FullName)
 	profile := map[string]interface{}{
 		"first_name": firstName,
 		"last_name":  lastName,
@@ -70,7 +60,7 @@ func (o *userResourceType) List(ctx context.Context, parentId *v2.ResourceId, to
 	var rv []*v2.Resource
 	for _, baseUser := range users {
 		baseUserCopy := baseUser
-		ur, err := userResource(&baseUserCopy, parentId)
+		ur, err := userResource(baseUserCopy, parentId)
 		if err != nil {
 			return nil, "", nil, err
 		}

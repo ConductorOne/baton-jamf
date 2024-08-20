@@ -6,6 +6,9 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
@@ -17,6 +20,7 @@ import (
 	v1 "github.com/conductorone/baton-sdk/pb/c1/connectorapi/baton/v1"
 	"github.com/conductorone/baton-sdk/pkg/tasks"
 	"github.com/conductorone/baton-sdk/pkg/types"
+	taskTypes "github.com/conductorone/baton-sdk/pkg/types/tasks"
 )
 
 var (
@@ -42,6 +46,8 @@ type c1ApiTaskManager struct {
 	started       bool
 	queue         []*v1.Task
 	serviceClient BatonServiceClient
+	tempDir       string
+	skipFullSync  bool
 }
 
 // getHeartbeatInterval returns an appropriate heartbeat interval. If the interval is 0, it will return the default heartbeat interval.
@@ -108,7 +114,7 @@ func (c *c1ApiTaskManager) Next(ctx context.Context) (*v1.Task, time.Duration, e
 	nextPoll := getNextPoll(resp.GetNextPoll().AsDuration())
 	l = l.With(zap.Duration("next_poll", nextPoll))
 
-	if resp.GetTask() == nil || tasks.Is(resp.GetTask(), tasks.NoneType) {
+	if resp.GetTask() == nil || tasks.Is(resp.GetTask(), taskTypes.NoneType) {
 		l.Debug("c1_api_task_manager.Next(): no tasks available")
 		return nil, nextPoll, nil
 	}
@@ -122,7 +128,7 @@ func (c *c1ApiTaskManager) Next(ctx context.Context) (*v1.Task, time.Duration, e
 	return resp.GetTask(), nextPoll, nil
 }
 
-func (c *c1ApiTaskManager) finishTask(ctx context.Context, task *v1.Task, annos annotations.Annotations, err error) error {
+func (c *c1ApiTaskManager) finishTask(ctx context.Context, task *v1.Task, resp proto.Message, annos annotations.Annotations, err error) error {
 	l := ctxzap.Extract(ctx)
 	l = l.With(
 		zap.String("task_id", task.GetId()),
@@ -132,6 +138,15 @@ func (c *c1ApiTaskManager) finishTask(ctx context.Context, task *v1.Task, annos 
 	finishCtx, finishCanc := context.WithTimeout(context.Background(), time.Second*30)
 	defer finishCanc()
 
+	var marshalledResp *anypb.Any
+	if resp != nil {
+		marshalledResp, err = anypb.New(resp)
+		if err != nil {
+			l.Error("c1_api_task_manager.finishTask(): error while attempting to marshal response", zap.Error(err))
+			return err
+		}
+	}
+
 	if err == nil {
 		l.Info("c1_api_task_manager.finishTask(): finishing task successfully")
 		_, err = c.serviceClient.FinishTask(finishCtx, &v1.BatonServiceFinishTaskRequest{
@@ -140,6 +155,7 @@ func (c *c1ApiTaskManager) finishTask(ctx context.Context, task *v1.Task, annos 
 			FinalState: &v1.BatonServiceFinishTaskRequest_Success_{
 				Success: &v1.BatonServiceFinishTaskRequest_Success{
 					Annotations: annos,
+					Response:    marshalledResp,
 				},
 			},
 		})
@@ -198,6 +214,7 @@ func (c *c1ApiTaskManager) Process(ctx context.Context, task *v1.Task, cc types.
 		cc:            cc,
 		serviceClient: c.serviceClient,
 		taskFinisher:  c.finishTask,
+		tempDir:       c.tempDir,
 	}
 
 	// Based on the task type, call a handler to process the task.
@@ -205,20 +222,37 @@ func (c *c1ApiTaskManager) Process(ctx context.Context, task *v1.Task, cc types.
 	// Handlers may do their work in a goroutine allowing processing to move onto the next task
 	var handler tasks.TaskHandler
 	switch tasks.GetType(task) {
-	case tasks.FullSyncType:
-		handler = newFullSyncTaskHandler(task, tHelpers)
+	case taskTypes.FullSyncType:
+		handler = newFullSyncTaskHandler(task, tHelpers, c.skipFullSync)
 
-	case tasks.HelloType:
+	case taskTypes.HelloType:
 		handler = newHelloTaskHandler(task, tHelpers)
 
-	case tasks.GrantType:
+	case taskTypes.GrantType:
 		handler = newGrantTaskHandler(task, tHelpers)
 
-	case tasks.RevokeType:
+	case taskTypes.RevokeType:
 		handler = newRevokeTaskHandler(task, tHelpers)
 
+	case taskTypes.CreateAccountType:
+		handler = newCreateAccountTaskHandler(task, tHelpers)
+
+	case taskTypes.CreateResourceType:
+		handler = newCreateResourceTaskHandler(task, tHelpers)
+
+	case taskTypes.DeleteResourceType:
+		handler = newDeleteResourceTaskHandler(task, tHelpers)
+
+	case taskTypes.RotateCredentialsType:
+		handler = newRotateCredentialsTaskHandler(task, tHelpers)
+	case taskTypes.CreateTicketType:
+		handler = newCreateTicketTaskHandler(task, tHelpers)
+	case taskTypes.ListTicketSchemasType:
+		handler = newListSchemasTaskHandler(task, tHelpers)
+	case taskTypes.GetTicketType:
+		handler = newGetTicketTaskHandler(task, tHelpers)
 	default:
-		return c.finishTask(ctx, task, nil, errors.New("unsupported task type"))
+		return c.finishTask(ctx, task, nil, nil, errors.New("unsupported task type"))
 	}
 
 	err := handler.HandleTask(ctx)
@@ -230,7 +264,7 @@ func (c *c1ApiTaskManager) Process(ctx context.Context, task *v1.Task, cc types.
 	return nil
 }
 
-func NewC1TaskManager(ctx context.Context, clientID string, clientSecret string) (tasks.Manager, error) {
+func NewC1TaskManager(ctx context.Context, clientID string, clientSecret string, tempDir string, skipFullSync bool) (tasks.Manager, error) {
 	serviceClient, err := newServiceClient(ctx, clientID, clientSecret)
 	if err != nil {
 		return nil, err
@@ -238,5 +272,7 @@ func NewC1TaskManager(ctx context.Context, clientID string, clientSecret string)
 
 	return &c1ApiTaskManager{
 		serviceClient: serviceClient,
+		tempDir:       tempDir,
+		skipFullSync:  skipFullSync,
 	}, nil
 }

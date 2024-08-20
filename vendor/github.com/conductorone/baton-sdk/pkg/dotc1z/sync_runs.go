@@ -299,34 +299,51 @@ func (c *C1File) StartSync(ctx context.Context) (string, bool, error) {
 		return "", false, err
 	}
 
-	syncID := ksuid.New().String()
+	var syncID string
 	if sync != nil && sync.EndedAt == nil {
 		syncID = sync.ID
 	} else {
-		q := c.db.Insert(syncRuns.Name())
-		q = q.Rows(goqu.Record{
-			"sync_id":    syncID,
-			"started_at": time.Now().Format("2006-01-02 15:04:05.999999999"),
-			"sync_token": "",
-		})
-
-		query, args, err := q.ToSQL()
+		syncID, err = c.StartNewSync(ctx)
 		if err != nil {
 			return "", false, err
 		}
-
-		_, err = c.db.ExecContext(ctx, query, args...)
-		if err != nil {
-			return "", false, err
-		}
-
 		newSync = true
-		c.dbUpdated = true
 	}
 
 	c.currentSyncID = syncID
 
 	return c.currentSyncID, newSync, nil
+}
+
+func (c *C1File) StartNewSync(ctx context.Context) (string, error) {
+	// Not sure if we want to do this here
+	if c.currentSyncID != "" {
+		return c.currentSyncID, nil
+	}
+
+	syncID := ksuid.New().String()
+
+	q := c.db.Insert(syncRuns.Name())
+	q = q.Rows(goqu.Record{
+		"sync_id":    syncID,
+		"started_at": time.Now().Format("2006-01-02 15:04:05.999999999"),
+		"sync_token": "",
+	})
+
+	query, args, err := q.ToSQL()
+	if err != nil {
+		return "", err
+	}
+
+	_, err = c.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return "", err
+	}
+
+	c.dbUpdated = true
+	c.currentSyncID = syncID
+
+	return c.currentSyncID, nil
 }
 
 func (c *C1File) CurrentSyncStep(ctx context.Context) (string, error) {
@@ -424,6 +441,13 @@ func (c *C1File) Cleanup(ctx context.Context) error {
 		l.Info("Removed old sync data.", zap.String("sync_date", ret[i].EndedAt.Format(time.RFC3339)), zap.String("sync_id", ret[i].ID))
 	}
 
+	err = c.Vacuum(ctx)
+	if err != nil {
+		return err
+	}
+
+	c.dbUpdated = true
+
 	return nil
 }
 
@@ -453,6 +477,23 @@ func (c *C1File) DeleteSyncRun(ctx context.Context, syncID string) error {
 			return err
 		}
 	}
+	c.dbUpdated = true
+
+	return nil
+}
+
+// Vacuum runs a VACUUM on the database to reclaim space.
+func (c *C1File) Vacuum(ctx context.Context) error {
+	err := c.validateDb(ctx)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.rawDb.ExecContext(ctx, "VACUUM")
+	if err != nil {
+		return err
+	}
+
 	c.dbUpdated = true
 
 	return nil

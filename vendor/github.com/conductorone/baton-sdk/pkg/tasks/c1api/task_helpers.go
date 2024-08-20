@@ -8,6 +8,7 @@ import (
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/tasks"
@@ -20,8 +21,9 @@ type taskHelpers struct {
 	task          *v1.Task
 	serviceClient BatonServiceClient
 	cc            types.ConnectorClient
+	tempDir       string
 
-	taskFinisher func(ctx context.Context, task *v1.Task, annos annotations.Annotations, err error) error
+	taskFinisher func(ctx context.Context, task *v1.Task, resp proto.Message, annos annotations.Annotations, err error) error
 }
 
 func (t *taskHelpers) ConnectorClient() types.ConnectorClient {
@@ -35,15 +37,19 @@ func (t *taskHelpers) Upload(ctx context.Context, r io.ReadSeeker) error {
 	return t.serviceClient.Upload(ctx, t.task, r)
 }
 
-func (t *taskHelpers) FinishTask(ctx context.Context, annos annotations.Annotations, err error) error {
+func (t *taskHelpers) FinishTask(ctx context.Context, resp proto.Message, annos annotations.Annotations, err error) error {
 	if t.task == nil {
 		return errors.New("cannot finish task: task is nil")
 	}
-	return t.taskFinisher(ctx, t.task, annos, err)
+	return t.taskFinisher(ctx, t.task, resp, annos, err)
 }
 
 func (t *taskHelpers) HelloClient() batonHelloClient {
 	return t.serviceClient
+}
+
+func (t *taskHelpers) TempDir() string {
+	return t.tempDir
 }
 
 // HeartbeatTask will call the heartbeat service endpoint for the task until the context is cancelled. An initial heartbeat is

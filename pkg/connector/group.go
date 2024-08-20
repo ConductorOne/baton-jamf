@@ -10,7 +10,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
-	grant "github.com/conductorone/baton-sdk/pkg/types/grant"
+	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
@@ -57,7 +57,7 @@ func (g *groupResourceType) List(ctx context.Context, parentId *v2.ResourceId, t
 	var rv []*v2.Resource
 	for _, group := range groups {
 		groupCopy := group
-		gr, err := groupResource(&groupCopy, parentId)
+		gr, err := groupResource(groupCopy, parentId)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -102,7 +102,7 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, t
 		if err != nil {
 			return nil, "", nil, err
 		}
-		ur, err := userAccountResource(&userAccountDetails, resource.Id)
+		ur, err := userAccountResource(userAccountDetails, resource.Id)
 		if err != nil {
 			return nil, "", nil, err
 		}

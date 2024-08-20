@@ -5,7 +5,7 @@ type BaseType struct {
 	Name string `json:"name"`
 }
 
-// end user in Jamf.
+// User - end user in Jamf.
 type User struct {
 	BaseType
 	FullName     string `json:"full_name"`
@@ -22,7 +22,7 @@ type BaseAccount struct {
 	Groups []Group `json:"groups"`
 }
 
-// user that has access to their system and can be granted permissions.
+// UserAccount - user that has access to their system and can be granted permissions.
 type UserAccount struct {
 	BaseType
 	FullName     string   `json:"full_name"`
@@ -42,13 +42,6 @@ type Group struct {
 	Members      []struct {
 		User BaseType `json:"user"`
 	} `json:"members"`
-}
-
-type Acccount struct {
-	Name        string      `json:"name"`
-	ID          string      `json:"id"`
-	UserAccount UserAccount `json:"user_account"`
-	Group       Group       `json:"group"`
 }
 
 type Site struct {
@@ -80,4 +73,41 @@ type Account struct {
 	AccessLevel    string `json:"accessLevel"`
 	PrivilegeSet   string `json:"privilegeSet"`
 	CurrentSiteID  string `json:"currentSiteId"`
+}
+
+type TokenResponse struct {
+	Token   string `json:"token"`
+	Expires string `json:"expires"`
+}
+
+type UsersResponse struct {
+	Users []BaseType `json:"users"`
+}
+
+type UserResponse struct {
+	User User `json:"user"`
+}
+
+type UserAccountResponse struct {
+	UserAccount UserAccount `json:"account"`
+}
+
+type UserGroupsResponse struct {
+	UserGroups []UserGroup `json:"user_groups"`
+}
+
+type UserGroupResponse struct {
+	UserGroup UserGroup `json:"user_group"`
+}
+
+type GroupResponse struct {
+	Group Group `json:"group"`
+}
+
+type AccountsResponse struct {
+	Accounts BaseAccount `json:"accounts"`
+}
+
+type SitesResponse struct {
+	Sites []Site `json:"sites"`
 }
