@@ -5,26 +5,29 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/conductorone/baton-jamf/pkg/config"
 	"github.com/conductorone/baton-jamf/pkg/connector"
-	"github.com/conductorone/baton-sdk/pkg/config"
+	configSdk "github.com/conductorone/baton-sdk/pkg/config"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
-	"github.com/conductorone/baton-sdk/pkg/field"
 	"github.com/conductorone/baton-sdk/pkg/types"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 )
 
-var version = "dev"
+var (
+	connectorName = "baton-jamf"
+	version       = "dev"
+)
 
 func main() {
 	ctx := context.Background()
 
-	_, cmd, err := config.DefineConfiguration(
+	_, cmd, err := configSdk.DefineConfiguration(
 		ctx,
-		"baton-jamf",
+		connectorName,
 		getConnector,
-		Configuration,
+		config.Configuration,
 	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
@@ -42,17 +45,11 @@ func main() {
 
 func getConnector(ctx context.Context, v *viper.Viper) (types.ConnectorServer, error) {
 	l := ctxzap.Extract(ctx)
-
-	err := field.Validate(Configuration, v)
-	if err != nil {
-		return nil, err
-	}
-
 	cb, err := connector.New(
 		ctx,
-		v.GetString(UsernameField.FieldName),
-		v.GetString(PasswordField.FieldName),
-		v.GetString(InstanceUrlField.FieldName),
+		v.GetString(config.UsernameField.FieldName),
+		v.GetString(config.PasswordField.FieldName),
+		v.GetString(config.InstanceUrlField.FieldName),
 	)
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
