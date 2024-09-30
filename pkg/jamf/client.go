@@ -76,7 +76,7 @@ func (c *Client) CreateBearerToken(
 	request.SetBasicAuth(username, password)
 
 	var target TokenResponse
-	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(target))
+	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(&target))
 	if err != nil {
 		return "", err
 	}

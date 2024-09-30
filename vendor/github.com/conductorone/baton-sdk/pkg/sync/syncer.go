@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -37,8 +38,8 @@ var (
 )
 
 type Syncer interface {
-	Sync(ctx context.Context) error
-	Close(ctx context.Context) error
+	Sync(context.Context) error
+	Close(context.Context) error
 }
 
 // syncer orchestrates a connector sync and stores the results using the provided datasource.Writer.
@@ -79,7 +80,9 @@ func (s *syncer) handleInitialActionForStep(ctx context.Context, a Action) {
 
 func (s *syncer) handleProgress(ctx context.Context, a *Action, c int) {
 	if s.progressHandler != nil {
-		s.progressHandler(NewProgress(a, uint32(c)))
+		//nolint:gosec // No risk of overflow because `c` is a slice length.
+		count := uint32(c)
+		s.progressHandler(NewProgress(a, count))
 	}
 }
 
@@ -90,16 +93,41 @@ func shouldWaitAndRetry(ctx context.Context, err error) bool {
 		attempts = 0
 		return true
 	}
-	if status.Code(err) != codes.Unavailable {
+	if status.Code(err) != codes.Unavailable && status.Code(err) != codes.DeadlineExceeded {
 		return false
 	}
 
 	attempts++
 	l := ctxzap.Extract(ctx)
 
+	// use linear time by default
 	var wait time.Duration = time.Duration(attempts) * time.Second
 
-	l.Error("retrying operation", zap.Error(err), zap.Duration("wait", wait))
+	// If error contains rate limit data, use that instead
+	if st, ok := status.FromError(err); ok {
+		details := st.Details()
+		for _, detail := range details {
+			if rlData, ok := detail.(*v2.RateLimitDescription); ok {
+				waitResetAt := time.Until(rlData.ResetAt.AsTime())
+				if waitResetAt <= 0 {
+					continue
+				}
+				duration := time.Duration(rlData.Limit)
+				if duration <= 0 {
+					continue
+				}
+				waitResetAt /= duration
+				// Round up to the nearest second to make sure we don't hit the rate limit again
+				waitResetAt = time.Duration(math.Ceil(waitResetAt.Seconds())) * time.Second
+				if waitResetAt > 0 {
+					wait = waitResetAt
+					break
+				}
+			}
+		}
+	}
+
+	l.Warn("retrying operation", zap.Error(err), zap.Duration("wait", wait))
 
 	for {
 		select {
@@ -233,7 +261,7 @@ func (s *syncer) Sync(ctx context.Context) error {
 
 		case SyncAssetsOp:
 			err = s.SyncAssets(ctx)
-			if err != nil {
+			if !shouldWaitAndRetry(ctx, err) {
 				return err
 			}
 			continue
@@ -784,7 +812,7 @@ func (s *syncer) SyncGrantExpansion(ctx context.Context) error {
 		pageToken := s.state.PageToken(ctx)
 
 		if pageToken == "" {
-			ctxzap.Extract(ctx).Info("Expanding grants...")
+			l.Info("Expanding grants...")
 			s.handleInitialActionForStep(ctx, *s.state.Current())
 		}
 
@@ -821,7 +849,7 @@ func (s *syncer) SyncGrantExpansion(ctx context.Context) error {
 
 			// FIXME(morgabra) Log and skip some of the error paths here?
 			for _, srcEntitlementID := range expandable.EntitlementIds {
-				ctxzap.Extract(ctx).Debug(
+				l.Debug(
 					"Expandable entitlement found",
 					zap.String("src_entitlement_id", srcEntitlementID),
 					zap.String("dst_entitlement_id", grant.GetEntitlement().GetId()),
@@ -831,7 +859,12 @@ func (s *syncer) SyncGrantExpansion(ctx context.Context) error {
 					EntitlementId: srcEntitlementID,
 				})
 				if err != nil {
-					return err
+					l.Error("error fetching source entitlement",
+						zap.String("src_entitlement_id", srcEntitlementID),
+						zap.String("dst_entitlement_id", grant.GetEntitlement().GetId()),
+						zap.Error(err),
+					)
+					continue
 				}
 
 				// The expand annotation points at entitlements by id. Those entitlements' resource should match
@@ -1323,7 +1356,7 @@ func (s *syncer) runGrantExpandActions(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func (s *syncer) newExpandedGrant(ctx context.Context, descEntitlement *v2.Entitlement, principal *v2.Resource) (*v2.Grant, error) {
+func (s *syncer) newExpandedGrant(_ context.Context, descEntitlement *v2.Entitlement, principal *v2.Resource) (*v2.Grant, error) {
 	enResource := descEntitlement.GetResource()
 	if enResource == nil {
 		return nil, fmt.Errorf("newExpandedGrant: entitlement has no resource")
@@ -1433,9 +1466,12 @@ func (s *syncer) loadStore(ctx context.Context) error {
 
 // Close closes the datastorage to ensure it is updated on disk.
 func (s *syncer) Close(ctx context.Context) error {
-	err := s.store.Close()
-	if err != nil {
-		return fmt.Errorf("error closing store: %w", err)
+	var err error
+	if s.store != nil {
+		err = s.store.Close()
+		if err != nil {
+			return fmt.Errorf("error closing store: %w", err)
+		}
 	}
 
 	if s.c1zManager != nil {

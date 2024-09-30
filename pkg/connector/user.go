@@ -7,7 +7,6 @@ import (
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/helpers"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
@@ -23,7 +22,7 @@ func (o *userResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 
 // Create a new connector resource for a Jamf user.
 func userResource(user *jamf.User, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
-	firstName, lastName := helpers.SplitFullName(user.FullName)
+	firstName, lastName := rs.SplitFullName(user.FullName)
 	profile := map[string]interface{}{
 		"first_name": firstName,
 		"last_name":  lastName,
