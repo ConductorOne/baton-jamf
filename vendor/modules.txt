@@ -144,7 +144,7 @@ github.com/aws/smithy-go/waiter
 # github.com/benbjohnson/clock v1.3.5
 ## explicit; go 1.15
 github.com/benbjohnson/clock
-# github.com/conductorone/baton-sdk v0.2.31
+# github.com/conductorone/baton-sdk v0.2.46
 ## explicit; go 1.21
 github.com/conductorone/baton-sdk/internal/connector
 github.com/conductorone/baton-sdk/pb/c1/c1z/v1
@@ -168,7 +168,6 @@ github.com/conductorone/baton-sdk/pkg/dotc1z/manager
 github.com/conductorone/baton-sdk/pkg/dotc1z/manager/local
 github.com/conductorone/baton-sdk/pkg/dotc1z/manager/s3
 github.com/conductorone/baton-sdk/pkg/field
-github.com/conductorone/baton-sdk/pkg/helpers
 github.com/conductorone/baton-sdk/pkg/logging
 github.com/conductorone/baton-sdk/pkg/metrics
 github.com/conductorone/baton-sdk/pkg/pagination
@@ -551,6 +550,7 @@ google.golang.org/protobuf/types/known/anypb
 google.golang.org/protobuf/types/known/durationpb
 google.golang.org/protobuf/types/known/structpb
 google.golang.org/protobuf/types/known/timestamppb
+google.golang.org/protobuf/types/known/wrapperspb
 # gopkg.in/ini.v1 v1.67.0
 ## explicit
 gopkg.in/ini.v1
