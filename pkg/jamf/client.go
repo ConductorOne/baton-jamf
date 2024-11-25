@@ -2,7 +2,9 @@ package jamf
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	liburl "net/url"
 
@@ -306,13 +308,31 @@ func (c *Client) doRequest(
 		return err
 	}
 
-	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(target))
+	response, err := c.wrapper.Do(request)
 	if err != nil {
 		return err
 	}
-	err = response.Body.Close()
-	if err != nil {
-		return err
+
+	defer response.Body.Close()
+	if target == nil {
+		return nil
 	}
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+	err = json.Unmarshal(body, target)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal json response: %w. status code: %d. body %v", err, response.StatusCode, logBody(body, 2048))
+	}
+
 	return nil
+}
+
+func logBody(body []byte, size int) string {
+	if len(body) > size {
+		return string(body[:size]) + " ..."
+	}
+	return string(body)
 }
