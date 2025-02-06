@@ -69,6 +69,8 @@ func New(ctx context.Context, username string, password string, instanceURL stri
 
 	client := jamf.NewClient(
 		uhttp.NewBaseHttpClient(httpClient),
+		username,
+		password,
 		"",
 		instanceURL,
 	)

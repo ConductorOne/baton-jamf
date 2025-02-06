@@ -7,8 +7,13 @@ import (
 	"io"
 	"net/http"
 	liburl "net/url"
+	"time"
 
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -22,27 +27,38 @@ const (
 	userGroupsUrlPath = "/JSSResource/usergroups"
 	userUrlPath       = "/JSSResource/users/id/%d"
 	usersUrlPath      = "/JSSResource/users"
+	keepAliveUrlPath  = "/api/v1/auth/keep-alive"
 )
 
 type Client struct {
-	wrapper     *uhttp.BaseHttpClient
-	token       string
-	instanceURL string
+	wrapper       *uhttp.BaseHttpClient
+	token         string
+	instanceURL   string
+	lastKeepAlive time.Time
+
+	userName string
+	password string
 }
 
 func NewClient(
 	wrapper *uhttp.BaseHttpClient,
+	userName string,
+	password string,
 	token string,
 	instanceURL string,
 ) *Client {
 	return &Client{
-		wrapper:     wrapper,
-		token:       token,
-		instanceURL: instanceURL,
+		wrapper:       wrapper,
+		token:         token,
+		instanceURL:   instanceURL,
+		lastKeepAlive: time.Now(),
+		userName:      userName,
+		password:      password,
 	}
 }
 
 func (c *Client) SetBearerToken(token string) {
+	c.lastKeepAlive = time.Now()
 	c.token = token
 }
 
@@ -54,12 +70,66 @@ func (c *Client) getUrl(path string) (*liburl.URL, error) {
 	return liburl.Parse(urlString)
 }
 
+func (c *Client) keepAliveToken(
+	ctx context.Context,
+) error {
+	l := ctxzap.Extract(ctx)
+
+	if c.token == "" {
+		return fmt.Errorf("token is empty")
+	}
+
+	if time.Since(c.lastKeepAlive) < 5*time.Minute {
+		return nil
+	}
+
+	l.Debug("Refreshing token")
+
+	url, err := c.getUrl(keepAliveUrlPath)
+	if err != nil {
+		return err
+	}
+
+	request, err := c.wrapper.NewRequest(
+		ctx,
+		http.MethodPost,
+		url,
+		uhttp.WithAcceptJSONHeader(),
+		uhttp.WithContentTypeJSONHeader(),
+		uhttp.WithHeader(
+			"Authorization",
+			fmt.Sprintf("Bearer %s", c.token),
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	var target TokenResponse
+	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(&target))
+	if err != nil {
+		return err
+	}
+	err = response.Body.Close()
+	if err != nil {
+		return err
+	}
+
+	c.token = target.Token
+	c.lastKeepAlive = time.Now()
+
+	return nil
+}
+
 // CreateBearerToken creates bearer token needed to use the Jamf API.
 func (c *Client) CreateBearerToken(
 	ctx context.Context,
 	username string,
 	password string,
 ) (string, error) {
+	l := ctxzap.Extract(ctx)
+
+	l.Debug("Creating bearer token")
 	url, err := c.getUrl(tokenUrlPath)
 	if err != nil {
 		return "", err
@@ -289,11 +359,22 @@ func (c *Client) GetAccounts(ctx context.Context) ([]*UserAccount, []*Group, err
 	return userAccounts, groups, nil
 }
 
+// doRequest performs an authenticated request to the Jamf API.
 func (c *Client) doRequest(
 	ctx context.Context,
 	url *liburl.URL,
 	target interface{},
 ) error {
+	l := ctxzap.Extract(ctx)
+
+	err := c.keepAliveToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	firstTry := true
+
+GotoRetry:
 	request, err := c.wrapper.NewRequest(
 		ctx,
 		http.MethodGet,
@@ -307,9 +388,22 @@ func (c *Client) doRequest(
 	if err != nil {
 		return err
 	}
-
 	response, err := c.wrapper.Do(request)
 	if err != nil {
+		l.Error("failed to perform request", zap.Error(err))
+		if status.Code(err) == codes.Unauthenticated && firstTry {
+			l.Debug("retrying request with new token")
+			token, err := c.CreateBearerToken(ctx, c.userName, c.password)
+			if err != nil {
+				return err
+			}
+
+			c.SetBearerToken(token)
+			firstTry = false
+
+			l.Debug("retrying request with new token")
+			goto GotoRetry
+		}
 		return err
 	}
 
