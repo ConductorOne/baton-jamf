@@ -1,14 +1,15 @@
 module github.com/conductorone/baton-jamf
 
-go 1.21
+go 1.23
 
-toolchain go1.22.6
+toolchain go1.23.6
 
 require (
 	github.com/conductorone/baton-sdk v0.2.46
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/spf13/viper v1.18.2
 	go.uber.org/zap v1.27.0
+	google.golang.org/grpc v1.63.2
 )
 
 require (
@@ -84,7 +85,6 @@ require (
 	golang.org/x/sys v0.21.0 // indirect
 	golang.org/x/text v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240506185236-b8a5c65736ae // indirect
-	google.golang.org/grpc v1.63.2 // indirect
 	google.golang.org/protobuf v1.34.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/square/go-jose.v2 v2.6.0 // indirect
