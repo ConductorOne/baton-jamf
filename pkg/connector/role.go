@@ -23,9 +23,7 @@ func (o *roleResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 	return o.resourceType
 }
 
-const CustomPrivilege = "Custom"
-
-var defaultPrivileges = []string{
+var privilegeSets = []string{
 	"Administrator",
 	"Auditor",
 	"Enrollment Only",
@@ -59,8 +57,8 @@ func roleResource(ctx context.Context, role string, parentResourceID *v2.Resourc
 func (o *roleResourceType) List(ctx context.Context, parentId *v2.ResourceId, token *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 
 	var rv []*v2.Resource
-	for _, privilege := range defaultPrivileges {
-		rr, err := roleResource(ctx, privilege, parentId)
+	for _, privilegeSet := range privilegeSets {
+		rr, err := roleResource(ctx, privilegeSet, parentId)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -100,8 +98,7 @@ func (o *roleResourceType) Entitlements(_ context.Context, resource *v2.Resource
 
 func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, token *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var rv []*v2.Grant
-
-	isCustomPrivilege := !slices.Contains(defaultPrivileges, resource.Id.Resource)
+	isCustomPrivilege := !slices.Contains(privilegeSets, resource.Id.Resource)
 	userAccounts, groups, err := o.client.GetAccounts(ctx)
 	if err != nil {
 		return nil, "", nil, err
@@ -114,19 +111,14 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 			return nil, "", nil, err
 		}
 
-		if !isCustomPrivilege {
-			if resource.Id.Resource == group.PrivilegeSet {
-				privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
-				rv = append(rv, privilegeGrant)
-			}
-		} else {
-			for _, privilege := range group.Privileges.JSSObjects {
-				if resource.Id.Resource == privilege {
-					privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
-					rv = append(rv, privilegeGrant)
-					break
-				}
-			}
+		if isCustomPrivilege && slices.Contains(group.Privileges.JSSObjects, resource.Id.Resource) {
+			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
+			rv = append(rv, privilegeGrant)
+			continue
+		}
+		if group.PrivilegeSet == resource.Id.Resource {
+			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
+			rv = append(rv, privilegeGrant)
 		}
 	}
 
@@ -137,31 +129,16 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 			return nil, "", nil, err
 		}
 
-		if !isCustomPrivilege {
-			if resource.Id.Resource == userAccount.PrivilegeSet {
-				// __AUTO_GENERATED_PRINTF_START__
-				fmt.Println("Grants 1") // __AUTO_GENERATED_PRINTF_END__
-				privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
-				rv = append(rv, privilegeGrant)
-			}
-		} else {
-			for _, privilege := range userAccount.Privileges.JSSObjects {
-				// __AUTO_GENERATED_PRINT_VAR_START__
-				fmt.Println(fmt.Sprintf("Grants privilege: %+v", privilege)) // __AUTO_GENERATED_PRINT_VAR_END__
-				// __AUTO_GENERATED_PRINT_VAR_START__
-				fmt.Println(fmt.Sprintf("Grants resource.Id.Resource: %+v", resource.Id.Resource)) // __AUTO_GENERATED_PRINT_VAR_END__
-				if resource.Id.Resource == privilege {
-					// __AUTO_GENERATED_PRINTF_START__
-					fmt.Println("Grants 4") // __AUTO_GENERATED_PRINTF_END__
-					privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
-					rv = append(rv, privilegeGrant)
-					break
-				}
-			}
+		if isCustomPrivilege && slices.Contains(userAccount.Privileges.JSSObjects, resource.Id.Resource) {
+			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
+			rv = append(rv, privilegeGrant)
+			continue
+		}
+		if userAccount.PrivilegeSet == resource.Id.Resource {
+			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
+			rv = append(rv, privilegeGrant)
 		}
 	}
-	// __AUTO_GENERATED_PRINT_VAR_START__
-	fmt.Println(fmt.Sprintf("Grants rv: %+v", rv)) // __AUTO_GENERATED_PRINT_VAR_END__
 	return rv, "", nil, nil
 }
 
