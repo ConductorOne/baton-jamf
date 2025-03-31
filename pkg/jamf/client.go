@@ -28,6 +28,7 @@ const (
 	userUrlPath       = "/JSSResource/users/id/%d"
 	usersUrlPath      = "/JSSResource/users"
 	keepAliveUrlPath  = "/api/v1/auth/keep-alive"
+	privilegesUrlPath = "/api/v1/api-role-privileges"
 )
 
 type Client struct {
@@ -429,4 +430,18 @@ func logBody(body []byte, size int) string {
 		return string(body[:size]) + " ..."
 	}
 	return string(body)
+}
+
+func (c *Client) GetPrivileges(ctx context.Context) (*PrivilegesResponse, error) {
+	url, err := c.getUrl(privilegesUrlPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var target PrivilegesResponse
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
+	}
+
+	return &target, nil
 }
