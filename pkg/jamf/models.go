@@ -25,20 +25,36 @@ type BaseAccount struct {
 // UserAccount - user that has access to their system and can be granted permissions.
 type UserAccount struct {
 	BaseType
-	FullName     string   `json:"full_name"`
-	Email        string   `json:"email"`
-	EmailAddress string   `json:"email_address"`
-	Enabled      string   `json:"enabled"`
-	AccessLevel  string   `json:"access_level"`
-	PrivilegeSet string   `json:"privilege_set"`
-	Site         BaseType `json:"site"`
+	FullName     string     `json:"full_name"`
+	Email        string     `json:"email"`
+	EmailAddress string     `json:"email_address"`
+	Enabled      string     `json:"enabled"`
+	AccessLevel  string     `json:"access_level"`
+	PrivilegeSet string     `json:"privilege_set"`
+	Privileges   Privileges `json:"privileges"`
+	Site         BaseType   `json:"site"`
+}
+
+type Privileges struct {
+	// array of privileges the resource has access to
+	JSSObjects []string `json:"jss_objects"`
 }
 
 type Group struct {
 	BaseType
-	AccessLevel  string   `json:"access_level"`
-	PrivilegeSet string   `json:"privilege_set"`
-	Site         BaseType `json:"site"`
+	AccessLevel string `json:"access_level"`
+	// PrivilegeSet can take the following values:
+	//
+	//	- "Administrator"
+	//
+	//	- "Auditor"
+	//
+	//	- "Enrollment Only"
+	//
+	//	- "Custom"
+	PrivilegeSet string     `json:"privilege_set"`
+	Privileges   Privileges `json:"privileges"`
+	Site         BaseType   `json:"site"`
 	Members      []struct {
 		User BaseType `json:"user"`
 	} `json:"members"`
@@ -110,4 +126,8 @@ type AccountsResponse struct {
 
 type SitesResponse struct {
 	Sites []Site `json:"sites"`
+}
+
+type PrivilegesResponse struct {
+	Privileges []string `json:"privileges"`
 }
