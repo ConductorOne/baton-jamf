@@ -55,7 +55,6 @@ func roleResource(ctx context.Context, role string, parentResourceID *v2.Resourc
 }
 
 func (o *roleResourceType) List(ctx context.Context, parentId *v2.ResourceId, token *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
-
 	var rv []*v2.Resource
 	for _, privilegeSet := range privilegeSets {
 		rr, err := roleResource(ctx, privilegeSet, parentId)
