@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -22,11 +23,10 @@ func (o *roleResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 	return o.resourceType
 }
 
-var privileges = []string{
+var privilegeSets = []string{
 	"Administrator",
 	"Auditor",
 	"Enrollment Only",
-	"Custom",
 }
 
 // Create a new connector resource for a Jamf role.
@@ -56,7 +56,20 @@ func roleResource(ctx context.Context, role string, parentResourceID *v2.Resourc
 
 func (o *roleResourceType) List(ctx context.Context, parentId *v2.ResourceId, token *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
 	var rv []*v2.Resource
-	for _, privilege := range privileges {
+	for _, privilegeSet := range privilegeSets {
+		rr, err := roleResource(ctx, privilegeSet, parentId)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		rv = append(rv, rr)
+	}
+
+	res, err := o.client.GetPrivileges(ctx)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	for _, privilege := range res.Privileges {
 		rr, err := roleResource(ctx, privilege, parentId)
 		if err != nil {
 			return nil, "", nil, err
@@ -84,7 +97,7 @@ func (o *roleResourceType) Entitlements(_ context.Context, resource *v2.Resource
 
 func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, token *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
 	var rv []*v2.Grant
-
+	isCustomPrivilege := !slices.Contains(privilegeSets, resource.Id.Resource)
 	userAccounts, groups, err := o.client.GetAccounts(ctx)
 	if err != nil {
 		return nil, "", nil, err
@@ -97,7 +110,12 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 			return nil, "", nil, err
 		}
 
-		if resource.Id.Resource == group.PrivilegeSet {
+		if isCustomPrivilege && slices.Contains(group.Privileges.JSSObjects, resource.Id.Resource) {
+			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
+			rv = append(rv, privilegeGrant)
+			continue
+		}
+		if group.PrivilegeSet == resource.Id.Resource {
 			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
 			rv = append(rv, privilegeGrant)
 		}
@@ -110,12 +128,16 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 			return nil, "", nil, err
 		}
 
-		if resource.Id.Resource == userAccount.PrivilegeSet {
+		if isCustomPrivilege && slices.Contains(userAccount.Privileges.JSSObjects, resource.Id.Resource) {
+			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
+			rv = append(rv, privilegeGrant)
+			continue
+		}
+		if userAccount.PrivilegeSet == resource.Id.Resource {
 			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
 			rv = append(rv, privilegeGrant)
 		}
 	}
-
 	return rv, "", nil, nil
 }
 
