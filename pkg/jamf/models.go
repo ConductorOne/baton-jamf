@@ -55,9 +55,7 @@ type Group struct {
 	PrivilegeSet string     `json:"privilege_set"`
 	Privileges   Privileges `json:"privileges"`
 	Site         BaseType   `json:"site"`
-	Members      []struct {
-		User BaseType `json:"user"`
-	} `json:"members"`
+	Members      []BaseType `json:"members"`
 }
 
 type Site struct {

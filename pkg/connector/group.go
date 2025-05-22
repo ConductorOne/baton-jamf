@@ -91,14 +91,28 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, t
 		return nil, "", nil, err
 	}
 
-	group, err := g.client.GetGroupDetails(ctx, groupId)
-	if err != nil {
-		return nil, "", nil, err
+	// HACK: the endpoint to get group details returns a members list, but it comes back empty
+	// sometimes when it shouldn't. This is a bug in the Jamf API.
+	// This is a workaround to get the members list as of 22/05/2025 and is not 100% reliable.
+	// but from what's i've seen, it will return the members list after 2-3 tries. (if there are
+	// any members at all in that group)
+	// https://developer.jamf.com/jamf-pro/reference/findgroupsbyid
+	// if this endpoint becomes reliable again, we can remove this for loop
+	var group *jamf.Group
+	count := 0
+	for count < 5 {
+		group, err = g.client.GetGroupDetails(ctx, groupId)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		if len(group.Members) > 0 {
+			break
+		}
+		count++
 	}
 
 	for _, user := range group.Members {
-		userCopy := user
-		userAccountDetails, err := g.client.GetUserAccountDetails(ctx, userCopy.User.ID)
+		userAccountDetails, err := g.client.GetUserAccountDetails(ctx, user.ID)
 		if err != nil {
 			return nil, "", nil, err
 		}
