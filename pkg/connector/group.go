@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -109,6 +110,7 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, t
 			break
 		}
 		count++
+		time.Sleep(time.Second)
 	}
 
 	for _, user := range group.Members {
