@@ -10,20 +10,90 @@ import (
 	"strings"
 
 	"github.com/conductorone/baton-sdk/pkg/cli"
+	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/connectorrunner"
 	"github.com/conductorone/baton-sdk/pkg/field"
+	"github.com/conductorone/baton-sdk/pkg/types"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
 )
 
-func DefineConfiguration(
+func RunConnector[T field.Configurable](
 	ctx context.Context,
 	connectorName string,
-	connector cli.GetConnectorFunc,
+	version string,
+	schema field.Configuration,
+	cf cli.NewConnector[T],
+	options ...connectorrunner.Option,
+) {
+	f := func(ctx context.Context, cfg T, runTimeOpts cli.RunTimeOpts) (types.ConnectorServer, error) {
+		l := ctxzap.Extract(ctx)
+		connector, builderOpts, err := cf(ctx, cfg, &cli.ConnectorOpts{TokenSource: runTimeOpts.TokenSource})
+		if err != nil {
+			return nil, err
+		}
+
+		builderOpts = append(builderOpts, connectorbuilder.WithSessionStore(runTimeOpts.SessionStore))
+
+		c, err := connectorbuilder.NewConnector(ctx, connector, builderOpts...)
+		if err != nil {
+			l.Error("error creating connector", zap.Error(err))
+			return nil, err
+		}
+		return c, nil
+	}
+
+	_, cmd, err := DefineConfigurationV2(ctx, connectorName, f, schema, options...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
+		return
+	}
+
+	cmd.Version = version
+
+	err = cmd.Execute()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
+		os.Exit(1)
+	}
+}
+
+var ErrDuplicateField = errors.New("multiple fields with the same name")
+
+// GetConnectorFunc is a function type that creates a connector instance.
+// It takes a context and configuration. The session cache constructor is retrieved from the context.
+// deprecated - prefer RunConnector.
+func DefineConfiguration[T field.Configurable](
+	ctx context.Context,
+	connectorName string,
+	connector cli.GetConnectorFunc[T],
 	schema field.Configuration,
 	options ...connectorrunner.Option,
 ) (*viper.Viper, *cobra.Command, error) {
+	f := func(ctx context.Context, cfg T, runTimeOpts cli.RunTimeOpts) (types.ConnectorServer, error) {
+		connector, err := connector(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return connector, nil
+	}
+	return DefineConfigurationV2(ctx, connectorName, f, schema, options...)
+}
+
+// deprecated - prefer RunConnector.
+func DefineConfigurationV2[T field.Configurable](
+	ctx context.Context,
+	connectorName string,
+	connector cli.GetConnectorFunc2[T],
+	schema field.Configuration,
+	options ...connectorrunner.Option,
+) (*viper.Viper, *cobra.Command, error) {
+	if err := verifyStructFields[T](schema); err != nil {
+		return nil, nil, fmt.Errorf("VerifyStructFields failed: %w", err)
+	}
 	v := viper.New()
 	v.SetConfigType("yaml")
 
@@ -43,17 +113,49 @@ func DefineConfiguration(
 	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 	v.AutomaticEnv()
 
+	defaultFieldsByName := make(map[string]field.SchemaField)
+	for _, f := range field.DefaultFields {
+		if _, ok := defaultFieldsByName[f.FieldName]; ok {
+			return nil, nil, fmt.Errorf("multiple default fields with the same name: %s", f.FieldName)
+		}
+		defaultFieldsByName[f.FieldName] = f
+	}
+
 	confschema := schema
 	confschema.Fields = append(field.DefaultFields, confschema.Fields...)
 	// Ensure unique fields
 	uniqueFields := make(map[string]field.SchemaField)
+	fieldsToDelete := make(map[string]bool)
 	for _, f := range confschema.Fields {
+		if existingField, ok := uniqueFields[f.FieldName]; ok {
+			// If the duplicate field is not a default field, error.
+			if _, ok := defaultFieldsByName[f.FieldName]; !ok {
+				return nil, nil, fmt.Errorf("%w: %s", ErrDuplicateField, f.FieldName)
+			}
+			// If redeclaring a default field and not reexporting it, error.
+			if !f.WasReExported {
+				return nil, nil, fmt.Errorf("%w: %s. If you want to use a default field in the SDK, use ExportAs on the connector schema field", ErrDuplicateField, f.FieldName)
+			}
+			if existingField.WasReExported {
+				return nil, nil, fmt.Errorf("%w: %s. If you want to use a default field in the SDK, use ExportAs on the connector schema field", ErrDuplicateField, f.FieldName)
+			}
+
+			fieldsToDelete[existingField.FieldName] = true
+		}
+
 		uniqueFields[f.FieldName] = f
 	}
-	confschema.Fields = make([]field.SchemaField, 0, len(uniqueFields))
-	for _, f := range uniqueFields {
-		confschema.Fields = append(confschema.Fields, f)
+
+	// Filter out fields that were not reexported and were in the fieldsToDelete list.
+	fields := make([]field.SchemaField, 0, len(confschema.Fields))
+	for _, f := range confschema.Fields {
+		if !f.WasReExported && fieldsToDelete[f.FieldName] {
+			continue
+		}
+		fields = append(fields, f)
 	}
+	confschema.Fields = fields
+
 	// setup CLI with cobra
 	mainCMD := &cobra.Command{
 		Use:           connectorName,
@@ -62,78 +164,115 @@ func DefineConfiguration(
 		SilenceUsage:  true,
 		RunE:          cli.MakeMainCommand(ctx, connectorName, v, confschema, connector, options...),
 	}
+
+	relationships := []field.SchemaFieldRelationship{}
 	// set persistent flags only on the main subcommand
-	err = setFlagsAndConstraints(mainCMD, field.NewConfiguration(field.DefaultFields, field.DefaultRelationships...))
+	relationships = append(relationships, field.DefaultRelationships...)
+	relationships = append(relationships, confschema.Constraints...)
+
+	err = cli.SetFlagsAndConstraints(
+		mainCMD,
+		field.NewConfiguration(
+			confschema.Fields,
+			field.WithConstraints(relationships...),
+			field.WithFieldGroups(confschema.FieldGroups),
+		),
+	)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// set the rest of flags
-	err = setFlagsAndConstraints(mainCMD, schema)
+	mainCMD.AddCommand(cli.AdditionalCommands(connectorName, confschema.Fields)...)
+	cli.VisitFlags(mainCMD, v)
+
+	sessionStoreEnabled, err := connectorrunner.IsSessionStoreEnabled(ctx, options...)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	grpcServerCmd := &cobra.Command{
+	err = cli.OptionallyAddLambdaCommand(ctx, connectorName, v, connector, confschema, mainCMD, sessionStoreEnabled)
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	_, err = cli.AddCommand(mainCMD, v, &schema, &cobra.Command{
 		Use:    "_connector-service",
 		Short:  "Start the connector service",
 		Hidden: true,
 		RunE:   cli.MakeGRPCServerCommand(ctx, connectorName, v, confschema, connector),
-	}
-	err = setFlagsAndConstraints(grpcServerCmd, schema)
+	})
+
 	if err != nil {
 		return nil, nil, err
 	}
-	mainCMD.AddCommand(grpcServerCmd)
 
-	capabilitiesCmd := &cobra.Command{
-		Use:   "capabilities",
-		Short: "Get connector capabilities",
-		RunE:  cli.MakeCapabilitiesCommand(ctx, connectorName, v, confschema, connector),
-	}
-	err = setFlagsAndConstraints(capabilitiesCmd, schema)
+	defaultConnector, err := connectorrunner.ExtractDefaultConnector(ctx, options...)
 	if err != nil {
 		return nil, nil, err
 	}
-	mainCMD.AddCommand(capabilitiesCmd)
-
-	mainCMD.AddCommand(cli.AdditionalCommands(connectorName, schema.Fields)...)
-
-	// NOTE(shackra): Set all values from Viper to the flags so
-	// that Cobra won't complain that a flag is missing in case we
-	// pass values through environment variables
-
-	// main subcommand
-	mainCMD.Flags().VisitAll(func(f *pflag.Flag) {
-		if v.IsSet(f.Name) {
-			_ = mainCMD.Flags().Set(f.Name, v.GetString(f.Name))
+	if defaultConnector == nil {
+		_, err = cli.AddCommand(mainCMD, v, &schema, &cobra.Command{
+			Use:   "capabilities",
+			Short: "Get connector capabilities",
+			RunE:  cli.MakeCapabilitiesCommand(ctx, connectorName, v, confschema, connector),
+		})
+		if err != nil {
+			return nil, nil, err
 		}
+	} else {
+		// We don't want to use cli.AddCommand here because we don't want to validate config flags
+		// So we can call capabilities even with incomplete config
+		mainCMD.AddCommand(&cobra.Command{
+			Use:   "capabilities",
+			Short: "Get connector capabilities",
+			RunE:  cli.MakeCapabilitiesCommand(ctx, connectorName, v, confschema, connector, options...),
+		})
+	}
+
+	_, err = cli.AddCommand(mainCMD, v, nil, &cobra.Command{
+		Use:   "config",
+		Short: "Get the connector config schema",
+		RunE:  cli.MakeConfigSchemaCommand(ctx, connectorName, v, confschema, connector),
 	})
 
-	// children process subcommand
-	grpcServerCmd.Flags().VisitAll(func(f *pflag.Flag) {
-		if v.IsSet(f.Name) {
-			_ = grpcServerCmd.Flags().Set(f.Name, v.GetString(f.Name))
-		}
-	})
-
-	// capabilities subcommand
-	capabilitiesCmd.Flags().VisitAll(func(f *pflag.Flag) {
-		if v.IsSet(f.Name) {
-			_ = capabilitiesCmd.Flags().Set(f.Name, v.GetString(f.Name))
-		}
-	})
+	if err != nil {
+		return nil, nil, err
+	}
 
 	return v, mainCMD, nil
 }
 
-func listFieldConstrainsAsStrings(constrains field.SchemaFieldRelationship) []string {
-	var fields []string
-	for _, v := range constrains.Fields {
-		fields = append(fields, v.FieldName)
+func verifyStructFields[T field.Configurable](schema field.Configuration) error {
+	// Verify that every field in the confschema has a corresponding struct tag in the struct defined in getconnector of type T
+	//  or that it obeys the old interface, a *viper.Viper
+	var config T // Create a zero-value instance of T
+	tType := reflect.TypeOf(config)
+	// Viper doesn't do struct fields
+	if tType == reflect.TypeOf(&viper.Viper{}) {
+		return nil
 	}
-
-	return fields
+	configType := reflect.TypeOf(config)
+	if configType.Kind() == reflect.Ptr {
+		configType = configType.Elem()
+	}
+	if configType.Kind() != reflect.Struct {
+		return fmt.Errorf("T must be a struct type, got %v", configType.Kind()) //nolint:staticcheck // we want to capital letter here
+	}
+	for _, field := range schema.Fields {
+		fieldFound := false
+		for i := 0; i < configType.NumField(); i++ {
+			structField := configType.Field(i)
+			if structField.Tag.Get("mapstructure") == field.FieldName {
+				fieldFound = true
+				break
+			}
+		}
+		if !fieldFound {
+			return fmt.Errorf("field %s in confschema does not have a corresponding struct tag in the configuration struct", field.FieldName)
+		}
+	}
+	return nil
 }
 
 func cleanOrGetConfigPath(customPath string) (string, string, error) {
@@ -158,158 +297,4 @@ func cleanOrGetConfigPath(customPath string) (string, string, error) {
 	}
 
 	return ".", ".baton", nil
-}
-
-func setFlagsAndConstraints(command *cobra.Command, schema field.Configuration) error {
-	// add options
-	for _, field := range schema.Fields {
-		switch field.FieldType {
-		case reflect.Bool:
-			value, err := field.Bool()
-			if err != nil {
-				return fmt.Errorf(
-					"field %s, %s: %w",
-					field.FieldName,
-					field.FieldType,
-					err,
-				)
-			}
-			if field.Persistent {
-				command.PersistentFlags().
-					BoolP(field.FieldName, field.CLIShortHand, value, field.GetDescription())
-			} else {
-				command.Flags().
-					BoolP(field.FieldName, field.CLIShortHand, value, field.GetDescription())
-			}
-		case reflect.Int:
-			value, err := field.Int()
-			if err != nil {
-				return fmt.Errorf(
-					"field %s, %s: %w",
-					field.FieldName,
-					field.FieldType,
-					err,
-				)
-			}
-			if field.Persistent {
-				command.PersistentFlags().
-					IntP(field.FieldName, field.CLIShortHand, value, field.GetDescription())
-			} else {
-				command.Flags().
-					IntP(field.FieldName, field.CLIShortHand, value, field.GetDescription())
-			}
-		case reflect.String:
-			value, err := field.String()
-			if err != nil {
-				return fmt.Errorf(
-					"field %s, %s: %w",
-					field.FieldName,
-					field.FieldType,
-					err,
-				)
-			}
-			if field.Persistent {
-				command.PersistentFlags().
-					StringP(field.FieldName, field.CLIShortHand, value, field.GetDescription())
-			} else {
-				command.Flags().
-					StringP(field.FieldName, field.CLIShortHand, value, field.GetDescription())
-			}
-		case reflect.Slice:
-			value, err := field.StringSlice()
-			if err != nil {
-				return fmt.Errorf(
-					"field %s, %s: %w",
-					field.FieldName,
-					field.FieldType,
-					err,
-				)
-			}
-			if field.Persistent {
-				command.PersistentFlags().
-					StringSliceP(field.FieldName, field.CLIShortHand, value, field.GetDescription())
-			} else {
-				command.Flags().
-					StringSliceP(field.FieldName, field.CLIShortHand, value, field.GetDescription())
-			}
-		default:
-			return fmt.Errorf(
-				"field %s, %s is not yet supported",
-				field.FieldName,
-				field.FieldType,
-			)
-		}
-
-		// mark hidden
-		if field.Hidden {
-			if field.Persistent {
-				err := command.PersistentFlags().MarkHidden(field.FieldName)
-				if err != nil {
-					return fmt.Errorf(
-						"cannot hide persistent field %s, %s: %w",
-						field.FieldName,
-						field.FieldType,
-						err,
-					)
-				}
-			} else {
-				err := command.Flags().MarkHidden(field.FieldName)
-				if err != nil {
-					return fmt.Errorf(
-						"cannot hide field %s, %s: %w",
-						field.FieldName,
-						field.FieldType,
-						err,
-					)
-				}
-			}
-		}
-
-		// mark required
-		if field.Required {
-			if field.FieldType == reflect.Bool {
-				return fmt.Errorf("requiring %s of type %s does not make sense", field.FieldName, field.FieldType)
-			}
-
-			if field.Persistent {
-				err := command.MarkPersistentFlagRequired(field.FieldName)
-				if err != nil {
-					return fmt.Errorf(
-						"cannot require persistent field %s, %s: %w",
-						field.FieldName,
-						field.FieldType,
-						err,
-					)
-				}
-			} else {
-				err := command.MarkFlagRequired(field.FieldName)
-				if err != nil {
-					return fmt.Errorf(
-						"cannot require field %s, %s: %w",
-						field.FieldName,
-						field.FieldType,
-						err,
-					)
-				}
-			}
-		}
-	}
-
-	// apply constrains
-	for _, constrain := range schema.Constraints {
-		switch constrain.Kind {
-		case field.MutuallyExclusive:
-			command.MarkFlagsMutuallyExclusive(listFieldConstrainsAsStrings(constrain)...)
-		case field.RequiredTogether:
-			command.MarkFlagsRequiredTogether(listFieldConstrainsAsStrings(constrain)...)
-		case field.AtLeastOne:
-			command.MarkFlagsOneRequired(listFieldConstrainsAsStrings(constrain)...)
-		case field.Dependents:
-			// do nothing
-		default:
-			return fmt.Errorf("invalid config")
-		}
-	}
-
-	return nil
 }
