@@ -15,6 +15,27 @@ import (
 	"golang.org/x/net/http2"
 )
 
+var loggedResponseHeaders = []string{
+	// Limit headers
+	"X-Ratelimit-Limit",
+	"Ratelimit-Limit",
+	"X-RateLimit-Requests-Limit", // Linear uses a non-standard header
+	"X-Rate-Limit-Limit",         // Okta uses a non-standard header
+
+	// Remaining headers
+	"X-Ratelimit-Remaining",
+	"Ratelimit-Remaining",
+	"X-RateLimit-Requests-Remaining", // Linear uses a non-standard header
+	"X-Rate-Limit-Remaining",         // Okta uses a non-standard header
+
+	// Reset headers
+	"X-Ratelimit-Reset",
+	"Ratelimit-Reset",
+	"X-RateLimit-Requests-Reset", // Linear uses a non-standard header
+	"X-Rate-Limit-Reset",         // Okta uses a non-standard header
+	"Retry-After",                // Often returned with 429
+}
+
 // NewTransport creates a new Transport, applies the options, and then cycles the transport.
 func NewTransport(ctx context.Context, options ...Option) (*Transport, error) {
 	t := newTransport()
@@ -121,6 +142,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			zap.String("http.method", req.Method),
 			zap.String("http.url_details.host", req.URL.Host),
 			zap.String("http.url_details.path", req.URL.Path),
+			zap.String("http.url_details.query", req.URL.RawQuery),
 		)
 	}
 	resp, err := rt.RoundTrip(req)
@@ -128,6 +150,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		fields := []zap.Field{zap.String("http.method", req.Method),
 			zap.String("http.url_details.host", req.URL.Host),
 			zap.String("http.url_details.path", req.URL.Path),
+			zap.String("http.url_details.query", req.URL.RawQuery),
 		}
 
 		if err != nil {
@@ -136,6 +159,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 		if resp != nil {
 			fields = append(fields, zap.Int("http.status_code", resp.StatusCode))
+
+			headers := make(map[string][]string, len(resp.Header))
+			for _, header := range loggedResponseHeaders {
+				if v := resp.Header.Values(header); len(v) > 0 {
+					headers[header] = v
+				}
+			}
+
+			fields = append(fields, zap.Any("http.headers", headers))
 		}
 
 		t.l(ctx).Debug("Request complete", fields...)

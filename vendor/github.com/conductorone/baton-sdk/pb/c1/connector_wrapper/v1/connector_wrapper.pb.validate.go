@@ -117,6 +117,8 @@ func (m *ServerConfig) validate(all bool) error {
 
 	// no validation rules for ListenPort
 
+	// no validation rules for SessionStoreListenPort
+
 	if len(errors) > 0 {
 		return ServerConfigMultiError(errors)
 	}
@@ -130,7 +132,7 @@ type ServerConfigMultiError []error
 
 // Error returns a concatenation of all the error messages it wraps.
 func (m ServerConfigMultiError) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(m))
 	for _, err := range m {
 		msgs = append(msgs, err.Error())
 	}
