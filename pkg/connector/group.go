@@ -87,7 +87,7 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 
 	groupId, err := strconv.Atoi(resource.Id.Resource)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	// HACK: the endpoint to get group details returns a members list, but it comes back empty
@@ -102,7 +102,7 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 	for count < 5 {
 		group, err = g.client.GetGroupDetails(ctx, groupId)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		if len(group.Members) > 0 {
 			break
