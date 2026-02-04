@@ -20,7 +20,7 @@ endif
 build: $(GENERATED_CONF)
 	go build ${BUILD_TAGS} -o ${OUTPUT_PATH} ./cmd/baton-jamf
 
-$(GENERATED_CONF): pkg/config/schema.go go.mod
+$(GENERATED_CONF): pkg/config/config.go go.mod
 	@echo "Generating $(GENERATED_CONF)..."
 	go generate ./pkg/config
 
