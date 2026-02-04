@@ -28,10 +28,6 @@ jobs:
         run: ./connector config > config_schema.json
 
       - name: Run and save capabilities output
-        env:
-          BATON_USERNAME: ${{ secrets.BATON_USERNAME }}
-          BATON_PASSWORD: ${{ secrets.BATON_PASSWORD }}
-          BATON_INSTANCE_URL: ${{ secrets.BATON_INSTANCE_URL }}
         run: ./connector capabilities > baton_capabilities.json
 
       - name: Commit changes
