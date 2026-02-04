@@ -9,6 +9,7 @@ import (
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/cli"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
@@ -62,10 +63,10 @@ type Jamf struct {
 	client *jamf.Client
 }
 
-func New(ctx context.Context, cc *cfg.Jamf) (connectorbuilder.ConnectorBuilderV2, error) {
+func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorbuilder.ConnectorBuilderV2, []connectorbuilder.Opt, error) {
 	httpClient, err := uhttp.NewClient(ctx, uhttp.WithLogger(true, ctxzap.Extract(ctx)))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	client := jamf.NewClient(
@@ -78,11 +79,11 @@ func New(ctx context.Context, cc *cfg.Jamf) (connectorbuilder.ConnectorBuilderV2
 
 	token, err := client.CreateBearerToken(ctx, cc.Username, cc.Password)
 	if err != nil {
-		return nil, fmt.Errorf("jamf-connector: failed to get token: %w", err)
+		return nil, nil, fmt.Errorf("jamf-connector: failed to get token: %w", err)
 	}
 	client.SetBearerToken(token)
 
-	return &Jamf{client: client}, nil
+	return &Jamf{client: client}, nil, nil
 }
 
 func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
