@@ -5,9 +5,7 @@ import (
 	"fmt"
 
 	"github.com/doug-martin/goqu/v9"
-	"google.golang.org/protobuf/proto"
 
-	c1zpb "github.com/conductorone/baton-sdk/pb/c1/c1z/v1"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -55,70 +53,84 @@ func (r *resourcesTable) Schema() (string, []interface{}) {
 	}
 }
 
+func (r *resourcesTable) Migrations(ctx context.Context, db *goqu.Database) error {
+	return nil
+}
+
 func (c *C1File) ListResources(ctx context.Context, request *v2.ResourcesServiceListResourcesRequest) (*v2.ResourcesServiceListResourcesResponse, error) {
-	objs, nextPageToken, err := c.listConnectorObjects(ctx, resources.Name(), request)
+	ctx, span := tracer.Start(ctx, "C1File.ListResources")
+	defer span.End()
+
+	ret, nextPageToken, err := listConnectorObjects(ctx, c, resources.Name(), request, func() *v2.Resource { return &v2.Resource{} })
 	if err != nil {
 		return nil, fmt.Errorf("error listing resources: %w", err)
 	}
 
-	ret := make([]*v2.Resource, 0, len(objs))
-	for _, o := range objs {
-		rt := &v2.Resource{}
-		err = proto.Unmarshal(o, rt)
-		if err != nil {
-			return nil, err
-		}
-		ret = append(ret, rt)
-	}
-
-	return &v2.ResourcesServiceListResourcesResponse{
+	return v2.ResourcesServiceListResourcesResponse_builder{
 		List:          ret,
 		NextPageToken: nextPageToken,
-	}, nil
+	}.Build(), nil
 }
 
 func (c *C1File) GetResource(ctx context.Context, request *reader_v2.ResourcesReaderServiceGetResourceRequest) (*reader_v2.ResourcesReaderServiceGetResourceResponse, error) {
+	ctx, span := tracer.Start(ctx, "C1File.GetResource")
+	defer span.End()
+
 	ret := &v2.Resource{}
-	annos := annotations.Annotations(request.GetAnnotations())
-	syncDetails := &c1zpb.SyncDetails{}
-	syncID := ""
-
-	if ok, err := annos.Pick(syncDetails); err == nil && ok {
-		syncID = syncDetails.GetId()
-	}
-
-	err := c.getResourceObject(ctx, request.ResourceId, ret, syncID)
+	syncId, err := annotations.GetSyncIdFromAnnotations(request.GetAnnotations())
 	if err != nil {
-		return nil, fmt.Errorf("error fetching resource '%s': %w", request.ResourceId, err)
+		return nil, fmt.Errorf("error getting sync id from annotations for resource '%s': %w", request.GetResourceId(), err)
+	}
+	err = c.getResourceObject(ctx, request.GetResourceId(), ret, syncId)
+	if err != nil {
+		return nil, fmt.Errorf("error fetching resource '%s': %w", request.GetResourceId(), err)
 	}
 
-	return &reader_v2.ResourcesReaderServiceGetResourceResponse{
+	return reader_v2.ResourcesReaderServiceGetResourceResponse_builder{
 		Resource: ret,
-	}, nil
+	}.Build(), nil
 }
 
 func (c *C1File) PutResources(ctx context.Context, resourceObjs ...*v2.Resource) error {
-	err := c.db.WithTx(func(tx *goqu.TxDatabase) error {
-		err := bulkPutConnectorObjectTx(ctx, c, tx, resources.Name(),
-			func(resource *v2.Resource) (goqu.Record, error) {
-				fields := goqu.Record{
-					"resource_type_id": resource.Id.ResourceType,
-					"external_id":      fmt.Sprintf("%s:%s", resource.Id.ResourceType, resource.Id.Resource),
-				}
+	ctx, span := tracer.Start(ctx, "C1File.PutResources")
+	defer span.End()
 
-				if resource.ParentResourceId != nil {
-					fields["parent_resource_type_id"] = resource.ParentResourceId.ResourceType
-					fields["parent_resource_id"] = resource.ParentResourceId.Resource
-				}
-				return fields, nil
-			},
-			resourceObjs...,
-		)
-		if err != nil {
-			return err
-		}
-		return nil
-	})
+	return c.putResourcesInternal(ctx, bulkPutConnectorObject, resourceObjs...)
+}
+
+func (c *C1File) PutResourcesIfNewer(ctx context.Context, resourceObjs ...*v2.Resource) error {
+	ctx, span := tracer.Start(ctx, "C1File.PutResourcesIfNewer")
+	defer span.End()
+
+	return c.putResourcesInternal(ctx, bulkPutConnectorObjectIfNewer, resourceObjs...)
+}
+
+type resourcePutFunc func(context.Context, *C1File, string, func(m *v2.Resource) (goqu.Record, error), ...*v2.Resource) error
+
+func (c *C1File) putResourcesInternal(ctx context.Context, f resourcePutFunc, resourceObjs ...*v2.Resource) error {
+	if c.readOnly {
+		return ErrReadOnly
+	}
+
+	err := f(ctx, c, resources.Name(),
+		func(resource *v2.Resource) (goqu.Record, error) {
+			fields := goqu.Record{
+				"resource_type_id": resource.GetId().GetResourceType(),
+				"external_id":      fmt.Sprintf("%s:%s", resource.GetId().GetResourceType(), resource.GetId().GetResource()),
+			}
+
+			// If we bulk insert some resources with parent ids and some without, goqu errors because of the different number of fields.
+			if !resource.HasParentResourceId() {
+				fields["parent_resource_type_id"] = nil
+				fields["parent_resource_id"] = nil
+			} else {
+				fields["parent_resource_type_id"] = resource.GetParentResourceId().GetResourceType()
+				fields["parent_resource_id"] = resource.GetParentResourceId().GetResource()
+			}
+			return fields, nil
+		},
+		resourceObjs...,
+	)
 	if err != nil {
 		return err
 	}

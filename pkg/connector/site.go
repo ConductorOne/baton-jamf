@@ -7,8 +7,6 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
-	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
@@ -37,10 +35,10 @@ func siteResource(site *jamf.Site, parentResourceID *v2.ResourceId) (*v2.Resourc
 	return ret, nil
 }
 
-func (g *siteResourceType) List(ctx context.Context, parentId *v2.ResourceId, token *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (g *siteResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	sites, err := g.client.GetSites(ctx)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("jamf-connector: failed to list sites: %w", err)
+		return nil, nil, fmt.Errorf("jamf-connector: failed to list sites: %w", err)
 	}
 
 	var rv []*v2.Resource
@@ -48,15 +46,15 @@ func (g *siteResourceType) List(ctx context.Context, parentId *v2.ResourceId, to
 		siteCopy := site
 		ur, err := siteResource(&siteCopy, parentId)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		rv = append(rv, ur)
 	}
 
-	return rv, "", nil, nil
+	return rv, nil, nil
 }
 
-func (g *siteResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+func (g *siteResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	var rv []*v2.Entitlement
 
 	assigmentOptions := []ent.EntitlementOption{
@@ -68,22 +66,22 @@ func (g *siteResourceType) Entitlements(_ context.Context, resource *v2.Resource
 	en := ent.NewAssignmentEntitlement(resource, memberEntitlement, assigmentOptions...)
 	rv = append(rv, en)
 
-	return rv, "", nil, nil
+	return rv, nil, nil
 }
 
-func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, token *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	var rv []*v2.Grant
 
 	users, err := g.client.GetUsers(ctx)
 	if err != nil {
-		return rv, "", nil, err
+		return rv, nil, err
 	}
 
 	for _, user := range users {
 		userCopy := user
 		ur, err := userResource(userCopy, resource.Id)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		for _, site := range user.Sites {
 			stringId := strconv.Itoa(site.Site.ID)
@@ -96,14 +94,14 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 
 	userGroups, err := g.client.GetUserGroups(ctx)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	for _, userGroup := range userGroups {
 		userGroupCopy := userGroup
 		ugr, err := userGroupResource(userGroupCopy, resource.Id)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		stringId := strconv.Itoa(userGroup.Site.ID)
 		if stringId == resource.Id.Resource {
@@ -114,14 +112,14 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 
 	userAccounts, groups, err := g.client.GetAccounts(ctx)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	for _, userAccount := range userAccounts {
 		userAccountCopy := userAccount
 		uar, err := userAccountResource(userAccountCopy, resource.Id)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		stringId := strconv.Itoa(userAccount.Site.ID)
 		if stringId == resource.Id.Resource {
@@ -134,7 +132,7 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 		groupCopy := group
 		gr, err := groupResource(groupCopy, resource.Id)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		stringId := strconv.Itoa(group.Site.ID)
 		if stringId == resource.Id.Resource {
@@ -143,7 +141,7 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, to
 		}
 	}
 
-	return rv, "", nil, nil
+	return rv, nil, nil
 }
 
 func siteBuilder(client *jamf.Client) *siteResourceType {

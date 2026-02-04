@@ -7,8 +7,6 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
-	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
@@ -46,10 +44,10 @@ func userGroupResource(group *jamf.UserGroup, parentResourceID *v2.ResourceId) (
 	return ret, nil
 }
 
-func (g *userGroupResourceType) List(ctx context.Context, parentId *v2.ResourceId, token *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (g *userGroupResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	userGroups, err := g.client.GetUserGroups(ctx)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("jamf-connector: failed to list user groups: %w", err)
+		return nil, nil, fmt.Errorf("jamf-connector: failed to list user groups: %w", err)
 	}
 
 	var rv []*v2.Resource
@@ -57,15 +55,15 @@ func (g *userGroupResourceType) List(ctx context.Context, parentId *v2.ResourceI
 		userGroupCopy := userGroup
 		ur, err := userGroupResource(userGroupCopy, parentId)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		rv = append(rv, ur)
 	}
 
-	return rv, "", nil, nil
+	return rv, nil, nil
 }
 
-func (g *userGroupResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+func (g *userGroupResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	var rv []*v2.Entitlement
 
 	assigmentOptions := []ent.EntitlementOption{
@@ -77,34 +75,34 @@ func (g *userGroupResourceType) Entitlements(_ context.Context, resource *v2.Res
 	en := ent.NewAssignmentEntitlement(resource, memberEntitlement, assigmentOptions...)
 	rv = append(rv, en)
 
-	return rv, "", nil, nil
+	return rv, nil, nil
 }
 
-func (g *userGroupResourceType) Grants(ctx context.Context, resource *v2.Resource, token *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+func (g *userGroupResourceType) Grants(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	var rv []*v2.Grant
 
 	userGroupId, err := strconv.Atoi(resource.Id.Resource)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	group, err := g.client.GetUserGroupDetails(ctx, userGroupId)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	for _, user := range group.Users {
 		userCopy := user
 		ur, err := userResource(&userCopy, resource.Id)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 
 		grant := grant.NewGrant(resource, memberEntitlement, ur.Id)
 		rv = append(rv, grant)
 	}
 
-	return rv, "", nil, nil
+	return rv, nil, nil
 }
 
 func userGroupBuilder(client *jamf.Client) *userGroupResourceType {

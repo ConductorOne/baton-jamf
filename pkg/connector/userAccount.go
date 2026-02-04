@@ -6,8 +6,6 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
-	"github.com/conductorone/baton-sdk/pkg/annotations"
-	"github.com/conductorone/baton-sdk/pkg/pagination"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
@@ -57,10 +55,10 @@ func userAccountResource(account *jamf.UserAccount, parentResourceID *v2.Resourc
 	return ret, nil
 }
 
-func (o *userAccountResourceType) List(ctx context.Context, parentId *v2.ResourceId, token *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (o *userAccountResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	userAccounts, _, err := o.client.GetAccounts(ctx)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("jamf-connector: failed to list accounts: %w", err)
+		return nil, nil, fmt.Errorf("jamf-connector: failed to list accounts: %w", err)
 	}
 
 	var rv []*v2.Resource
@@ -69,22 +67,22 @@ func (o *userAccountResourceType) List(ctx context.Context, parentId *v2.Resourc
 		userCopy := user
 		ur, err := userAccountResource(userCopy, parentId)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		rv = append(rv, ur)
 	}
 
-	return rv, "", nil, nil
+	return rv, nil, nil
 }
 
-func (o *userAccountResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
-	return nil, "", nil, nil
+func (o *userAccountResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	return nil, nil, nil
 
 	// TODO - access level entitlements & grants
 }
 
-func (o *userAccountResourceType) Grants(_ context.Context, _ *v2.Resource, _ *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	return nil, "", nil, nil
+func (o *userAccountResourceType) Grants(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	return nil, nil, nil
 }
 
 func userAccountBuilder(client *jamf.Client) *userAccountResourceType {
