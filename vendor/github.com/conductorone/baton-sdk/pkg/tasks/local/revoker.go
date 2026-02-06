@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	v1 "github.com/conductorone/baton-sdk/pb/c1/connectorapi/baton/v1"
 	"github.com/conductorone/baton-sdk/pkg/provisioner"
 	"github.com/conductorone/baton-sdk/pkg/tasks"
@@ -29,14 +31,17 @@ func (m *localRevoker) ShouldDebug() bool {
 func (m *localRevoker) Next(ctx context.Context) (*v1.Task, time.Duration, error) {
 	var task *v1.Task
 	m.o.Do(func() {
-		task = &v1.Task{
-			TaskType: &v1.Task_Revoke{},
-		}
+		task = v1.Task_builder{
+			Revoke: &v1.Task_RevokeTask{},
+		}.Build()
 	})
 	return task, 0, nil
 }
 
 func (m *localRevoker) Process(ctx context.Context, task *v1.Task, cc types.ConnectorClient) error {
+	ctx, span := tracer.Start(ctx, "localRevoker.Process", trace.WithNewRoot())
+	defer span.End()
+
 	granter := provisioner.NewRevoker(cc, m.dbPath, m.grantID)
 
 	err := granter.Run(ctx)
