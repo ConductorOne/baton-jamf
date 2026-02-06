@@ -20,9 +20,12 @@ var (
 		field.WithDescription("URL of your Jamf Pro instance"),
 		field.WithRequired(true),
 	)
-	Configuration = field.NewConfiguration([]field.SchemaField{
+	ConfigurationFields = []field.SchemaField{
 		UsernameField,
 		PasswordField,
 		InstanceUrlField,
-	})
+	}
 )
+
+//go:generate go run ./gen
+var Config = field.NewConfiguration(ConfigurationFields)
