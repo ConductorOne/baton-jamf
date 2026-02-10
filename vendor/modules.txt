@@ -301,7 +301,7 @@ github.com/power-devops/perfstat
 # github.com/pquerna/xjwt v0.2.0
 ## explicit; go 1.20
 github.com/pquerna/xjwt
-# github.com/quasilyte/go-ruleguard/dsl v0.3.22
+# github.com/quasilyte/go-ruleguard/dsl v0.3.23
 ## explicit; go 1.15
 github.com/quasilyte/go-ruleguard/dsl
 github.com/quasilyte/go-ruleguard/dsl/types
