@@ -28,6 +28,9 @@ type listTicketSchemasTaskHandler struct {
 }
 
 func (c *listTicketSchemasTaskHandler) HandleTask(ctx context.Context) error {
+	ctx, span := tracer.Start(ctx, "listTicketSchemasTaskHandler.HandleTask")
+	defer span.End()
+
 	l := ctxzap.Extract(ctx)
 
 	t := c.task.GetListTicketSchemas()
@@ -41,9 +44,9 @@ func (c *listTicketSchemasTaskHandler) HandleTask(ctx context.Context) error {
 	var err error
 	pageToken := ""
 	for {
-		schemas, err := cc.ListTicketSchemas(ctx, &v2.TicketsServiceListTicketSchemasRequest{
+		schemas, err := cc.ListTicketSchemas(ctx, v2.TicketsServiceListTicketSchemasRequest_builder{
 			PageToken: pageToken,
-		})
+		}.Build())
 		if err != nil {
 			return err
 		}
@@ -78,10 +81,10 @@ func (c *listTicketSchemasTaskHandler) HandleTask(ctx context.Context) error {
 		return c.helpers.FinishTask(ctx, nil, nil, err)
 	}
 
-	resp := &v2.TicketsServiceListTicketSchemasResponse{
+	resp := v2.TicketsServiceListTicketSchemasResponse_builder{
 		List:          ticketSchemas,
 		NextPageToken: "",
-	}
+	}.Build()
 
 	return c.helpers.FinishTask(ctx, resp, resp.GetAnnotations(), nil)
 }
