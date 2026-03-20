@@ -1,0 +1,94 @@
+{
+  "@type":  "type.googleapis.com/c1.connector.v2.ConnectorCapabilities",
+  "resourceTypeCapabilities":  [
+    {
+      "resourceType":  {
+        "id":  "group",
+        "displayName":  "Group",
+        "traits":  [
+          "TRAIT_GROUP"
+        ]
+      },
+      "capabilities":  [
+        "CAPABILITY_SYNC"
+      ],
+      "permissions":  {}
+    },
+    {
+      "resourceType":  {
+        "id":  "role",
+        "displayName":  "Role",
+        "traits":  [
+          "TRAIT_ROLE"
+        ]
+      },
+      "capabilities":  [
+        "CAPABILITY_SYNC"
+      ],
+      "permissions":  {}
+    },
+    {
+      "resourceType":  {
+        "id":  "site",
+        "displayName":  "Site"
+      },
+      "capabilities":  [
+        "CAPABILITY_SYNC"
+      ],
+      "permissions":  {}
+    },
+    {
+      "resourceType":  {
+        "id":  "user",
+        "displayName":  "User",
+        "traits":  [
+          "TRAIT_USER"
+        ],
+        "annotations":  [
+          {
+            "@type":  "type.googleapis.com/c1.connector.v2.SkipEntitlementsAndGrants"
+          }
+        ]
+      },
+      "capabilities":  [
+        "CAPABILITY_SYNC"
+      ],
+      "permissions":  {}
+    },
+    {
+      "resourceType":  {
+        "id":  "userAccount",
+        "displayName":  "User Account",
+        "traits":  [
+          "TRAIT_USER"
+        ],
+        "annotations":  [
+          {
+            "@type":  "type.googleapis.com/c1.connector.v2.SkipEntitlementsAndGrants"
+          }
+        ]
+      },
+      "capabilities":  [
+        "CAPABILITY_SYNC"
+      ],
+      "permissions":  {}
+    },
+    {
+      "resourceType":  {
+        "id":  "userGroup",
+        "displayName":  "User Group",
+        "traits":  [
+          "TRAIT_GROUP"
+        ]
+      },
+      "capabilities":  [
+        "CAPABILITY_SYNC"
+      ],
+      "permissions":  {}
+    }
+  ],
+  "connectorCapabilities":  [
+    "CAPABILITY_SYNC"
+  ],
+  "credentialDetails":  {}
+}
