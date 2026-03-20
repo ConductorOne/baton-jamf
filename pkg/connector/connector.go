@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"reflect"
 
+	cfg "github.com/conductorone/baton-jamf/pkg/config"
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/cli"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
@@ -61,27 +63,27 @@ type Jamf struct {
 	client *jamf.Client
 }
 
-func New(ctx context.Context, username string, password string, instanceURL string) (*Jamf, error) {
+func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorbuilder.ConnectorBuilderV2, []connectorbuilder.Opt, error) {
 	httpClient, err := uhttp.NewClient(ctx, uhttp.WithLogger(true, ctxzap.Extract(ctx)))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	client := jamf.NewClient(
 		uhttp.NewBaseHttpClient(httpClient),
-		username,
-		password,
+		cc.Username,
+		cc.Password,
 		"",
-		instanceURL,
+		cc.InstanceUrl,
 	)
 
-	token, err := client.CreateBearerToken(ctx, username, password)
+	token, err := client.CreateBearerToken(ctx, cc.Username, cc.Password)
 	if err != nil {
-		return nil, fmt.Errorf("jamf-connector: failed to get token: %w", err)
+		return nil, nil, fmt.Errorf("jamf-connector: failed to get token: %w", err)
 	}
 	client.SetBearerToken(token)
 
-	return &Jamf{client: client}, nil
+	return &Jamf{client: client}, nil, nil
 }
 
 func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
@@ -103,8 +105,8 @@ func (j *Jamf) Validate(ctx context.Context) (annotations.Annotations, error) {
 	return nil, nil
 }
 
-func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
-	return []connectorbuilder.ResourceSyncer{
+func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncerV2 {
+	return []connectorbuilder.ResourceSyncerV2{
 		userBuilder(j.client),
 		groupBuilder(j.client),
 		userAccountBuilder(j.client),

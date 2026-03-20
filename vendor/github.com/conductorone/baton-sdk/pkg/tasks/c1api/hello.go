@@ -3,15 +3,17 @@ package c1api
 import (
 	"context"
 	"errors"
+	"runtime"
 	"runtime/debug"
+
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"github.com/shirou/gopsutil/v4/host"
+	"go.uber.org/zap"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	v1 "github.com/conductorone/baton-sdk/pb/c1/connectorapi/baton/v1"
 	"github.com/conductorone/baton-sdk/pkg/tasks"
 	"github.com/conductorone/baton-sdk/pkg/types"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"github.com/shirou/gopsutil/v3/host"
-	"go.uber.org/zap"
 )
 
 type helloHelpers interface {
@@ -33,11 +35,36 @@ func (c *helloTaskHandler) osInfo(ctx context.Context) (*v1.BatonServiceHelloReq
 		return nil, err
 	}
 
+	// The Hello message requires these fields to be set. If any are empty, the connector will fail to register with C1.
 	if info.VirtualizationSystem == "" {
 		info.VirtualizationSystem = "none"
 	}
 
-	return &v1.BatonServiceHelloRequest_OSInfo{
+	if info.Hostname == "" {
+		info.Hostname = "unknown"
+	}
+
+	if info.Platform == "" {
+		info.Platform = info.OS
+	}
+
+	if info.PlatformFamily == "" {
+		info.PlatformFamily = info.Platform
+	}
+
+	if info.KernelVersion == "" {
+		info.KernelVersion = "unknown"
+	}
+
+	if info.PlatformVersion == "" {
+		info.PlatformVersion = info.KernelVersion
+	}
+
+	if info.KernelArch == "" {
+		info.KernelArch = runtime.GOARCH
+	}
+
+	return v1.BatonServiceHelloRequest_OSInfo_builder{
 		Hostname:             info.Hostname,
 		Os:                   info.OS,
 		Platform:             info.Platform,
@@ -46,26 +73,48 @@ func (c *helloTaskHandler) osInfo(ctx context.Context) (*v1.BatonServiceHelloReq
 		KernelVersion:        info.KernelVersion,
 		KernelArch:           info.KernelArch,
 		VirtualizationSystem: info.VirtualizationSystem,
-	}, nil
+	}.Build(), nil
 }
 
 func (c *helloTaskHandler) buildInfo(ctx context.Context) *v1.BatonServiceHelloRequest_BuildInfo {
 	l := ctxzap.Extract(ctx)
+	buildInfo := v1.BatonServiceHelloRequest_BuildInfo_builder{
+		LangVersion:    "0.0.0",
+		Package:        "/dummy/path",
+		PackageVersion: "0.0.0",
+	}.Build()
 
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
 		l.Error("failed to get build info")
-		return &v1.BatonServiceHelloRequest_BuildInfo{}
+		return buildInfo
 	}
 
-	return &v1.BatonServiceHelloRequest_BuildInfo{
-		LangVersion:    bi.GoVersion,
-		Package:        bi.Main.Path,
-		PackageVersion: bi.Main.Version,
+	if bi.Main.Path == "" {
+		l.Warn("missing build info Main.path")
+	} else {
+		buildInfo.SetPackage(bi.Main.Path)
 	}
+
+	if bi.Main.Version == "" {
+		l.Warn("missing build info Main.version")
+	} else {
+		buildInfo.SetPackageVersion(bi.Main.Version)
+	}
+
+	if bi.GoVersion == "" {
+		l.Warn("missing build info GoVersion")
+	} else {
+		buildInfo.SetLangVersion(bi.GoVersion)
+	}
+
+	return buildInfo
 }
 
 func (c *helloTaskHandler) HandleTask(ctx context.Context) error {
+	ctx, span := tracer.Start(ctx, "helloTaskHandler.HandleTask")
+	defer span.End()
+
 	if c.task == nil {
 		return errors.New("cannot handle task: task is nil")
 	}
@@ -87,12 +136,12 @@ func (c *helloTaskHandler) HandleTask(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.helpers.HelloClient().Hello(ctx, &v1.BatonServiceHelloRequest{
+	_, err = c.helpers.HelloClient().Hello(ctx, v1.BatonServiceHelloRequest_builder{
 		TaskId:            taskID,
 		BuildInfo:         c.buildInfo(ctx),
 		OsInfo:            osInfo,
 		ConnectorMetadata: mdResp.GetMetadata(),
-	})
+	}.Build())
 	if err != nil {
 		l.Error("failed while sending hello", zap.Error(err))
 		return err
