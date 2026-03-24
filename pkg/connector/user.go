@@ -26,6 +26,8 @@ func userResource(user *jamf.User, parentResourceID *v2.ResourceId) (*v2.Resourc
 		"last_name":  lastName,
 		"login":      user.Email,
 		"user_id":    fmt.Sprintf("user:%d", user.ID),
+		"name":       user.Name,
+		"full_name":  user.FullName,
 	}
 
 	userTraitOptions := []rs.UserTraitOption{
