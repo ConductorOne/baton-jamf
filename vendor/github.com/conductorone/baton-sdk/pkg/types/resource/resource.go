@@ -219,6 +219,68 @@ func WithSecretTrait(opts ...SecretTraitOption) ResourceOption {
 	}
 }
 
+func WithManagedDeviceTrait(opts ...ManagedDeviceTraitOption) ResourceOption {
+	return func(r *v2.Resource) error {
+		rt := &v2.ManagedDeviceTrait{}
+
+		annos := annotations.Annotations(r.GetAnnotations())
+		_, err := annos.Pick(rt)
+		if err != nil {
+			return err
+		}
+
+		for _, o := range opts {
+			err := o(rt)
+			if err != nil {
+				return err
+			}
+		}
+
+		annos.Update(rt)
+		r.SetAnnotations(annos)
+
+		return nil
+	}
+}
+
+// WithNHIType adds or updates a NonHumanIdentityTrait annotation on a
+// resource, marking it as a non-human identity. It is kind-agnostic and may
+// be combined with any resource trait (e.g. TRAIT_APP or TRAIT_ROLE).
+func WithNHIType(nhiType v2.NonHumanIdentityTrait_NhiType, detail string) ResourceOption {
+	return func(r *v2.Resource) error {
+		nhi := &v2.NonHumanIdentityTrait{}
+
+		annos := annotations.Annotations(r.GetAnnotations())
+		_, err := annos.Pick(nhi)
+		if err != nil {
+			return err
+		}
+
+		nhi.SetNhiType(nhiType)
+		nhi.SetNhiDetail(detail)
+
+		annos.Update(nhi)
+		r.SetAnnotations(annos)
+
+		return nil
+	}
+}
+
+// GetNonHumanIdentityTrait returns the NonHumanIdentityTrait from a resource's
+// annotations.
+func GetNonHumanIdentityTrait(resource *v2.Resource) (*v2.NonHumanIdentityTrait, error) {
+	ret := &v2.NonHumanIdentityTrait{}
+	annos := annotations.Annotations(resource.GetAnnotations())
+	ok, err := annos.Pick(ret)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("non-human identity trait was not found on resource")
+	}
+	return ret, nil
+}
+
 // WithAliases sets the aliases id for a resource.
 func WithAliases(aliases ...string) ResourceOption {
 	return func(r *v2.Resource) error {
@@ -435,6 +497,23 @@ func NewSecretResource(
 	opts ...ResourceOption,
 ) (*v2.Resource, error) {
 	opts = append(opts, WithSecretTrait(traitOpts...))
+
+	ret, err := NewResource(name, resourceType, objectID, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return ret, nil
+}
+
+func NewManagedDeviceResource(
+	name string,
+	resourceType *v2.ResourceType,
+	objectID interface{},
+	traitOpts []ManagedDeviceTraitOption,
+	opts ...ResourceOption,
+) (*v2.Resource, error) {
+	opts = append(opts, WithManagedDeviceTrait(traitOpts...))
 
 	ret, err := NewResource(name, resourceType, objectID, opts...)
 	if err != nil {

@@ -57,6 +57,14 @@ var (
 			v2.ResourceType_TRAIT_ROLE,
 		},
 	}
+	resourceTypeManagedDevice = &v2.ResourceType{
+		Id:          "managedDevice",
+		DisplayName: "Managed Device",
+		Traits: []v2.ResourceType_Trait{
+			v2.ResourceType_TRAIT_MANAGED_DEVICE,
+		},
+		Annotations: annotationsForManagedDeviceResourceType(),
+	}
 )
 
 type Jamf struct {
@@ -89,7 +97,7 @@ func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorb
 func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
 	return &v2.ConnectorMetadata{
 		DisplayName: "Jamf",
-		Description: "Connector syncing groups, users, user accounts, user groups, sites, and roles from Jamf Pro to Baton",
+		Description: "Connector syncing groups, users, user accounts, user groups, sites, roles, and managed devices from Jamf Pro to Baton",
 	}, nil
 }
 
@@ -113,5 +121,6 @@ func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceS
 		userGroupBuilder(j.client),
 		siteBuilder(j.client),
 		roleBuilder(j.client),
+		managedDeviceBuilder(j.client),
 	}
 }

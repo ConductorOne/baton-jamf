@@ -8,6 +8,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/crypto"
 	"github.com/conductorone/baton-sdk/pkg/types/tasks"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -54,7 +55,8 @@ type OldAccountManager interface {
 
 func (b *builder) CreateAccount(ctx context.Context, request *v2.CreateAccountRequest) (*v2.CreateAccountResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.CreateAccount")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.CreateAccountType
@@ -62,7 +64,7 @@ func (b *builder) CreateAccount(ctx context.Context, request *v2.CreateAccountRe
 
 	if len(b.accountManagers) == 0 {
 		l.Error("error: connector does not have account manager configured")
-		err := status.Error(codes.Unimplemented, "connector does not have account manager configured")
+		err = status.Error(codes.Unimplemented, "connector does not have account manager configured")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -80,7 +82,7 @@ func (b *builder) CreateAccount(ctx context.Context, request *v2.CreateAccountRe
 			var ok bool
 			accountManager, ok = b.accountManagers["user"]
 			if !ok {
-				err := status.Error(codes.Unimplemented, "connector has multiple account managers configured, but no resource type specified, and no default account manager configured")
+				err = status.Error(codes.Unimplemented, "connector has multiple account managers configured, but no resource type specified, and no default account manager configured")
 				b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 				return nil, err
 			}
@@ -93,7 +95,7 @@ func (b *builder) CreateAccount(ctx context.Context, request *v2.CreateAccountRe
 		accountManager, ok = b.accountManagers[request.GetResourceTypeId()]
 		if !ok {
 			l.Error("error: connector does not have account manager configured")
-			err := status.Errorf(codes.Unimplemented, "connector does not have account manager configured for resource type: %s", request.GetResourceTypeId())
+			err = status.Errorf(codes.Unimplemented, "connector does not have account manager configured for resource type: %s", request.GetResourceTypeId())
 			b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 			return nil, err
 		}
@@ -122,7 +124,8 @@ func (b *builder) CreateAccount(ctx context.Context, request *v2.CreateAccountRe
 
 	var encryptedDatas []*v2.EncryptedData
 	for _, plaintextCredential := range plaintexts {
-		encryptedData, err := pkem.Encrypt(ctx, plaintextCredential)
+		var encryptedData []*v2.EncryptedData
+		encryptedData, err = pkem.Encrypt(ctx, plaintextCredential)
 		if err != nil {
 			b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 			return nil, err
@@ -145,7 +148,7 @@ func (b *builder) CreateAccount(ctx context.Context, request *v2.CreateAccountRe
 	case *v2.CreateAccountResponse_InProgressResult:
 		rv.SetInProgress(proto.ValueOrDefault(r))
 	default:
-		err := status.Error(codes.Unimplemented, fmt.Sprintf("unknown result type: %T", result))
+		err = status.Error(codes.Unimplemented, fmt.Sprintf("unknown result type: %T", result))
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}

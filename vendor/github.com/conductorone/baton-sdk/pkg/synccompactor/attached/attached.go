@@ -3,6 +3,7 @@ package attached
 import (
 	"context"
 	"fmt"
+	"time"
 
 	reader_v2 "github.com/conductorone/baton-sdk/pb/c1/reader/v2"
 	"github.com/conductorone/baton-sdk/pkg/connectorstore"
@@ -11,16 +12,32 @@ import (
 	"go.uber.org/zap"
 )
 
+// Compactor merges data from an applied sync into a base sync using SQL
+// ATTACH DATABASE. Both stores must be *dotc1z.C1File (SQLite-backed).
+// An interface-level C1ZStore is accepted for caller convenience, but
+// Compact returns an error if either store is not SQLite-backed.
 type Compactor struct {
 	base    *dotc1z.C1File
 	applied *dotc1z.C1File
 }
 
-func NewAttachedCompactor(base *dotc1z.C1File, applied *dotc1z.C1File) *Compactor {
-	return &Compactor{
-		base:    base,
-		applied: applied,
+// NewAttachedCompactor builds a Compactor that merges `applied` into `base`.
+// Both arguments are C1ZStore; the constructor type-asserts to *dotc1z.C1File
+// and returns an error on mismatch. This keeps the public entry point clean
+// while confining the SQLite-specific concern to the attached package.
+func NewAttachedCompactor(base, applied dotc1z.C1ZStore) (*Compactor, error) {
+	baseFile, ok := dotc1z.AsSQLiteStore(base)
+	if !ok {
+		return nil, fmt.Errorf("attached compactor requires SQLite-backed base store, got %T", base)
 	}
+	appliedFile, ok := dotc1z.AsSQLiteStore(applied)
+	if !ok {
+		return nil, fmt.Errorf("attached compactor requires SQLite-backed applied store, got %T", applied)
+	}
+	return &Compactor{
+		base:    baseFile,
+		applied: appliedFile,
+	}, nil
 }
 
 func latestFinishedCompactableSync(ctx context.Context, f *dotc1z.C1File) (*reader_v2.SyncRun, error) {
@@ -45,7 +62,12 @@ func latestFinishedCompactableSync(ctx context.Context, f *dotc1z.C1File) (*read
 			continue
 		}
 
-		if best == nil || s.GetEndedAt().AsTime().After(best.GetEndedAt().AsTime()) {
+		sEndedAt := s.GetEndedAt().AsTime()
+		bestEndedAt := time.Time{}
+		if best != nil {
+			bestEndedAt = best.GetEndedAt().AsTime()
+		}
+		if best == nil || sEndedAt.After(bestEndedAt) || (sEndedAt.Equal(bestEndedAt) && s.GetId() > best.GetId()) {
 			best = s
 		}
 	}

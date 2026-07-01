@@ -20,9 +20,9 @@ import (
 	// return a copy of the default dialect, which is not what we want,
 	// and allocates a ton of memory.
 	_ "github.com/doug-martin/goqu/v9/dialect/sqlite3"
-	_ "github.com/glebarez/go-sqlite"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
+	_ "modernc.org/sqlite"
 )
 
 type DBCache struct {
@@ -153,7 +153,6 @@ func (d *DBCache) load(ctx context.Context) (*DBCache, error) {
 	}
 
 	file := filepath.Join(cacheDir, "lcache.db")
-	d.location = file
 
 	l.Debug("Opening database", zap.String("location", file))
 	rawDB, err := sql.Open("sqlite", file)
@@ -162,6 +161,9 @@ func (d *DBCache) load(ctx context.Context) (*DBCache, error) {
 	}
 	l.Debug("Opened database", zap.String("location", file))
 
+	// Commit all derived state together so a sql.Open failure can't leave the
+	// receiver half-initialised (location set, db nil).
+	d.location = file
 	d.db = goqu.New("sqlite3", rawDB)
 	d.rawDb = rawDB
 	return d, nil

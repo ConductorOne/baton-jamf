@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
@@ -15,7 +16,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorstore"
 	"github.com/conductorone/baton-sdk/pkg/crypto/providers"
 	"github.com/conductorone/baton-sdk/pkg/crypto/providers/jwk"
-	c1zmanager "github.com/conductorone/baton-sdk/pkg/dotc1z/manager"
+	"github.com/conductorone/baton-sdk/pkg/dotc1z"
 	"github.com/conductorone/baton-sdk/pkg/types"
 )
 
@@ -25,8 +26,7 @@ type Provisioner struct {
 	dbPath    string
 	connector types.ConnectorClient
 
-	store      connectorstore.Reader
-	c1zManager c1zmanager.Manager
+	store connectorstore.Reader
 
 	grantEntitlementID string
 	grantPrincipalID   string
@@ -70,7 +70,8 @@ func makeCrypto(ctx context.Context) (*v2.CredentialOptions, []*v2.EncryptionCon
 
 func (p *Provisioner) Run(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "Provisioner.Run")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	switch {
 	case p.revokeGrantID != "":
@@ -90,21 +91,14 @@ func (p *Provisioner) Run(ctx context.Context) error {
 
 func (p *Provisioner) loadStore(ctx context.Context) (connectorstore.Reader, error) {
 	ctx, span := tracer.Start(ctx, "Provisioner.loadStore")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	if p.store != nil {
 		return p.store, nil
 	}
 
-	if p.c1zManager == nil {
-		m, err := c1zmanager.New(ctx, p.dbPath)
-		if err != nil {
-			return nil, err
-		}
-		p.c1zManager = m
-	}
-
-	store, err := p.c1zManager.LoadC1Z(ctx)
+	store, err := dotc1z.NewStore(ctx, p.dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -115,23 +109,14 @@ func (p *Provisioner) loadStore(ctx context.Context) (connectorstore.Reader, err
 
 func (p *Provisioner) Close(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "Provisioner.Close")
-	defer span.End()
-
 	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 	if p.store != nil {
 		storeErr := p.store.Close(ctx)
 		if storeErr != nil {
 			err = errors.Join(err, storeErr)
 		}
 		p.store = nil
-	}
-
-	if p.c1zManager != nil {
-		managerErr := p.c1zManager.Close(ctx)
-		if managerErr != nil {
-			err = errors.Join(err, managerErr)
-		}
-		p.c1zManager = nil
 	}
 
 	if err != nil {
@@ -143,7 +128,8 @@ func (p *Provisioner) Close(ctx context.Context) error {
 
 func (p *Provisioner) grant(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "Provisioner.grant")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	store, err := p.loadStore(ctx)
 	if err != nil {
@@ -180,13 +166,12 @@ func (p *Provisioner) grant(ctx context.Context) error {
 	}
 
 	resource := v2.Resource_builder{
-		Id:          principal.GetResource().GetId(),
-		DisplayName: principal.GetResource().GetDisplayName(),
-		Annotations: principal.GetResource().GetAnnotations(),
-		Description: principal.GetResource().GetDescription(),
-		ExternalId:  principal.GetResource().GetExternalId(), //nolint:staticcheck // Deprecated.
-		// Omit parent resource ID so that behavior is the same as ConductorOne's provisioning mode
-		ParentResourceId: nil,
+		Id:               principal.GetResource().GetId(),
+		DisplayName:      principal.GetResource().GetDisplayName(),
+		Annotations:      principal.GetResource().GetAnnotations(),
+		Description:      principal.GetResource().GetDescription(),
+		ExternalId:       principal.GetResource().GetExternalId(), //nolint:staticcheck // Deprecated.
+		ParentResourceId: principal.GetResource().GetParentResourceId(),
 	}.Build()
 
 	_, err = p.connector.Grant(ctx, v2.GrantManagerServiceGrantRequest_builder{
@@ -202,7 +187,8 @@ func (p *Provisioner) grant(ctx context.Context) error {
 
 func (p *Provisioner) revoke(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "Provisioner.revoke")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	store, err := p.loadStore(ctx)
 	if err != nil {
@@ -243,13 +229,12 @@ func (p *Provisioner) revoke(ctx context.Context) error {
 	}
 
 	resource := v2.Resource_builder{
-		Id:          principal.GetResource().GetId(),
-		DisplayName: principal.GetResource().GetDisplayName(),
-		Annotations: principal.GetResource().GetAnnotations(),
-		Description: principal.GetResource().GetDescription(),
-		ExternalId:  principal.GetResource().GetExternalId(), //nolint:staticcheck // Deprecated.
-		// Omit parent resource ID so that behavior is the same as ConductorOne's provisioning mode
-		ParentResourceId: nil,
+		Id:               principal.GetResource().GetId(),
+		DisplayName:      principal.GetResource().GetDisplayName(),
+		Annotations:      principal.GetResource().GetAnnotations(),
+		Description:      principal.GetResource().GetDescription(),
+		ExternalId:       principal.GetResource().GetExternalId(), //nolint:staticcheck // Deprecated.
+		ParentResourceId: principal.GetResource().GetParentResourceId(),
 	}.Build()
 
 	_, err = p.connector.Revoke(ctx, v2.GrantManagerServiceRevokeRequest_builder{
@@ -269,7 +254,8 @@ func (p *Provisioner) revoke(ctx context.Context) error {
 
 func (p *Provisioner) createAccount(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "Provisioner.createAccount")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	l := ctxzap.Extract(ctx)
 	var emails []*v2.AccountInfo_Email
@@ -310,9 +296,10 @@ func (p *Provisioner) createAccount(ctx context.Context) error {
 
 func (p *Provisioner) deleteResource(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "Provisioner.deleteResource")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
-	_, err := p.connector.DeleteResource(ctx, v2.DeleteResourceRequest_builder{
+	_, err = p.connector.DeleteResource(ctx, v2.DeleteResourceRequest_builder{
 		ResourceId: v2.ResourceId_builder{
 			Resource:     p.deleteResourceID,
 			ResourceType: p.deleteResourceType,
@@ -326,7 +313,8 @@ func (p *Provisioner) deleteResource(ctx context.Context) error {
 
 func (p *Provisioner) rotateCredentials(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "Provisioner.rotateCredentials")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	l := ctxzap.Extract(ctx)
 

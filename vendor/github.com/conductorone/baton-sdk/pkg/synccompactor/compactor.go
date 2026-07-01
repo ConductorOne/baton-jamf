@@ -20,6 +20,8 @@ import (
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
+
+	"github.com/conductorone/baton-sdk/pkg/uotel"
 )
 
 var tracer = otel.Tracer("baton-sdk/pkg.synccompactor")
@@ -33,7 +35,7 @@ const (
 type Compactor struct {
 	compactorType CompactorType
 	entries       []*CompactableSync
-	compactedC1z  *dotc1z.C1File
+	compactedC1z  dotc1z.C1ZStore
 
 	tmpDir             string
 	destDir            string
@@ -41,6 +43,112 @@ type Compactor struct {
 	syncLimit          int
 	c1zOptions         []dotc1z.C1ZOption
 	skipGrantExpansion bool
+	// engine selects the storage engine for the compacted output.
+	// Empty means EngineSQLite (the default; behavior is unchanged and
+	// the output is byte-identical to the pre-engine-option compactor).
+	// EnginePebble produces a v3 Pebble c1z via a native record merge.
+	engine dotc1z.Engine
+	// pebbleMode optionally forces the Pebble merge strategy; the zero
+	// value (Auto) lets the compactor choose. See WithPebbleCompactorMode.
+	pebbleMode PebbleCompactorMode
+	// overlaySeenKeyLimit / overlayRecordChunkSize /
+	// overlayBufferFactor / overlayGateFraction optionally override
+	// the overlay merge tunables; zero means the merge defaults. See
+	// WithOverlaySeenKeyLimit / WithOverlayRecordChunkSize /
+	// WithOverlayBufferFactor / WithOverlayGateFraction.
+	overlaySeenKeyLimit    int64
+	overlayRecordChunkSize int
+	overlayBufferFactor    float64
+	overlayGateFraction    float64
+	// foldMaxWastePct optionally overrides the fold waste cutover
+	// (accumulated fold dead bytes as a percent of the base's live
+	// payload bytes, above which auto mode forces an overlay rebuild).
+	// Zero means the default; see WithFoldMaxWastePercent.
+	foldMaxWastePct int64
+	// decoderPool scopes v3 payload-decoder reuse to one Compact run:
+	// every source envelope open draws from it instead of constructing
+	// a fresh zstd decoder, and Compact closes it on the way out so no
+	// decoder buffers outlive the compaction (deliberately NOT a
+	// process-global pool — see dotc1z.WithDecoderPool).
+	decoderPool *dotc1z.EnvelopeDecoderPool
+}
+
+// resolvedEngine returns the configured engine, treating the zero value
+// as EngineSQLite. Compact calls inferEngineFromInputs first so the zero
+// value can follow existing c1z inputs instead of always producing SQLite.
+func (c *Compactor) resolvedEngine() dotc1z.Engine {
+	if c.engine == "" {
+		return dotc1z.EngineSQLite
+	}
+	return c.engine
+}
+
+// ErrEnginePolicyConflict is returned when the caller explicitly requests
+// SQLite output but one or more inputs are Pebble/v3 format. Pebble inputs
+// cannot be re-encoded as SQLite without a full data-layer conversion, so
+// the combination is rejected rather than silently downgrading.
+var ErrEnginePolicyConflict = errors.New("compactor: engine policy conflict: cannot compact Pebble input to SQLite output")
+
+// inferEngineFromInputs determines the output engine for a compaction run
+// when no engine was explicitly set by the caller (WithEngine).
+//
+// Policy (evaluated in order):
+//  1. Explicit engine set via WithEngine: honored, subject to the Pebble-input
+//     constraint below.
+//  2. Any input is Pebble/v3: output is Pebble, regardless of whether other
+//     inputs are SQLite/v1 (mixed inputs produce Pebble). SQLite inputs in a
+//     Pebble run are converted to Pebble automatically; callers are not
+//     required to pre-convert.
+//  3. All inputs are SQLite/v1: output is SQLite.
+//
+// Constraint: an explicit SQLite request (WithEngine(EngineSQLite)) when any
+// input is Pebble/v3 returns ErrEnginePolicyConflict.
+func (c *Compactor) inferEngineFromInputs() (dotc1z.Engine, error) {
+	hasPebble := false
+	hasSQLite := false
+	for _, entry := range c.entries {
+		if entry == nil || entry.FilePath == "" {
+			continue
+		}
+		f, err := os.Open(entry.FilePath) // #nosec G304 - compaction inputs are caller-provided c1z paths.
+		if err != nil {
+			return "", fmt.Errorf("infer compactor engine from %s: %w", entry.FilePath, err)
+		}
+		format, readErr := dotc1z.ReadHeaderFormat(f)
+		closeErr := f.Close()
+		if readErr != nil {
+			return "", fmt.Errorf("infer compactor engine from %s: %w", entry.FilePath, readErr)
+		}
+		if closeErr != nil {
+			return "", fmt.Errorf("infer compactor engine from %s: %w", entry.FilePath, closeErr)
+		}
+		switch format {
+		case dotc1z.C1ZFormatV1:
+			hasSQLite = true
+		case dotc1z.C1ZFormatV3:
+			hasPebble = true
+		default:
+			return "", fmt.Errorf("infer compactor engine from %s: unsupported c1z format %s", entry.FilePath, format)
+		}
+	}
+
+	// Explicit engine: validate and return.
+	if c.engine != "" {
+		if c.engine == dotc1z.EngineSQLite && hasPebble {
+			return "", fmt.Errorf("%w: caller requested SQLite but at least one input is Pebble/v3", ErrEnginePolicyConflict)
+		}
+		return c.engine, nil
+	}
+
+	// Auto-select: any Pebble input → Pebble output.
+	if hasPebble {
+		return dotc1z.EnginePebble, nil
+	}
+	if hasSQLite {
+		return dotc1z.EngineSQLite, nil
+	}
+	// No readable inputs: default to SQLite to preserve historical behavior.
+	return dotc1z.EngineSQLite, nil
 }
 
 type CompactableSync struct {
@@ -148,7 +256,8 @@ func NewCompactor(ctx context.Context, outputDir string, compactableSyncs []*Com
 
 func (c *Compactor) Compact(ctx context.Context) (*CompactableSync, error) {
 	ctx, span := tracer.Start(ctx, "Compactor.Compact")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 	if len(c.entries) < 2 {
 		return nil, nil
 	}
@@ -164,7 +273,6 @@ func (c *Compactor) Compact(ctx context.Context) (*CompactableSync, error) {
 	}
 
 	l := ctxzap.Extract(ctx)
-	var err error
 	select {
 	case <-runCtx.Done():
 		err = context.Cause(runCtx)
@@ -184,11 +292,68 @@ func (c *Compactor) Compact(ctx context.Context) (*CompactableSync, error) {
 	if c.syncLimit > 0 {
 		opts = append(opts, dotc1z.WithSyncLimit(c.syncLimit))
 	}
+	engine, err := c.inferEngineFromInputs()
+	if err != nil {
+		return nil, err
+	}
+	c.engine = engine
 
 	fileName := fmt.Sprintf("compacted-%s.c1z", c.entries[0].SyncID)
 	destFilePath := path.Join(c.tmpDir, fileName)
 
-	c.compactedC1z, err = dotc1z.NewC1ZFile(ctx, destFilePath, opts...)
+	// Resolve the Pebble strategy up front: an explicit
+	// BATON_EXPERIMENTAL_PEBBLE_COMPACTOR value forces a mode;
+	// otherwise the size gate picks fold (large base, small partials)
+	// or overlay (everything else); see resolvePebbleMode.
+	//
+	// In-place fold: the dest store starts as a copy of the base input
+	// and partials are merged into the base keyspace via keep-newer
+	// writes; the folded output is then re-keyed to a fresh sync id.
+	// The original base file is never mutated. See compactPebbleFold.
+	if c.resolvedEngine() == dotc1z.EnginePebble {
+		c.pebbleMode = c.resolvePebbleMode(ctx)
+	}
+	foldMode := c.pebbleMode == PebbleCompactorModeFold
+	if foldMode {
+		// Fold merges partials in place into a private copy of the base, so
+		// only the BASE must already be Pebble: converting the base would
+		// mean rewriting the whole base, which defeats fold's point. SQLite
+		// partials are fine — they are converted to Pebble inside the fold
+		// loop. When the base itself is SQLite/v1, fall back to the overlay
+		// path, which converts every input before merging.
+		baseFormat, ferr := readCompactionInputFormat(c.entries[0].FilePath)
+		if ferr != nil {
+			return nil, ferr
+		}
+		if baseFormat != dotc1z.C1ZFormatV3 {
+			foldMode = false
+			c.pebbleMode = PebbleCompactorModeOverlay
+		}
+	}
+	if foldMode {
+		if err = copyFileForFold(c.entries[0].FilePath, destFilePath); err != nil {
+			return nil, fmt.Errorf("fold: copy base input: %w", err)
+		}
+	}
+
+	if c.resolvedEngine() == dotc1z.EnginePebble {
+		// One payload-decoder pool for the whole compaction: the merge
+		// opens every source's envelope (selection + per-chunk unpack),
+		// and reusing one decoder across those opens avoids a fresh
+		// window allocation + worker spin-up per source. Closed when
+		// Compact returns so nothing is retained by the process after.
+		c.decoderPool = dotc1z.NewEnvelopeDecoderPool()
+		defer c.decoderPool.Close()
+		opts = append(opts, dotc1z.WithDecoderPool(c.decoderPool))
+	}
+
+	if c.resolvedEngine() == dotc1z.EnginePebble {
+		// Force the resolved engine last so a stray engine passed via
+		// WithC1ZOptions cannot mislabel the artifact.
+		c.compactedC1z, err = dotc1z.NewStore(ctx, destFilePath, append(opts, dotc1z.WithEngine(dotc1z.EnginePebble))...)
+	} else {
+		c.compactedC1z, err = dotc1z.NewStore(ctx, destFilePath, opts...)
+	}
 	if err != nil {
 		l.Error("doOneCompaction failed: could not create c1z file", zap.Error(err))
 		return nil, err
@@ -202,22 +367,57 @@ func (c *Compactor) Compact(ctx context.Context) (*CompactableSync, error) {
 			l.Error("compactor: error closing compacted c1z", zap.Error(err), zap.String("compacted_c1z_file", destFilePath))
 		}
 	}()
-	// Start new sync of type partial. If we compact syncs of other types, this sync type will be updated by attached.UpdateSync which is called by doOneCompaction().
-	newSyncId, err := c.compactedC1z.StartNewSync(ctx, connectorstore.SyncTypePartial, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to start new sync: %w", err)
-	}
-	err = c.compactedC1z.EndSync(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to end sync: %w", err)
-	}
-	l.Debug("new empty partial sync created", zap.String("sync_id", newSyncId))
-
-	// Base sync is c.entries[0], so compact in reverse order. That way we compact the biggest sync last.
-	for i := len(c.entries) - 1; i >= 0; i-- {
-		err = c.doOneCompaction(ctx, c.entries[i])
+	var newSyncId string
+	switch {
+	case foldMode:
+		// In-place fold: no fresh sync — the output adopts the base
+		// sync's id and partials merge into its keyspace.
+		newSyncId, err = c.compactPebbleFold(runCtx)
 		if err != nil {
-			return nil, fmt.Errorf("failed to compact sync %s: %w", c.entries[i].SyncID, err)
+			if cause := context.Cause(runCtx); errors.Is(cause, context.DeadlineExceeded) && c.runDuration > 0 && ctx.Err() == nil {
+				l.Info("compaction run duration has expired, exiting compaction early")
+				return nil, fmt.Errorf("compaction run duration has expired: %w", cause)
+			}
+			return nil, fmt.Errorf("failed to compact (pebble fold): %w", err)
+		}
+	case c.resolvedEngine() == dotc1z.EnginePebble:
+		newSyncId, err = c.runPebbleRebuild(ctx, runCtx)
+		if err != nil {
+			if cause := context.Cause(runCtx); errors.Is(cause, context.DeadlineExceeded) && c.runDuration > 0 && ctx.Err() == nil {
+				l.Info("compaction run duration has expired, exiting compaction early")
+				return nil, fmt.Errorf("compaction run duration has expired: %w", cause)
+			}
+			return nil, fmt.Errorf("failed to compact (pebble): %w", err)
+		}
+	default:
+		// Start new sync of type partial. If we compact syncs of other types, this sync type will be updated by attached.UpdateSync which is called by doOneCompaction().
+		newSyncId, err = c.compactedC1z.StartNewSync(ctx, connectorstore.SyncTypePartial, "")
+		if err != nil {
+			return nil, fmt.Errorf("failed to start new sync: %w", err)
+		}
+		if err = c.compactedC1z.EndSync(ctx); err != nil {
+			return nil, fmt.Errorf("failed to end sync: %w", err)
+		}
+		l.Debug("new empty partial sync created", zap.String("sync_id", newSyncId))
+		// Base sync is c.entries[0], so compact in reverse order. That way we compact the biggest sync last.
+		// Pass runCtx (not the outer ctx) so c.runDuration actually bounds the loop. Without this, the
+		// deadline set on runCtx only gates the pre-flight check above and individual doOneCompaction
+		// calls run under the unbounded parent ctx.
+		for i := len(c.entries) - 1; i >= 0; i-- {
+			err = c.doOneCompaction(runCtx, c.entries[i])
+			if err != nil {
+				// When runCtx fires due to c.runDuration, surface the same clean message the pre-flight
+				// check uses instead of bubbling a bare context.DeadlineExceeded out of the inner sqlite
+				// operations. The error is still returned so callers can decide whether to retry.
+				if cause := context.Cause(runCtx); errors.Is(cause, context.DeadlineExceeded) && c.runDuration > 0 && ctx.Err() == nil {
+					l.Info("compaction run duration has expired, exiting compaction early",
+						zap.String("sync_id", c.entries[i].SyncID),
+						zap.Int("syncs_remaining", i),
+					)
+					return nil, fmt.Errorf("compaction run duration has expired: %w", cause)
+				}
+				return nil, fmt.Errorf("failed to compact sync %s: %w", c.entries[i].SyncID, err)
+			}
 		}
 	}
 
@@ -253,6 +453,11 @@ func (c *Compactor) Compact(ctx context.Context) (*CompactableSync, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to expand grants: %w", err)
 		}
+		// expandGrants internally wraps the compactedC1z in a syncer whose
+		// Close() closes the store. Clear our pointer so the deferred Close
+		// at the top of Compact doesn't call Close a second time. Close is
+		// idempotent today, but this keeps the ownership handoff explicit.
+		c.compactedC1z = nil
 	}
 
 	// Move last compacted file to the destination dir
@@ -290,19 +495,38 @@ func cpFile(ctx context.Context, sourcePath string, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create destination file: %w", err)
 	}
-	defer destination.Close()
+	destinationClosed := false
+	defer func() {
+		if !destinationClosed {
+			_ = destination.Close()
+		}
+	}()
 
 	_, err = io.Copy(destination, source)
 	if err != nil {
 		return fmt.Errorf("failed to copy file: %w", err)
 	}
 
+	// Sync + Close + err-check so write-back failures (out-of-disk,
+	// IO error, quota exhaustion) surface here rather than being
+	// silently discarded by the deferred Close after the function
+	// has reported success. Required because the compacted file is
+	// the canonical artifact downstream consumers read.
+	if err := destination.Sync(); err != nil {
+		return fmt.Errorf("failed to sync destination file: %w", err)
+	}
+	if err := destination.Close(); err != nil {
+		return fmt.Errorf("failed to close destination file: %w", err)
+	}
+	destinationClosed = true
+
 	return nil
 }
 
 func (c *Compactor) doOneCompaction(ctx context.Context, cs *CompactableSync) error {
 	ctx, span := tracer.Start(ctx, "Compactor.doOneCompaction")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 	l := ctxzap.Extract(ctx)
 	l.Info(
 		"running compaction",
@@ -311,7 +535,7 @@ func (c *Compactor) doOneCompaction(ctx context.Context, cs *CompactableSync) er
 		zap.String("tmp_dir", c.tmpDir),
 	)
 
-	applyFile, err := dotc1z.NewC1ZFile(
+	applyFile, err := dotc1z.NewStore(
 		ctx,
 		cs.FilePath,
 		dotc1z.WithTmpDir(c.tmpDir),
@@ -328,7 +552,10 @@ func (c *Compactor) doOneCompaction(ctx context.Context, cs *CompactableSync) er
 		}
 	}()
 
-	runner := attached.NewAttachedCompactor(c.compactedC1z, applyFile)
+	runner, err := attached.NewAttachedCompactor(c.compactedC1z, applyFile)
+	if err != nil {
+		return fmt.Errorf("failed to create attached compactor: %w", err)
+	}
 	if err := runner.Compact(ctx); err != nil {
 		l.Error("error running compaction", zap.Error(err), zap.String("apply_file", cs.FilePath))
 		return err

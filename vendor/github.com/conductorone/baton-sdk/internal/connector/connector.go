@@ -70,8 +70,18 @@ func (c *connectorClient) SetSessionStoreSetter(sessionStoreSetter sessions.SetS
 
 func (c *connectorClient) SetSessionStore(ctx context.Context, store sessions.SessionStore) {
 	if c.sessionStoreSetter == nil {
+		// Demoted from Warn to Debug: this path is the normal case for
+		// any connector that didn't opt into session storage (i.e.,
+		// wrapper.run never set cw.SessionServer to non-nil, so
+		// SetSessionStoreSetter received nil at startup). The syncer
+		// still calls SetSessionStore unconditionally on every sync, so
+		// at Warn level this fires once per sync per non-session-store
+		// connector — pure noise that masked real warnings downstream.
+		// Debug keeps the "you forgot to wire this" signal available for
+		// developers running at debug level without polluting prod logs.
+		// See https://github.com/ConductorOne/baton-sdk/issues/907.
 		l := ctxzap.Extract(ctx)
-		l.Warn("connectorClient's session store is nil")
+		l.Debug("connectorClient's session store is nil — connector did not opt into session storage")
 		return
 	}
 	c.sessionStoreSetter.SetSessionStore(ctx, store)
@@ -254,25 +264,15 @@ func (cw *wrapper) runServer(ctx context.Context, serverCred *tlsV1.Credential) 
 	}
 	var sessionListenerPort uint32
 	if cw.sessionStoreEnabled {
-		var sessionListenerFile *os.File
-		sessionListenerPort, sessionListenerFile, err = cw.setupListener(ctx)
+		var sessionListener net.Listener
+		sessionListenerPort, sessionListener, err = cw.setupSessionListener(ctx)
 		if err != nil {
 			return 0, fmt.Errorf("failed to setup session listener: %w", err)
 		}
 
-		if sessionListenerFile == nil {
-			return 0, fmt.Errorf("session listener file is nil")
-		}
-
-		// Start the session cache server on the cache listener
-		sessionListener, err := net.FileListener(sessionListenerFile)
-		if err != nil {
-			_ = sessionListenerFile.Close()
-			return 0, fmt.Errorf("failed to create session listener: %w", err)
-		}
 		tlsConfig, err := utls2.ListenerConfig(ctx, serverCred)
 		if err != nil {
-			_ = sessionListenerFile.Close()
+			_ = sessionListener.Close()
 			return 0, fmt.Errorf("failed to create session listener config: %w", err)
 		}
 
@@ -281,7 +281,7 @@ func (cw *wrapper) runServer(ctx context.Context, serverCred *tlsV1.Credential) 
 		server := session.NewGRPCSessionServer()
 		cw.SessionServer = server
 		go func() {
-			defer sessionListenerFile.Close()
+			defer sessionListener.Close()
 			serverErr := session.StartGRPCSessionServerWithOptions(ctx, sessionListener, server,
 				grpc.Creds(credentials.NewTLS(tlsConfig)),
 				grpc.ChainUnaryInterceptor(ugrpc.UnaryServerInterceptor(ctx)...),
@@ -314,8 +314,7 @@ func (cw *wrapper) runServer(ctx context.Context, serverCred *tlsV1.Credential) 
 		return 0, err
 	}
 
-	//nolint:gosec // arg0 is the current executable path; args are passed directly without a shell.
-	cmd := exec.CommandContext(ctx, arg0, args...)
+	cmd := exec.CommandContext(ctx, arg0, args...) // #nosec G702 -- arg0 is the current executable path; args are passed directly without a shell.
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// Make the server config available via stdin

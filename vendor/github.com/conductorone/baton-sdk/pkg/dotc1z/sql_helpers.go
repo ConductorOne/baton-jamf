@@ -18,12 +18,14 @@ import (
 
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorstore"
+	"github.com/conductorone/baton-sdk/pkg/dotc1z/c1zstore"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 )
 
 const bulkPutParallelThreshold = 100
-const insertChunkSize = 200
+const insertChunkSize = 1000
 const maxPageSize = 10000
 
 // Use worker pool to limit goroutines.
@@ -43,7 +45,8 @@ type tableDescriptor interface {
 	Name() string
 	Schema() (string, []any)
 	Version() string
-	Migrations(ctx context.Context, db *goqu.Database) error
+	// Returns true if the any migrations were run, false otherwise.
+	Migrations(ctx context.Context, db *goqu.Database) (bool, error)
 }
 
 type listRequest interface {
@@ -143,9 +146,10 @@ func resolveSyncID(ctx context.Context, c *C1File, req listRequest) (string, err
 // It returns a slice of typed proto messages constructed via the provided factory function.
 func listConnectorObjects[T proto.Message](ctx context.Context, c *C1File, tableName string, req listRequest, factory func() T) ([]T, string, error) {
 	ctx, span := tracer.Start(ctx, "C1File.listConnectorObjects")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
-	err := c.validateDb(ctx)
+	err = c.validateDb(ctx)
 	if err != nil {
 		return nil, "", err
 	}
@@ -522,9 +526,10 @@ func bulkPutConnectorObject[T proto.Message](
 		return nil
 	}
 	ctx, span := tracer.Start(ctx, "C1File.bulkPutConnectorObject")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
-	err := c.validateSyncDb(ctx)
+	err = c.validateSyncDb(ctx)
 	if err != nil {
 		return err
 	}
@@ -547,51 +552,10 @@ func bulkPutConnectorObject[T proto.Message](
 	return executeChunkedInsert(ctx, c, tableName, rows, buildQueryFn)
 }
 
-func bulkPutConnectorObjectIfNewer[T proto.Message](
-	ctx context.Context, c *C1File,
-	tableName string,
-	extractFields func(m T) (goqu.Record, error),
-	msgs ...T,
-) error {
-	if len(msgs) == 0 {
-		return nil
-	}
-	ctx, span := tracer.Start(ctx, "C1File.bulkPutConnectorObjectIfNewer")
-	defer span.End()
-
-	err := c.validateSyncDb(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Prepare rows
-	rows, err := prepareConnectorObjectRows(c, msgs, extractFields)
-	if err != nil {
-		return err
-	}
-
-	// Define query building function
-	buildQueryFn := func(insertDs *goqu.InsertDataset, chunkedRows []*goqu.Record) (*goqu.InsertDataset, error) {
-		return insertDs.
-			OnConflict(goqu.DoUpdate("external_id, sync_id",
-				goqu.Record{
-					"data":          goqu.I("EXCLUDED.data"),
-					"discovered_at": goqu.I("EXCLUDED.discovered_at"),
-				}).Where(
-				goqu.L("EXCLUDED.discovered_at > ?.discovered_at", goqu.I(tableName)),
-			)).
-			Rows(chunkedRows).
-			Prepared(true), nil
-	}
-
-	// Execute the insert
-	return executeChunkedInsert(ctx, c, tableName, rows, buildQueryFn)
-}
-
 func (c *C1File) getResourceObject(ctx context.Context, resourceID *v2.ResourceId, m *v2.Resource, syncID string) error {
-	ctx, span := tracer.Start(ctx, "C1File.getResourceObject")
-	defer span.End()
-
+	// No span here: this function is always called from C1File.GetResource
+	// which already owns a span. The duplicate emitted one span per
+	// resource-fetch and was a top contributor to mega-trace span counts.
 	err := c.validateDb(ctx)
 	if err != nil {
 		return err
@@ -610,7 +574,7 @@ func (c *C1File) getResourceObject(ctx context.Context, resourceID *v2.ResourceI
 	case c.viewSyncID != "":
 		q = q.Where(goqu.C("sync_id").Eq(c.viewSyncID))
 	default:
-		var latestSyncRun *syncRun
+		var latestSyncRun *SyncRun
 		var err error
 		latestSyncRun, err = c.getFinishedSync(ctx, 0, connectorstore.SyncTypeFull)
 		if err != nil {
@@ -638,7 +602,7 @@ func (c *C1File) getResourceObject(ctx context.Context, resourceID *v2.ResourceI
 	row := c.db.QueryRowContext(ctx, query, args...)
 	err = row.Scan(&data)
 	if err != nil {
-		return err
+		return c1zstore.AdaptNotFound(err)
 	}
 
 	err = proto.Unmarshal(data, m)
@@ -649,10 +613,10 @@ func (c *C1File) getResourceObject(ctx context.Context, resourceID *v2.ResourceI
 	return nil
 }
 
+// No span here: every call site (C1File.GetResourceType, GetEntitlement,
+// GetGrant) already owns a span. The duplicate emitted one span per
+// per-resource lookup and was a top contributor to mega-trace span counts.
 func (c *C1File) getConnectorObject(ctx context.Context, tableName string, id string, syncID string, m proto.Message) error {
-	ctx, span := tracer.Start(ctx, "C1File.getConnectorObject")
-	defer span.End()
-
 	err := c.validateDb(ctx)
 	if err != nil {
 		return err
@@ -670,7 +634,7 @@ func (c *C1File) getConnectorObject(ctx context.Context, tableName string, id st
 	case c.viewSyncID != "":
 		q = q.Where(goqu.C("sync_id").Eq(c.viewSyncID))
 	default:
-		var latestSyncRun *syncRun
+		var latestSyncRun *SyncRun
 		var err error
 		latestSyncRun, err = c.getFinishedSync(ctx, 0, connectorstore.SyncTypeAny)
 		if err != nil {
@@ -698,7 +662,7 @@ func (c *C1File) getConnectorObject(ctx context.Context, tableName string, id st
 	row := c.db.QueryRowContext(ctx, query, args...)
 	err = row.Scan(&data)
 	if err != nil {
-		return err
+		return c1zstore.AdaptNotFound(err)
 	}
 
 	err = proto.Unmarshal(data, m)

@@ -16,6 +16,24 @@
     },
     {
       "resourceType": {
+        "id": "managedDevice",
+        "displayName": "Managed Device",
+        "traits": [
+          "TRAIT_MANAGED_DEVICE"
+        ],
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlementsAndGrants"
+          }
+        ]
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC"
+      ],
+      "permissions": {}
+    },
+    {
+      "resourceType": {
         "id": "role",
         "displayName": "Role",
         "traits": [

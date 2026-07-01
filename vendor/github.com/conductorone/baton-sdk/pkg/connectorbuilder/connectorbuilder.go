@@ -26,6 +26,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 	"github.com/conductorone/baton-sdk/pkg/types/tasks"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
 )
 
 var tracer = otel.Tracer("baton-sdk/pkg.connectorbuilder")
@@ -59,6 +60,16 @@ type ConnectorBuilderV2 interface {
 	ResourceSyncers(ctx context.Context) []ResourceSyncerV2
 }
 
+type closeHook func(context.Context) error
+
+type closeWithContext interface {
+	Close(context.Context) error
+}
+
+type closeWithoutContext interface {
+	Close() error
+}
+
 type builder struct {
 	ticketingEnabled        bool
 	m                       *metrics.M
@@ -77,6 +88,7 @@ type builder struct {
 	eventFeeds              map[string]EventFeed
 	accountManagers         map[string]AccountManagerLimited
 	actionManager           ActionManager // Unified action manager for all actions
+	closeHook               closeHook
 }
 
 // NewConnector creates a new ConnectorServer for a new resource.
@@ -115,6 +127,7 @@ func NewConnector(ctx context.Context, in interface{}, opts ...Opt) (types.Conne
 		eventFeeds:              make(map[string]EventFeed),
 		accountManagers:         make(map[string]AccountManagerLimited),
 		actionManager:           actionMgr,
+		closeHook:               closeHookFor(in),
 	}
 
 	// WithTicketingEnabled checks for the ticketManager
@@ -254,10 +267,34 @@ func (b *builder) addConnectorBuilderProviders(_ context.Context, in interface{}
 	return nil
 }
 
+func closeHookFor(in any) closeHook {
+	if in == nil {
+		return nil
+	}
+
+	if closer, ok := in.(closeWithContext); ok {
+		return closer.Close
+	}
+	if closer, ok := in.(closeWithoutContext); ok {
+		return func(context.Context) error {
+			return closer.Close()
+		}
+	}
+	return nil
+}
+
+func (b *builder) Close(ctx context.Context) error {
+	if b.closeHook == nil {
+		return nil
+	}
+	return b.closeHook(ctx)
+}
+
 // GetMetadata gets all metadata for a connector.
 func (b *builder) GetMetadata(ctx context.Context, request *v2.ConnectorServiceGetMetadataRequest) (*v2.ConnectorServiceGetMetadataResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.GetMetadata")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.GetMetadataType
@@ -286,7 +323,8 @@ func (b *builder) GetMetadata(ctx context.Context, request *v2.ConnectorServiceG
 // Validate validates the connector.
 func (b *builder) Validate(ctx context.Context, request *v2.ConnectorServiceValidateRequest) (*v2.ConnectorServiceValidateResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.Validate")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	retryer := retry.NewRetryer(ctx, retry.RetryConfig{
 		MaxAttempts:  5,
@@ -295,19 +333,20 @@ func (b *builder) Validate(ctx context.Context, request *v2.ConnectorServiceVali
 	})
 
 	for {
-		annos, err := b.validateProvider.Validate(ctx)
-		if err == nil {
+		annos, validateErr := b.validateProvider.Validate(ctx)
+		if validateErr == nil {
 			return v2.ConnectorServiceValidateResponse_builder{
 				Annotations: annos,
 				SdkVersion:  sdk.Version,
 			}.Build(), nil
 		}
 
-		if retryer.ShouldWaitAndRetry(ctx, err) {
+		if retryer.ShouldWaitAndRetry(ctx, validateErr) {
 			continue
 		}
 
-		return nil, fmt.Errorf("validate failed: %w", err)
+		err = fmt.Errorf("validate failed: %w", validateErr)
+		return nil, err
 	}
 }
 
@@ -378,9 +417,11 @@ func (b *builder) GetCapabilities(ctx context.Context) (*v2.ConnectorCapabilitie
 		}
 
 		resourceTypeCapabilities = append(resourceTypeCapabilities, v2.ResourceTypeCapability_builder{
-			ResourceType: rb.ResourceType(ctx),
-			Capabilities: caps,
-			Permissions:  p,
+			ResourceType:             rb.ResourceType(ctx),
+			Capabilities:             caps,
+			Permissions:              p,
+			OptInRequired:            annos.Contains(&v2.OptInRequired{}),
+			SkipSyncAnomalyDetection: annos.Contains(&v2.SkipSyncAnomalyDetection{}),
 		}.Build())
 	}
 

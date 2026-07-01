@@ -15,11 +15,14 @@ const (
 	OtelCollectorEndpointTLSInsecureFieldName = "otel-collector-endpoint-tls-insecure"
 	OtelTracingDisabledFieldName              = "otel-tracing-disabled"
 	OtelLoggingDisabledFieldName              = "otel-logging-disabled"
+
+	// TaskConcurrencySchemaDefault is the configured default for [TaskConcurrencyField].
+	TaskConcurrencySchemaDefault = 3
 )
 
 func defaultLogFormat() any {
 	// If stdout is a TTY, use console format, otherwise use JSON
-	//nolint:gosec // os.Stdout.Fd() is a process-owned fd and safe for terminal detection.
+
 	if term.IsTerminal(int(os.Stdout.Fd())) {
 		return logging.LogFormatConsole
 	}
@@ -260,6 +263,20 @@ var (
 		WithPersistent(true),
 		WithExportTarget(ExportTargetNone))
 
+	// KeepPreviousSyncC1ZField is the CUSTOMER's runtime half of the
+	// service-mode ETag-replay opt-in: keep the last successfully
+	// uploaded c1z on disk as a spare and feed it to the next full sync
+	// as the previous-sync replay source. It only takes effect on
+	// connectors whose author also declared ETag-replay support at build
+	// time (connectorrunner.WithKeepPreviousSyncC1Z) — both are
+	// required. Costs one c1z of local disk.
+	KeepPreviousSyncC1ZField = BoolField("keep-previous-sync-c1z",
+		WithDescription("Keep the previously synced c1z on disk to enable ETag replay across service-mode syncs "+
+			"(requires a connector that supports ETag replay; costs one c1z of local disk)"),
+		WithDefaultValue(false),
+		WithPersistent(true),
+		WithExportTarget(ExportTargetNone))
+
 	LambdaServerClientIDField = StringField("lambda-client-id", WithRequired(true), WithDescription("The oauth client id to use with the configuration endpoint"),
 		WithExportTarget(ExportTargetNone))
 	LambdaServerClientSecretField = StringField("lambda-client-secret", WithRequired(true), WithDescription("The oauth client secret to use with the configuration endpoint"),
@@ -325,6 +342,30 @@ var (
 		WithInt(func(r *IntRuler) {
 			r.Gte(1).Lte(1800)
 		}))
+
+	// StorageEngineField selects the dotc1z storage engine for sync tasks.
+	// Empty uses the baton-sdk default (sqlite for new files).
+	StorageEngineField = StringField("storage-engine",
+		WithDescription("The storage engine to use when opening the sync c1z file: sqlite or pebble. "+
+			"Leave unset to use the baton-sdk default."),
+		WithPersistent(true),
+		WithExportTarget(ExportTargetNone),
+		WithString(func(r *StringRuler) {
+			r.In([]string{"", "sqlite", "pebble"})
+		}))
+
+	// TaskConcurrencyField limits concurrent Baton task execution in the runner
+	// (service mode). Semantics match [WorkerCountField] / sync worker parallelism.
+	TaskConcurrencyField = IntField("task-concurrency",
+		WithDescription("The number of Baton tasks to run concurrently in service mode. "+
+			"Tasks may include sync, grant, revoke, and more. "+
+			"Minimum value is 1, maximum value is 100."),
+		WithDefaultValue(TaskConcurrencySchemaDefault),
+		WithInt(func(r *IntRuler) {
+			r.Gte(1).Lte(100)
+		}),
+		WithPersistent(true),
+		WithExportTarget(ExportTargetNone))
 )
 
 func LambdaServerFields() []SchemaField {
@@ -382,6 +423,7 @@ var DefaultFields = []SchemaField{
 	skipGrants,
 	externalResourceC1ZField,
 	externalResourceEntitlementIdFilter,
+	KeepPreviousSyncC1ZField,
 	diffSyncsField,
 	diffSyncsBaseSyncField,
 	diffSyncsAppliedSyncField,
@@ -416,6 +458,8 @@ var DefaultFields = []SchemaField{
 	healthCheckBindAddressField,
 
 	HttpTimeoutField,
+	StorageEngineField,
+	TaskConcurrencyField,
 }
 
 func IsFieldAmongDefaultList(f SchemaField) bool {

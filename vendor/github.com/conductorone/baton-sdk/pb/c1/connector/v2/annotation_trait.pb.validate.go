@@ -504,6 +504,36 @@ func (m *GroupTrait) validate(all bool) error {
 		}
 	}
 
+	if m.GetGroupSourceType() != "" {
+
+		if len(m.GetGroupSourceType()) > 64 {
+			err := GroupTraitValidationError{
+				field:  "GroupSourceType",
+				reason: "value length must be at most 64 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	if m.GetRawGroupSourceType() != "" {
+
+		if len(m.GetRawGroupSourceType()) > 256 {
+			err := GroupTraitValidationError{
+				field:  "RawGroupSourceType",
+				reason: "value length must be at most 256 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
 	if len(errors) > 0 {
 		return GroupTraitMultiError(errors)
 	}
@@ -1318,6 +1348,36 @@ func (m *AppTrait) validate(all bool) error {
 		}
 	}
 
+	if m.GetAppSourceType() != "" {
+
+		if len(m.GetAppSourceType()) > 64 {
+			err := AppTraitValidationError{
+				field:  "AppSourceType",
+				reason: "value length must be at most 64 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	if m.GetRawAppSourceType() != "" {
+
+		if len(m.GetRawAppSourceType()) > 256 {
+			err := AppTraitValidationError{
+				field:  "RawAppSourceType",
+				reason: "value length must be at most 256 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
 	if len(errors) > 0 {
 		return AppTraitMultiError(errors)
 	}
@@ -1591,6 +1651,19 @@ func (m *SecretTrait) validate(all bool) error {
 		}
 	}
 
+	if _, ok := SecretTrait_CredentialType_name[int32(m.GetCredentialType())]; !ok {
+		err := SecretTraitValidationError{
+			field:  "CredentialType",
+			reason: "value must be one of the defined enum values",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	// no validation rules for CredentialDetail
+
 	if len(errors) > 0 {
 		return SecretTraitMultiError(errors)
 	}
@@ -1667,6 +1740,912 @@ var _ interface {
 	Cause() error
 	ErrorName() string
 } = SecretTraitValidationError{}
+
+// Validate checks the field values on LicenseProfileTrait with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *LicenseProfileTrait) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on LicenseProfileTrait with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// LicenseProfileTraitMultiError, or nil if none found.
+func (m *LicenseProfileTrait) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *LicenseProfileTrait) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if m.GetLicenseName() != "" {
+
+		if len(m.GetLicenseName()) > 1024 {
+			err := LicenseProfileTraitValidationError{
+				field:  "LicenseName",
+				reason: "value length must be at most 1024 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	// no validation rules for PurchasedSeats
+
+	// no validation rules for ConsumedSeats
+
+	// no validation rules for CostPerUnitInCents
+
+	if m.GetCurrency() != "" {
+
+		if len(m.GetCurrency()) > 8 {
+			err := LicenseProfileTraitValidationError{
+				field:  "Currency",
+				reason: "value length must be at most 8 bytes",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		}
+
+	}
+
+	_LicenseProfileTrait_EntitlementIds_Unique := make(map[string]struct{}, len(m.GetEntitlementIds()))
+
+	for idx, item := range m.GetEntitlementIds() {
+		_, _ = idx, item
+
+		if _, exists := _LicenseProfileTrait_EntitlementIds_Unique[item]; exists {
+			err := LicenseProfileTraitValidationError{
+				field:  fmt.Sprintf("EntitlementIds[%v]", idx),
+				reason: "repeated value must contain unique items",
+			}
+			if !all {
+				return err
+			}
+			errors = append(errors, err)
+		} else {
+			_LicenseProfileTrait_EntitlementIds_Unique[item] = struct{}{}
+		}
+
+		// no validation rules for EntitlementIds[idx]
+	}
+
+	if len(errors) > 0 {
+		return LicenseProfileTraitMultiError(errors)
+	}
+
+	return nil
+}
+
+// LicenseProfileTraitMultiError is an error wrapping multiple validation
+// errors returned by LicenseProfileTrait.ValidateAll() if the designated
+// constraints aren't met.
+type LicenseProfileTraitMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m LicenseProfileTraitMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m LicenseProfileTraitMultiError) AllErrors() []error { return m }
+
+// LicenseProfileTraitValidationError is the validation error returned by
+// LicenseProfileTrait.Validate if the designated constraints aren't met.
+type LicenseProfileTraitValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e LicenseProfileTraitValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e LicenseProfileTraitValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e LicenseProfileTraitValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e LicenseProfileTraitValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e LicenseProfileTraitValidationError) ErrorName() string {
+	return "LicenseProfileTraitValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e LicenseProfileTraitValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sLicenseProfileTrait.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = LicenseProfileTraitValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = LicenseProfileTraitValidationError{}
+
+// Validate checks the field values on NonHumanIdentityTrait with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *NonHumanIdentityTrait) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on NonHumanIdentityTrait with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// NonHumanIdentityTraitMultiError, or nil if none found.
+func (m *NonHumanIdentityTrait) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *NonHumanIdentityTrait) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if _, ok := NonHumanIdentityTrait_NhiType_name[int32(m.GetNhiType())]; !ok {
+		err := NonHumanIdentityTraitValidationError{
+			field:  "NhiType",
+			reason: "value must be one of the defined enum values",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	// no validation rules for NhiDetail
+
+	if len(errors) > 0 {
+		return NonHumanIdentityTraitMultiError(errors)
+	}
+
+	return nil
+}
+
+// NonHumanIdentityTraitMultiError is an error wrapping multiple validation
+// errors returned by NonHumanIdentityTrait.ValidateAll() if the designated
+// constraints aren't met.
+type NonHumanIdentityTraitMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m NonHumanIdentityTraitMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m NonHumanIdentityTraitMultiError) AllErrors() []error { return m }
+
+// NonHumanIdentityTraitValidationError is the validation error returned by
+// NonHumanIdentityTrait.Validate if the designated constraints aren't met.
+type NonHumanIdentityTraitValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e NonHumanIdentityTraitValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e NonHumanIdentityTraitValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e NonHumanIdentityTraitValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e NonHumanIdentityTraitValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e NonHumanIdentityTraitValidationError) ErrorName() string {
+	return "NonHumanIdentityTraitValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e NonHumanIdentityTraitValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sNonHumanIdentityTrait.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = NonHumanIdentityTraitValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = NonHumanIdentityTraitValidationError{}
+
+// Validate checks the field values on AgentTrait with the rules defined in the
+// proto definition for this message. If any rules are violated, the first
+// error encountered is returned, or nil if there are no violations.
+func (m *AgentTrait) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on AgentTrait with the rules defined in
+// the proto definition for this message. If any rules are violated, the
+// result is a list of violation errors wrapped in AgentTraitMultiError, or
+// nil if none found.
+func (m *AgentTrait) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *AgentTrait) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if _, ok := AgentTrait_AgentStatus_name[int32(m.GetStatus())]; !ok {
+		err := AgentTraitValidationError{
+			field:  "Status",
+			reason: "value must be one of the defined enum values",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	if all {
+		switch v := interface{}(m.GetIdentityResourceId()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, AgentTraitValidationError{
+					field:  "IdentityResourceId",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, AgentTraitValidationError{
+					field:  "IdentityResourceId",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetIdentityResourceId()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return AgentTraitValidationError{
+				field:  "IdentityResourceId",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if all {
+		switch v := interface{}(m.GetProfile()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, AgentTraitValidationError{
+					field:  "Profile",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, AgentTraitValidationError{
+					field:  "Profile",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetProfile()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return AgentTraitValidationError{
+				field:  "Profile",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if len(errors) > 0 {
+		return AgentTraitMultiError(errors)
+	}
+
+	return nil
+}
+
+// AgentTraitMultiError is an error wrapping multiple validation errors
+// returned by AgentTrait.ValidateAll() if the designated constraints aren't met.
+type AgentTraitMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m AgentTraitMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m AgentTraitMultiError) AllErrors() []error { return m }
+
+// AgentTraitValidationError is the validation error returned by
+// AgentTrait.Validate if the designated constraints aren't met.
+type AgentTraitValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e AgentTraitValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e AgentTraitValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e AgentTraitValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e AgentTraitValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e AgentTraitValidationError) ErrorName() string { return "AgentTraitValidationError" }
+
+// Error satisfies the builtin error interface
+func (e AgentTraitValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sAgentTrait.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = AgentTraitValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = AgentTraitValidationError{}
+
+// Validate checks the field values on ManagedDeviceTrait with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the first error encountered is returned, or nil if there are no violations.
+func (m *ManagedDeviceTrait) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on ManagedDeviceTrait with the rules
+// defined in the proto definition for this message. If any rules are
+// violated, the result is a list of violation errors wrapped in
+// ManagedDeviceTraitMultiError, or nil if none found.
+func (m *ManagedDeviceTrait) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *ManagedDeviceTrait) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	// no validation rules for Serial
+
+	// no validation rules for Udid
+
+	// no validation rules for HardwareHash
+
+	if _, ok := ManagedDeviceTrait_DeviceType_name[int32(m.GetDeviceType())]; !ok {
+		err := ManagedDeviceTraitValidationError{
+			field:  "DeviceType",
+			reason: "value must be one of the defined enum values",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	// no validation rules for Model
+
+	// no validation rules for Vendor
+
+	if all {
+		switch v := interface{}(m.GetOs()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "Os",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "Os",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetOs()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return ManagedDeviceTraitValidationError{
+				field:  "Os",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if all {
+		switch v := interface{}(m.GetAssignedUser()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "AssignedUser",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "AssignedUser",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetAssignedUser()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return ManagedDeviceTraitValidationError{
+				field:  "AssignedUser",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if _, ok := ManagedDeviceTrait_Compliance_name[int32(m.GetCompliance())]; !ok {
+		err := ManagedDeviceTraitValidationError{
+			field:  "Compliance",
+			reason: "value must be one of the defined enum values",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	if all {
+		switch v := interface{}(m.GetIsEncrypted()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "IsEncrypted",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "IsEncrypted",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetIsEncrypted()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return ManagedDeviceTraitValidationError{
+				field:  "IsEncrypted",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if all {
+		switch v := interface{}(m.GetIsSupervised()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "IsSupervised",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "IsSupervised",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetIsSupervised()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return ManagedDeviceTraitValidationError{
+				field:  "IsSupervised",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if all {
+		switch v := interface{}(m.GetIsPersonal()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "IsPersonal",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "IsPersonal",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetIsPersonal()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return ManagedDeviceTraitValidationError{
+				field:  "IsPersonal",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if _, ok := ManagedDeviceTrait_ManagementState_name[int32(m.GetManagementState())]; !ok {
+		err := ManagedDeviceTraitValidationError{
+			field:  "ManagementState",
+			reason: "value must be one of the defined enum values",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	if all {
+		switch v := interface{}(m.GetEnrolledAt()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "EnrolledAt",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "EnrolledAt",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetEnrolledAt()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return ManagedDeviceTraitValidationError{
+				field:  "EnrolledAt",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if all {
+		switch v := interface{}(m.GetProfile()).(type) {
+		case interface{ ValidateAll() error }:
+			if err := v.ValidateAll(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "Profile",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		case interface{ Validate() error }:
+			if err := v.Validate(); err != nil {
+				errors = append(errors, ManagedDeviceTraitValidationError{
+					field:  "Profile",
+					reason: "embedded message failed validation",
+					cause:  err,
+				})
+			}
+		}
+	} else if v, ok := interface{}(m.GetProfile()).(interface{ Validate() error }); ok {
+		if err := v.Validate(); err != nil {
+			return ManagedDeviceTraitValidationError{
+				field:  "Profile",
+				reason: "embedded message failed validation",
+				cause:  err,
+			}
+		}
+	}
+
+	if len(errors) > 0 {
+		return ManagedDeviceTraitMultiError(errors)
+	}
+
+	return nil
+}
+
+// ManagedDeviceTraitMultiError is an error wrapping multiple validation errors
+// returned by ManagedDeviceTrait.ValidateAll() if the designated constraints
+// aren't met.
+type ManagedDeviceTraitMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m ManagedDeviceTraitMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m ManagedDeviceTraitMultiError) AllErrors() []error { return m }
+
+// ManagedDeviceTraitValidationError is the validation error returned by
+// ManagedDeviceTrait.Validate if the designated constraints aren't met.
+type ManagedDeviceTraitValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e ManagedDeviceTraitValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e ManagedDeviceTraitValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e ManagedDeviceTraitValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e ManagedDeviceTraitValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e ManagedDeviceTraitValidationError) ErrorName() string {
+	return "ManagedDeviceTraitValidationError"
+}
+
+// Error satisfies the builtin error interface
+func (e ManagedDeviceTraitValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sManagedDeviceTrait.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = ManagedDeviceTraitValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = ManagedDeviceTraitValidationError{}
+
+// Validate checks the field values on DeviceOS with the rules defined in the
+// proto definition for this message. If any rules are violated, the first
+// error encountered is returned, or nil if there are no violations.
+func (m *DeviceOS) Validate() error {
+	return m.validate(false)
+}
+
+// ValidateAll checks the field values on DeviceOS with the rules defined in
+// the proto definition for this message. If any rules are violated, the
+// result is a list of violation errors wrapped in DeviceOSMultiError, or nil
+// if none found.
+func (m *DeviceOS) ValidateAll() error {
+	return m.validate(true)
+}
+
+func (m *DeviceOS) validate(all bool) error {
+	if m == nil {
+		return nil
+	}
+
+	var errors []error
+
+	if _, ok := DeviceOS_OsType_name[int32(m.GetType())]; !ok {
+		err := DeviceOSValidationError{
+			field:  "Type",
+			reason: "value must be one of the defined enum values",
+		}
+		if !all {
+			return err
+		}
+		errors = append(errors, err)
+	}
+
+	// no validation rules for Name
+
+	// no validation rules for Version
+
+	// no validation rules for Build
+
+	if len(errors) > 0 {
+		return DeviceOSMultiError(errors)
+	}
+
+	return nil
+}
+
+// DeviceOSMultiError is an error wrapping multiple validation errors returned
+// by DeviceOS.ValidateAll() if the designated constraints aren't met.
+type DeviceOSMultiError []error
+
+// Error returns a concatenation of all the error messages it wraps.
+func (m DeviceOSMultiError) Error() string {
+	msgs := make([]string, 0, len(m))
+	for _, err := range m {
+		msgs = append(msgs, err.Error())
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// AllErrors returns a list of validation violation errors.
+func (m DeviceOSMultiError) AllErrors() []error { return m }
+
+// DeviceOSValidationError is the validation error returned by
+// DeviceOS.Validate if the designated constraints aren't met.
+type DeviceOSValidationError struct {
+	field  string
+	reason string
+	cause  error
+	key    bool
+}
+
+// Field function returns field value.
+func (e DeviceOSValidationError) Field() string { return e.field }
+
+// Reason function returns reason value.
+func (e DeviceOSValidationError) Reason() string { return e.reason }
+
+// Cause function returns cause value.
+func (e DeviceOSValidationError) Cause() error { return e.cause }
+
+// Key function returns key value.
+func (e DeviceOSValidationError) Key() bool { return e.key }
+
+// ErrorName returns error name.
+func (e DeviceOSValidationError) ErrorName() string { return "DeviceOSValidationError" }
+
+// Error satisfies the builtin error interface
+func (e DeviceOSValidationError) Error() string {
+	cause := ""
+	if e.cause != nil {
+		cause = fmt.Sprintf(" | caused by: %v", e.cause)
+	}
+
+	key := ""
+	if e.key {
+		key = "key for "
+	}
+
+	return fmt.Sprintf(
+		"invalid %sDeviceOS.%s: %s%s",
+		key,
+		e.field,
+		e.reason,
+		cause)
+}
+
+var _ error = DeviceOSValidationError{}
+
+var _ interface {
+	Field() string
+	Reason() string
+	Key() bool
+	Cause() error
+	ErrorName() string
+} = DeviceOSValidationError{}
 
 // Validate checks the field values on UserTrait_Email with the rules defined
 // in the proto definition for this message. If any rules are violated, the

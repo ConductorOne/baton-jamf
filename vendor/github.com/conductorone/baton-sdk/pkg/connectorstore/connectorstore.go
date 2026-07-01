@@ -28,6 +28,41 @@ var AllSyncTypes = []SyncType{
 	SyncTypePartialDeletions,
 }
 
+// StoreMetadata describes the storage backing a Reader. Returned by
+// Reader.Metadata() — present on every Reader, no type assertion
+// needed. Fields are best-effort: implementations that don't back an
+// on-disk c1z artifact (mocks, in-memory wrappers, gRPC clients)
+// return a zero StoreMetadata.
+//
+// The struct may grow over time. Consumers must treat unknown values
+// gracefully — e.g. log them but don't switch behavior on them
+// unless the value is recognized.
+type StoreMetadata struct {
+	// Engine identifies the storage backend. Values match
+	// dotc1z.Engine string values; using string here keeps
+	// connectorstore from depending on dotc1z (avoids an import
+	// cycle).
+	//   "sqlite" — original .c1z, v1 magic + zstd-compressed SQLite
+	//   "pebble" — v3 .c1z3, Pebble LSM in a v3 envelope
+	//   ""       — unknown or not backed by an on-disk c1z
+	Engine string
+
+	// Format identifies the on-disk magic-byte format. Values match
+	// dotc1z.C1ZFormat.String().
+	//   "v1" — "C1ZF\x00" magic (SQLite payload)
+	//   "v3" — "C1Z3\x00" magic (Pebble payload + manifest)
+	//   ""   — unknown / virtual store
+	Format string
+
+	// PayloadEncoding identifies the v3 envelope payload framing.
+	// Empty for v1 / SQLite. Values match
+	// dotc1z.PayloadEncoding.String():
+	//   "tar_zstd" — Pebble checkpoint as zstd-compressed tar
+	//   "tar"      — Pebble checkpoint as uncompressed tar
+	//   ""         — N/A or unset
+	PayloadEncoding string
+}
+
 // ConnectorStoreReader implements the ConnectorV2 API, along with getters for individual objects.
 type Reader interface {
 	v2.ResourceTypesServiceServer
@@ -48,20 +83,50 @@ type Reader interface {
 	// the GRPC api, but because this is defined as a streaming RPC, it isn't trivial to implement grpc streaming as part of the c1z format.
 	GetAsset(ctx context.Context, req *v2.AssetServiceGetAssetRequest) (string, io.Reader, error)
 
+	// Metadata describes the storage backing this Reader. Required
+	// on every implementation; readers that don't back an on-disk
+	// c1z return a zero StoreMetadata. Cheap call — implementations
+	// must not perform I/O.
+	Metadata() StoreMetadata
+
 	Close(ctx context.Context) error
 }
 
-type InternalWriter interface {
-	Writer
-	// UpsertGrants writes grants with explicit conflict handling semantics.
-	// This is for internal sync workflows that need control over if-newer behavior
-	// and whether expansion columns are preserved.
-	UpsertGrants(ctx context.Context, opts GrantUpsertOptions, grants ...*v2.Grant) error
-	// ListGrantsInternal is the preferred internal listing API for grants.
-	// It returns a single list of rows with optional grant payload and expansion metadata.
-	ListGrantsInternal(ctx context.Context, opts GrantListOptions) (*InternalGrantListResponse, error)
-	// SetSupportsDiff marks the sync as supporting diff operations.
-	SetSupportsDiff(ctx context.Context, syncID string) error
+// LatestFinishedSyncIDFetcher returns the most-recently-finished sync ID of the
+// given type, or empty string if no such sync exists. This is a small optional
+// capability separate from Reader/Writer because not every store implementation
+// can answer it (e.g. gRPC-backed readers have a different flavor via
+// SyncsReaderServiceGetLatestFinishedSync).
+//
+// This interface lives in connectorstore so that producers (e.g. *dotc1z.C1File)
+// and consumers (e.g. pkg/sync) reference a single authoritative declaration,
+// preventing the name/signature drift that occurred between PR #473 and RFC 0002.
+type LatestFinishedSyncIDFetcher interface {
+	LatestFinishedSyncID(ctx context.Context, syncType SyncType) (string, error)
+}
+
+// DBSizeProvider is an optional capability for a store that can report its
+// current uncompressed working-set size (e.g. dotc1z.C1File stat'ing its
+// sqlite file). Consumed by the syncer's ProgressLog to include
+// decompressed_bytes and growth delta in the periodic "Expanding grants"
+// log during long-running grant expansions — the Expander itself is
+// recreated each RunSingleStep by the syncer, so this state cannot live
+// there.
+type DBSizeProvider interface {
+	CurrentDBSizeBytes() (int64, error)
+}
+
+// ExpansionGrantLister is an optional capability for stores whose ListGrants
+// strips the GrantExpandable annotation into a side column on write (the SQLite
+// engine does; see dotc1z). ListGrantsWithExpansion is the paginated read that
+// re-attaches it, so a copy/sanitize that keeps ListGrants' resumable
+// page-cursor semantics (rather than switching to StreamGrants) still preserves
+// the grant-expansion topology end-to-end. Mirrors
+// StreamGrantsOptions.IncludeExpansion for the unary paginated read path.
+// Discovered by type assertion; readers that don't strip expansion (e.g. the
+// Pebble adapter, whose ListGrants already carries it) need not implement it.
+type ExpansionGrantLister interface {
+	ListGrantsWithExpansion(ctx context.Context, request *v2.GrantsServiceListGrantsRequest) (*v2.GrantsServiceListGrantsResponse, error)
 }
 
 // GrantUpsertMode controls how grant conflicts are resolved during upsert.
@@ -70,8 +135,6 @@ type GrantUpsertMode int
 const (
 	// GrantUpsertModeReplace updates conflicting grants unconditionally.
 	GrantUpsertModeReplace GrantUpsertMode = iota
-	// GrantUpsertModeIfNewer updates conflicting grants only when EXCLUDED.discovered_at is newer.
-	GrantUpsertModeIfNewer
 	// GrantUpsertModePreserveExpansion updates grant data while preserving existing
 	// expansion and needs_expansion columns.
 	GrantUpsertModePreserveExpansion
@@ -100,67 +163,4 @@ type Writer interface {
 	PutResources(ctx context.Context, resources ...*v2.Resource) error
 	PutEntitlements(ctx context.Context, entitlements ...*v2.Entitlement) error
 	DeleteGrant(ctx context.Context, grantId string) error
-}
-
-// GrantListMode configures which row shape/filter mode ListGrantsInternal uses.
-type GrantListMode int
-
-const (
-	// GrantListModePayload returns grant payload rows only.
-	GrantListModePayload GrantListMode = iota
-	// GrantListModePayloadWithExpansion returns grant payload rows with optional expansion metadata.
-	GrantListModePayloadWithExpansion
-	// GrantListModeExpansion returns expansion metadata rows only.
-	GrantListModeExpansion
-	// GrantListModeExpansionNeedsOnly returns only expansion metadata rows with needs_expansion=1.
-	GrantListModeExpansionNeedsOnly
-)
-
-// GrantListOptions configures ListGrantsInternal - a would be union type.
-type GrantListOptions struct {
-	// Mode controls which row shape/filter is returned.
-	Mode GrantListMode
-
-	// Resource filters payload modes to grants on a specific resource.
-	Resource *v2.Resource
-
-	// ExpandableOnly filters rows to grants with expansion metadata.
-	// Used by payload+expansion mode.
-	ExpandableOnly bool
-	// NeedsExpansionOnly filters rows to needs_expansion=1.
-	// Used by expansion-only modes.
-	NeedsExpansionOnly bool
-
-	// PageToken and PageSize are used for pagination in all modes.
-	// SyncID is used for expansion-only modes.
-	SyncID    string
-	PageToken string
-	PageSize  uint32
-}
-
-// InternalGrantRow is one row from ListGrantsInternal. Fields are optional
-// based on the requested list options.
-type InternalGrantRow struct {
-	Grant     *v2.Grant
-	Expansion *ExpandableGrantDef
-}
-
-// InternalGrantListResponse contains one row list plus a shared next page token.
-type InternalGrantListResponse struct {
-	Rows          []*InternalGrantRow
-	NextPageToken string
-}
-
-// ExpandableGrantDef is a lightweight representation of an expandable grant row,
-// using queryable columns instead of unmarshalling the full grant proto.
-type ExpandableGrantDef struct {
-	RowID                   int64
-	GrantExternalID         string
-	TargetEntitlementID     string
-	PrincipalResourceTypeID string
-	PrincipalResourceID     string
-	SourceEntitlementIDs    []string
-	Shallow                 bool
-	ResourceTypeIDs         []string
-	NeedsExpansion          bool
 }
