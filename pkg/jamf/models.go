@@ -1,8 +1,28 @@
 package jamf
 
+import "encoding/xml"
+
 type BaseType struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
+}
+
+// UserGroupMembershipUpdate is the XML request body for editing Jamf user group
+// membership via PUT /JSSResource/usergroups/id/{id}. The Classic API applies
+// additions and deletions incrementally, so only the populated element is sent
+// (the omitempty pointers drop the unused element entirely).
+type UserGroupMembershipUpdate struct {
+	XMLName       xml.Name              `xml:"user_group"`
+	UserAdditions *UserGroupMemberEdits `xml:"user_additions,omitempty"`
+	UserDeletions *UserGroupMemberEdits `xml:"user_deletions,omitempty"`
+}
+
+type UserGroupMemberEdits struct {
+	Users []UserGroupMemberRef `xml:"user"`
+}
+
+type UserGroupMemberRef struct {
+	ID int `xml:"id"`
 }
 
 // User - end user in Jamf.
