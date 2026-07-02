@@ -12,7 +12,10 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
+	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
+	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
@@ -25,6 +28,9 @@ const (
 
 	// defaultDevicePageSize is used when the SDK does not supply a page size.
 	defaultDevicePageSize = 100
+
+	// assignedEntitlement links a device to the user it is assigned to.
+	assignedEntitlement = "assigned"
 )
 
 type managedDeviceResourceType struct {
@@ -56,11 +62,6 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 		pageSize = defaultDevicePageSize
 	}
 
-	userIndex, err := d.getUserIndex(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: failed to build user index for device owner resolution: %w", err)
-	}
-
 	current := bag.Current()
 	page, err := strconv.Atoi(current.Token)
 	if err != nil {
@@ -76,7 +77,7 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 			return nil, nil, fmt.Errorf("jamf-connector: failed to list computers inventory: %w", err)
 		}
 		for i := range resp.Results {
-			r, err := computerResource(&resp.Results[i], userIndex, parentId)
+			r, err := computerResource(&resp.Results[i], parentId)
 			if err != nil {
 				return nil, nil, fmt.Errorf("jamf-connector: failed to build computer resource: %w", err)
 			}
@@ -98,7 +99,7 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 			return nil, nil, fmt.Errorf("jamf-connector: failed to list mobile devices: %w", err)
 		}
 		for i := range resp.Results {
-			r, err := mobileDeviceResource(&resp.Results[i], userIndex, parentId)
+			r, err := mobileDeviceResource(&resp.Results[i], parentId)
 			if err != nil {
 				return nil, nil, fmt.Errorf("jamf-connector: failed to build mobile device resource: %w", err)
 			}
@@ -125,12 +126,43 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 	return resources, &rs.SyncOpResults{NextPageToken: nextToken}, nil
 }
 
-func (d *managedDeviceResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
-	return nil, nil, nil
+// Entitlements exposes the "assigned" assignment entitlement, but only for
+// devices that actually report an assignee, so unassigned assets stay clean.
+func (d *managedDeviceResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	username, email := deviceAssignee(resource)
+	if username == "" && email == "" {
+		return nil, nil, nil
+	}
+
+	opts := []ent.EntitlementOption{
+		ent.WithGrantableTo(resourceTypeUser),
+		ent.WithDescription(fmt.Sprintf("Assigned user of the %s device", resource.DisplayName)),
+		ent.WithDisplayName(fmt.Sprintf("%s device %s", resource.DisplayName, assignedEntitlement)),
+	}
+
+	return []*v2.Entitlement{ent.NewAssignmentEntitlement(resource, assignedEntitlement, opts...)}, nil, nil
 }
 
-func (d *managedDeviceResourceType) Grants(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
-	return nil, nil, nil
+// Grants emits the device->user link as a grant on the "assigned" entitlement.
+// When the assignee is a synced Jamf user it grants that user directly; otherwise
+// it annotates the grant with an ExternalResourceMatch so the platform can bind it
+// to a directory identity from an external source.
+func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	username, email := deviceAssignee(resource)
+	if username == "" && email == "" {
+		return nil, nil, nil
+	}
+
+	userIndex, err := d.getUserIndex(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: failed to build user index for device owner resolution: %w", err)
+	}
+
+	grants, err := deviceGrants(resource, userIndex)
+	if err != nil {
+		return nil, nil, err
+	}
+	return grants, nil, nil
 }
 
 func managedDeviceBuilder(client *jamf.Client) *managedDeviceResourceType {
@@ -183,7 +215,7 @@ func (d *managedDeviceResourceType) getUserIndex(ctx context.Context) (map[strin
 
 // computerResource maps a Jamf computer-inventory record onto a ManagedDevice
 // resource carrying a ManagedDeviceTrait.
-func computerResource(c *jamf.ComputerInventory, userIndex map[string]*v2.ResourceId, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
+func computerResource(c *jamf.ComputerInventory, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
 	var opts []rs.ManagedDeviceTraitOption
 	profile := map[string]interface{}{}
 
@@ -217,11 +249,10 @@ func computerResource(c *jamf.ComputerInventory, userIndex map[string]*v2.Resour
 	}
 
 	if c.UserAndLocation != nil {
-		if rid, ok := resolveUser(userIndex, c.UserAndLocation.Username, c.UserAndLocation.EmailAddr()); ok {
-			opts = append(opts, rs.WithManagedDeviceAssignedUser(rid))
-		} else if raw := unresolvedOwner(c.UserAndLocation.Username, c.UserAndLocation.EmailAddr()); raw != "" {
-			profile["unresolved_owner"] = raw
-		}
+		// The assignee identity is stashed in the profile and consumed by
+		// Entitlements/Grants to emit the device->user grant.
+		setIfNotEmpty(profile, "assigned_username", c.UserAndLocation.Username)
+		setIfNotEmpty(profile, "assigned_email", c.UserAndLocation.EmailAddr())
 	}
 
 	if enc, ok := isEncrypted(c.DiskEncryption); ok {
@@ -264,7 +295,7 @@ func computerResource(c *jamf.ComputerInventory, userIndex map[string]*v2.Resour
 // mobileDeviceResource maps a Jamf mobile-device record onto a ManagedDevice
 // resource. The v2 list endpoint exposes a flatter field set than the computers
 // inventory, so fewer trait fields are populated.
-func mobileDeviceResource(m *jamf.MobileDevice, userIndex map[string]*v2.ResourceId, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
+func mobileDeviceResource(m *jamf.MobileDevice, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
 	var opts []rs.ManagedDeviceTraitOption
 	profile := map[string]interface{}{}
 
@@ -292,11 +323,8 @@ func mobileDeviceResource(m *jamf.MobileDevice, userIndex map[string]*v2.Resourc
 		opts = append(opts, rs.WithManagedDeviceOS(os))
 	}
 
-	if rid, ok := resolveUser(userIndex, m.Username, ""); ok {
-		opts = append(opts, rs.WithManagedDeviceAssignedUser(rid))
-	} else if m.Username != "" {
-		profile["unresolved_owner"] = m.Username
-	}
+	// The v2 mobile-device payload only exposes a username for the assignee.
+	setIfNotEmpty(profile, "assigned_username", m.Username)
 
 	opts = append(opts, rs.WithManagedDeviceSupervised(m.Supervised))
 
@@ -523,13 +551,49 @@ func resolveUser(idx map[string]*v2.ResourceId, username, email string) (*v2.Res
 	return nil, false
 }
 
-// unresolvedOwner returns the raw owner value to stash when it cannot be
-// resolved to a synced user, preferring the username.
-func unresolvedOwner(username, email string) string {
-	if strings.TrimSpace(username) != "" {
-		return username
+// deviceAssignee reads the assignee identity (username, email) stashed in the
+// device profile during List. Empty strings mean the device reports no owner.
+func deviceAssignee(resource *v2.Resource) (string, string) {
+	trait := &v2.ManagedDeviceTrait{}
+	annos := annotations.Annotations(resource.GetAnnotations())
+	ok, err := annos.Pick(trait)
+	if err != nil || !ok {
+		return "", ""
 	}
-	return email
+	username, _ := rs.GetProfileStringValue(trait.GetProfile(), "assigned_username")
+	email, _ := rs.GetProfileStringValue(trait.GetProfile(), "assigned_email")
+	return username, email
+}
+
+// deviceGrants builds the device->user grant(s) for the assignee. A synced Jamf
+// user is granted directly; an unsynced assignee produces a grant carrying an
+// ExternalResourceMatch so the platform binds it to a directory identity.
+func deviceGrants(resource *v2.Resource, userIndex map[string]*v2.ResourceId) ([]*v2.Grant, error) {
+	username, email := deviceAssignee(resource)
+	if username == "" && email == "" {
+		return nil, nil
+	}
+
+	if rid, ok := resolveUser(userIndex, username, email); ok {
+		return []*v2.Grant{grant.NewGrant(resource, assignedEntitlement, rid)}, nil
+	}
+
+	key, value := "email", strings.TrimSpace(email)
+	if value == "" {
+		key, value = "username", strings.TrimSpace(username)
+	}
+
+	principal, err := rs.NewResourceID(resourceTypeUser, value)
+	if err != nil {
+		return nil, err
+	}
+	match := v2.ExternalResourceMatch_builder{
+		ResourceType: v2.ResourceType_TRAIT_USER,
+		Key:          key,
+		Value:        value,
+	}.Build()
+
+	return []*v2.Grant{grant.NewGrant(resource, assignedEntitlement, principal, grant.WithAnnotation(match))}, nil
 }
 
 // setIfNotEmpty adds a string value to the profile only when non-empty.

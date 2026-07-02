@@ -1,12 +1,14 @@
 package connector
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
 func mustDeviceTrait(t *testing.T, r *v2.Resource) *v2.ManagedDeviceTrait {
@@ -77,7 +79,7 @@ func TestComputerResource_FullMapping(t *testing.T) {
 		},
 	}
 
-	r, err := computerResource(c, testUserIndex(), nil)
+	r, err := computerResource(c, nil)
 	if err != nil {
 		t.Fatalf("computerResource: %v", err)
 	}
@@ -116,15 +118,13 @@ func TestComputerResource_FullMapping(t *testing.T) {
 		t.Errorf("os build = %q, want %q", got, want)
 	}
 
-	// assigned_user resolves to the synced user resource.
-	if trait.GetAssignedUser() == nil {
-		t.Fatal("assigned_user not set")
+	// assignee identity is stashed in the profile so Entitlements/Grants can
+	// emit the device->user grant.
+	if got := trait.GetProfile().GetFields()["assigned_username"].GetStringValue(); got != "jappleseed" {
+		t.Errorf("profile.assigned_username = %q, want jappleseed", got)
 	}
-	if got, want := trait.GetAssignedUser().GetResourceType(), "user"; got != want {
-		t.Errorf("assigned_user type = %q, want %q", got, want)
-	}
-	if got, want := trait.GetAssignedUser().GetResource(), "42"; got != want {
-		t.Errorf("assigned_user id = %q, want %q", got, want)
+	if got := trait.GetProfile().GetFields()["assigned_email"].GetStringValue(); got != "jappleseed@ex.com" {
+		t.Errorf("profile.assigned_email = %q, want jappleseed@ex.com", got)
 	}
 
 	if trait.GetIsEncrypted() == nil || !trait.GetIsEncrypted().GetValue() {
@@ -159,8 +159,25 @@ func TestComputerResource_FullMapping(t *testing.T) {
 	if !fields["activation_lock_enabled"].GetBoolValue() {
 		t.Error("profile.activation_lock_enabled should be true")
 	}
-	if _, ok := fields["unresolved_owner"]; ok {
-		t.Error("unresolved_owner should not be set when owner resolves")
+
+	// A resolvable assignee produces a direct grant to the synced Jamf user.
+	grants, err := deviceGrants(r, testUserIndex())
+	if err != nil {
+		t.Fatalf("deviceGrants: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant, got %d", len(grants))
+	}
+	if got, want := grants[0].GetPrincipal().GetId().GetResource(), "42"; got != want {
+		t.Errorf("grant principal = %q, want %q", got, want)
+	}
+	if got, want := grants[0].GetPrincipal().GetId().GetResourceType(), "user"; got != want {
+		t.Errorf("grant principal type = %q, want %q", got, want)
+	}
+	// A directly-granted user carries no ExternalResourceMatch annotation.
+	resolvedAnnos := annotations.Annotations(grants[0].GetAnnotations())
+	if ok, _ := resolvedAnnos.Pick(&v2.ExternalResourceMatch{}); ok {
+		t.Error("resolved grant should not carry an ExternalResourceMatch annotation")
 	}
 }
 
@@ -182,7 +199,7 @@ func TestComputerResource_UnresolvedOwnerAndNoLastSeen(t *testing.T) {
 		},
 	}
 
-	r, err := computerResource(c, testUserIndex(), nil)
+	r, err := computerResource(c, nil)
 	if err != nil {
 		t.Fatalf("computerResource: %v", err)
 	}
@@ -191,11 +208,8 @@ func TestComputerResource_UnresolvedOwnerAndNoLastSeen(t *testing.T) {
 	if got, want := trait.GetDeviceType(), v2.ManagedDeviceTrait_DEVICE_TYPE_DESKTOP; got != want {
 		t.Errorf("device type = %v, want DESKTOP", got)
 	}
-	if trait.GetAssignedUser() != nil {
-		t.Error("assigned_user should be nil for unresolved owner")
-	}
-	if got := trait.GetProfile().GetFields()["unresolved_owner"].GetStringValue(); got != "ghost" {
-		t.Errorf("unresolved_owner = %q, want ghost", got)
+	if got := trait.GetProfile().GetFields()["assigned_username"].GetStringValue(); got != "ghost" {
+		t.Errorf("profile.assigned_username = %q, want ghost", got)
 	}
 	if trait.GetIsEncrypted() == nil || trait.GetIsEncrypted().GetValue() {
 		t.Error("is_encrypted should be explicit false")
@@ -206,6 +220,63 @@ func TestComputerResource_UnresolvedOwnerAndNoLastSeen(t *testing.T) {
 	// No last-seen field should ever be emitted (RFC-C v1). enrolled_at unset here too.
 	if trait.GetEnrolledAt() != nil {
 		t.Error("enrolled_at should be unset when lastEnrolledDate absent")
+	}
+
+	// An assignee that is not a synced Jamf user produces an external-match grant.
+	grants, err := deviceGrants(r, testUserIndex())
+	if err != nil {
+		t.Fatalf("deviceGrants: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant, got %d", len(grants))
+	}
+	match := &v2.ExternalResourceMatch{}
+	grantAnnos := annotations.Annotations(grants[0].GetAnnotations())
+	ok, err := grantAnnos.Pick(match)
+	if err != nil {
+		t.Fatalf("pick ExternalResourceMatch: %v", err)
+	}
+	if !ok {
+		t.Fatal("unresolved grant should carry an ExternalResourceMatch annotation")
+	}
+	if got, want := match.GetResourceType(), v2.ResourceType_TRAIT_USER; got != want {
+		t.Errorf("match resource type = %v, want %v", got, want)
+	}
+	if got, want := match.GetKey(), "username"; got != want {
+		t.Errorf("match key = %q, want %q", got, want)
+	}
+	if got, want := match.GetValue(), "ghost"; got != want {
+		t.Errorf("match value = %q, want %q", got, want)
+	}
+}
+
+func TestComputerResource_NoAssignee(t *testing.T) {
+	c := &jamf.ComputerInventory{
+		ID:       "5",
+		General:  &jamf.ComputerGeneral{Name: "Lab Mac"},
+		Hardware: &jamf.ComputerHardware{ModelIdentifier: "Macmini9,1"},
+	}
+
+	r, err := computerResource(c, nil)
+	if err != nil {
+		t.Fatalf("computerResource: %v", err)
+	}
+
+	// No assignee -> no entitlement and no grant.
+	d := &managedDeviceResourceType{}
+	ents, _, err := d.Entitlements(context.Background(), r, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Entitlements: %v", err)
+	}
+	if len(ents) != 0 {
+		t.Errorf("want 0 entitlements for unassigned device, got %d", len(ents))
+	}
+	grants, err := deviceGrants(r, testUserIndex())
+	if err != nil {
+		t.Fatalf("deviceGrants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Errorf("want 0 grants for unassigned device, got %d", len(grants))
 	}
 }
 
@@ -225,7 +296,7 @@ func TestMobileDeviceResource_Mapping(t *testing.T) {
 		OSBuild:         "21F79",
 	}
 
-	r, err := mobileDeviceResource(m, testUserIndex(), nil)
+	r, err := mobileDeviceResource(m, nil)
 	if err != nil {
 		t.Fatalf("mobileDeviceResource: %v", err)
 	}
@@ -246,8 +317,16 @@ func TestMobileDeviceResource_Mapping(t *testing.T) {
 	if got, want := trait.GetManagementState(), v2.ManagedDeviceTrait_MANAGEMENT_STATE_MANAGED; got != want {
 		t.Errorf("management state = %v, want MANAGED", got)
 	}
-	if trait.GetAssignedUser() == nil || trait.GetAssignedUser().GetResource() != "42" {
-		t.Error("assigned_user should resolve to synced user 42")
+	if got := trait.GetProfile().GetFields()["assigned_username"].GetStringValue(); got != "jappleseed" {
+		t.Errorf("profile.assigned_username = %q, want jappleseed", got)
+	}
+
+	grants, err := deviceGrants(r, testUserIndex())
+	if err != nil {
+		t.Fatalf("deviceGrants: %v", err)
+	}
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "42" {
+		t.Error("assignee should resolve to a direct grant on synced user 42")
 	}
 }
 

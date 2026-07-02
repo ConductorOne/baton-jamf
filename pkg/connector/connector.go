@@ -63,7 +63,6 @@ var (
 		Traits: []v2.ResourceType_Trait{
 			v2.ResourceType_TRAIT_MANAGED_DEVICE,
 		},
-		Annotations: annotationsForManagedDeviceResourceType(),
 	}
 )
 
