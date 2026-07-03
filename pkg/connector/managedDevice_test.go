@@ -118,15 +118,6 @@ func TestComputerResource_FullMapping(t *testing.T) {
 		t.Errorf("os build = %q, want %q", got, want)
 	}
 
-	// assignee identity is stashed in the profile so Entitlements/Grants can
-	// emit the device->user grant.
-	if got := trait.GetProfile().GetFields()["assigned_username"].GetStringValue(); got != "jappleseed" {
-		t.Errorf("profile.assigned_username = %q, want jappleseed", got)
-	}
-	if got := trait.GetProfile().GetFields()["assigned_email"].GetStringValue(); got != "jappleseed@ex.com" {
-		t.Errorf("profile.assigned_email = %q, want jappleseed@ex.com", got)
-	}
-
 	if trait.GetIsEncrypted() == nil || !trait.GetIsEncrypted().GetValue() {
 		t.Error("is_encrypted should be true")
 	}
@@ -145,23 +136,8 @@ func TestComputerResource_FullMapping(t *testing.T) {
 		t.Errorf("enrolled_at = %v, want %v", trait.GetEnrolledAt().AsTime(), wantEnroll)
 	}
 
-	// profile long-tail.
-	fields := trait.GetProfile().GetFields()
-	if fields["site"].GetStringValue() != "HQ" {
-		t.Errorf("profile.site = %q, want HQ", fields["site"].GetStringValue())
-	}
-	if fields["building_id"].GetStringValue() != "3" {
-		t.Errorf("profile.building_id = %q, want 3", fields["building_id"].GetStringValue())
-	}
-	if fields["department_id"].GetStringValue() != "7" {
-		t.Errorf("profile.department_id = %q, want 7", fields["department_id"].GetStringValue())
-	}
-	if !fields["activation_lock_enabled"].GetBoolValue() {
-		t.Error("profile.activation_lock_enabled should be true")
-	}
-
 	// A resolvable assignee produces a direct grant to the synced Jamf user.
-	grants, err := deviceGrants(r, testUserIndex())
+	grants, err := deviceGrants(r, "jappleseed", "jappleseed@ex.com", testUserIndex())
 	if err != nil {
 		t.Fatalf("deviceGrants: %v", err)
 	}
@@ -208,9 +184,6 @@ func TestComputerResource_UnresolvedOwnerAndNoLastSeen(t *testing.T) {
 	if got, want := trait.GetDeviceType(), v2.ManagedDeviceTrait_DEVICE_TYPE_DESKTOP; got != want {
 		t.Errorf("device type = %v, want DESKTOP", got)
 	}
-	if got := trait.GetProfile().GetFields()["assigned_username"].GetStringValue(); got != "ghost" {
-		t.Errorf("profile.assigned_username = %q, want ghost", got)
-	}
 	if trait.GetIsEncrypted() == nil || trait.GetIsEncrypted().GetValue() {
 		t.Error("is_encrypted should be explicit false")
 	}
@@ -223,7 +196,7 @@ func TestComputerResource_UnresolvedOwnerAndNoLastSeen(t *testing.T) {
 	}
 
 	// An assignee that is not a synced Jamf user produces an external-match grant.
-	grants, err := deviceGrants(r, testUserIndex())
+	grants, err := deviceGrants(r, "ghost", "", testUserIndex())
 	if err != nil {
 		t.Fatalf("deviceGrants: %v", err)
 	}
@@ -271,7 +244,7 @@ func TestComputerResource_NoAssignee(t *testing.T) {
 	if len(ents) != 0 {
 		t.Errorf("want 0 entitlements for unassigned device, got %d", len(ents))
 	}
-	grants, err := deviceGrants(r, testUserIndex())
+	grants, err := deviceGrants(r, "", "", testUserIndex())
 	if err != nil {
 		t.Fatalf("deviceGrants: %v", err)
 	}
@@ -317,11 +290,7 @@ func TestMobileDeviceResource_Mapping(t *testing.T) {
 	if got, want := trait.GetManagementState(), v2.ManagedDeviceTrait_MANAGEMENT_STATE_MANAGED; got != want {
 		t.Errorf("management state = %v, want MANAGED", got)
 	}
-	if got := trait.GetProfile().GetFields()["assigned_username"].GetStringValue(); got != "jappleseed" {
-		t.Errorf("profile.assigned_username = %q, want jappleseed", got)
-	}
-
-	grants, err := deviceGrants(r, testUserIndex())
+	grants, err := deviceGrants(r, "jappleseed", "", testUserIndex())
 	if err != nil {
 		t.Fatalf("deviceGrants: %v", err)
 	}

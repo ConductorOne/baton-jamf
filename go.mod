@@ -3,7 +3,7 @@ module github.com/conductorone/baton-jamf
 go 1.25.2
 
 require (
-	github.com/conductorone/baton-sdk v0.16.1-0.20260702201919-983484c7ef64
+	github.com/conductorone/baton-sdk v0.16.1-0.20260703004916-3daeab170e99
 	github.com/ennyjfrick/ruleguard-logfatal v0.0.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/quasilyte/go-ruleguard/dsl v0.3.23

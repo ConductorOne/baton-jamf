@@ -442,11 +442,15 @@ func (x ManagedDeviceTrait_ManagementState) Number() protoreflect.EnumNumber {
 type ManagedDeviceTrait_Compliance int32
 
 const (
-	ManagedDeviceTrait_COMPLIANCE_UNSPECIFIED     ManagedDeviceTrait_Compliance = 0
-	ManagedDeviceTrait_COMPLIANCE_COMPLIANT       ManagedDeviceTrait_Compliance = 1
+	ManagedDeviceTrait_COMPLIANCE_UNSPECIFIED ManagedDeviceTrait_Compliance = 0
+	ManagedDeviceTrait_COMPLIANCE_COMPLIANT   ManagedDeviceTrait_Compliance = 1
+	// Evaluated, but the device fails policy (e.g. not on the latest policy,
+	// disk not encrypted).
 	ManagedDeviceTrait_COMPLIANCE_NONCOMPLIANT    ManagedDeviceTrait_Compliance = 2
 	ManagedDeviceTrait_COMPLIANCE_IN_GRACE_PERIOD ManagedDeviceTrait_Compliance = 3
-	ManagedDeviceTrait_COMPLIANCE_ERROR           ManagedDeviceTrait_Compliance = 4
+	// The compliance check itself failed/errored, so posture could not be
+	// evaluated (as opposed to a clean non-compliant result).
+	ManagedDeviceTrait_COMPLIANCE_ERROR ManagedDeviceTrait_Compliance = 4
 )
 
 // Enum value maps for ManagedDeviceTrait_Compliance.
@@ -2049,8 +2053,11 @@ func (b0 AgentTrait_builder) Build() *AgentTrait {
 // ManagedDeviceTrait is the trait annotation for resources with
 // TRAIT_MANAGED_DEVICE. It is a device asset trait for MDM/UEM inventory: a
 // managed endpoint (laptop, desktop, mobile, etc.) enrolled in a device
-// management platform. Like other asset traits it carries no grants or
-// entitlements; it rides the resource's annotations bag.
+// management platform. The trait itself is pure data and rides the resource's
+// annotations bag, describing the device's hardware, OS, management state, and
+// compliance posture. A device's assigned user is not carried on the trait;
+// assignment is expressed as a grant — an `assigned` entitlement on the device
+// resource, granted to the user principal.
 type ManagedDeviceTrait struct {
 	state                      protoimpl.MessageState             `protogen:"opaque.v1"`
 	xxx_hidden_Serial          string                             `protobuf:"bytes,1,opt,name=serial,proto3"`
@@ -2060,13 +2067,12 @@ type ManagedDeviceTrait struct {
 	xxx_hidden_Model           string                             `protobuf:"bytes,5,opt,name=model,proto3"`
 	xxx_hidden_Vendor          string                             `protobuf:"bytes,6,opt,name=vendor,proto3"`
 	xxx_hidden_Os              *DeviceOS                          `protobuf:"bytes,7,opt,name=os,proto3"`
-	xxx_hidden_Compliance      ManagedDeviceTrait_Compliance      `protobuf:"varint,9,opt,name=compliance,proto3,enum=c1.connector.v2.ManagedDeviceTrait_Compliance"`
-	xxx_hidden_IsEncrypted     *wrapperspb.BoolValue              `protobuf:"bytes,10,opt,name=is_encrypted,json=isEncrypted,proto3"`
-	xxx_hidden_IsSupervised    *wrapperspb.BoolValue              `protobuf:"bytes,11,opt,name=is_supervised,json=isSupervised,proto3"`
-	xxx_hidden_IsPersonal      *wrapperspb.BoolValue              `protobuf:"bytes,12,opt,name=is_personal,json=isPersonal,proto3"`
-	xxx_hidden_ManagementState ManagedDeviceTrait_ManagementState `protobuf:"varint,13,opt,name=management_state,json=managementState,proto3,enum=c1.connector.v2.ManagedDeviceTrait_ManagementState"`
-	xxx_hidden_EnrolledAt      *timestamppb.Timestamp             `protobuf:"bytes,14,opt,name=enrolled_at,json=enrolledAt,proto3"`
-	xxx_hidden_Profile         *structpb.Struct                   `protobuf:"bytes,15,opt,name=profile,proto3"`
+	xxx_hidden_Compliance      ManagedDeviceTrait_Compliance      `protobuf:"varint,8,opt,name=compliance,proto3,enum=c1.connector.v2.ManagedDeviceTrait_Compliance"`
+	xxx_hidden_IsEncrypted     *wrapperspb.BoolValue              `protobuf:"bytes,9,opt,name=is_encrypted,json=isEncrypted,proto3"`
+	xxx_hidden_IsSupervised    *wrapperspb.BoolValue              `protobuf:"bytes,10,opt,name=is_supervised,json=isSupervised,proto3"`
+	xxx_hidden_IsPersonal      *wrapperspb.BoolValue              `protobuf:"bytes,11,opt,name=is_personal,json=isPersonal,proto3"`
+	xxx_hidden_ManagementState ManagedDeviceTrait_ManagementState `protobuf:"varint,12,opt,name=management_state,json=managementState,proto3,enum=c1.connector.v2.ManagedDeviceTrait_ManagementState"`
+	xxx_hidden_EnrolledAt      *timestamppb.Timestamp             `protobuf:"bytes,13,opt,name=enrolled_at,json=enrolledAt,proto3"`
 	unknownFields              protoimpl.UnknownFields
 	sizeCache                  protoimpl.SizeCache
 }
@@ -2187,13 +2193,6 @@ func (x *ManagedDeviceTrait) GetEnrolledAt() *timestamppb.Timestamp {
 	return nil
 }
 
-func (x *ManagedDeviceTrait) GetProfile() *structpb.Struct {
-	if x != nil {
-		return x.xxx_hidden_Profile
-	}
-	return nil
-}
-
 func (x *ManagedDeviceTrait) SetSerial(v string) {
 	x.xxx_hidden_Serial = v
 }
@@ -2246,10 +2245,6 @@ func (x *ManagedDeviceTrait) SetEnrolledAt(v *timestamppb.Timestamp) {
 	x.xxx_hidden_EnrolledAt = v
 }
 
-func (x *ManagedDeviceTrait) SetProfile(v *structpb.Struct) {
-	x.xxx_hidden_Profile = v
-}
-
 func (x *ManagedDeviceTrait) HasOs() bool {
 	if x == nil {
 		return false
@@ -2285,13 +2280,6 @@ func (x *ManagedDeviceTrait) HasEnrolledAt() bool {
 	return x.xxx_hidden_EnrolledAt != nil
 }
 
-func (x *ManagedDeviceTrait) HasProfile() bool {
-	if x == nil {
-		return false
-	}
-	return x.xxx_hidden_Profile != nil
-}
-
 func (x *ManagedDeviceTrait) ClearOs() {
 	x.xxx_hidden_Os = nil
 }
@@ -2312,10 +2300,6 @@ func (x *ManagedDeviceTrait) ClearEnrolledAt() {
 	x.xxx_hidden_EnrolledAt = nil
 }
 
-func (x *ManagedDeviceTrait) ClearProfile() {
-	x.xxx_hidden_Profile = nil
-}
-
 type ManagedDeviceTrait_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
@@ -2332,7 +2316,6 @@ type ManagedDeviceTrait_builder struct {
 	IsPersonal      *wrapperspb.BoolValue
 	ManagementState ManagedDeviceTrait_ManagementState
 	EnrolledAt      *timestamppb.Timestamp
-	Profile         *structpb.Struct
 }
 
 func (b0 ManagedDeviceTrait_builder) Build() *ManagedDeviceTrait {
@@ -2352,7 +2335,6 @@ func (b0 ManagedDeviceTrait_builder) Build() *ManagedDeviceTrait {
 	x.xxx_hidden_IsPersonal = b.IsPersonal
 	x.xxx_hidden_ManagementState = b.ManagementState
 	x.xxx_hidden_EnrolledAt = b.EnrolledAt
-	x.xxx_hidden_Profile = b.Profile
 	return m0
 }
 
@@ -2965,7 +2947,7 @@ const file_c1_connector_v2_annotation_trait_proto_rawDesc = "" +
 	"\x18AGENT_STATUS_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12AGENT_STATUS_READY\x10\x01\x12\x19\n" +
 	"\x15AGENT_STATUS_DISABLED\x10\x02\x12\x18\n" +
-	"\x14AGENT_STATUS_DELETED\x10\x03\"\xc3\n" +
+	"\x14AGENT_STATUS_DELETED\x10\x03\"\x90\n" +
 	"\n" +
 	"\x12ManagedDeviceTrait\x12\x16\n" +
 	"\x06serial\x18\x01 \x01(\tR\x06serial\x12\x12\n" +
@@ -2977,17 +2959,16 @@ const file_c1_connector_v2_annotation_trait_proto_rawDesc = "" +
 	"\x06vendor\x18\x06 \x01(\tR\x06vendor\x12)\n" +
 	"\x02os\x18\a \x01(\v2\x19.c1.connector.v2.DeviceOSR\x02os\x12X\n" +
 	"\n" +
-	"compliance\x18\t \x01(\x0e2..c1.connector.v2.ManagedDeviceTrait.ComplianceB\b\xfaB\x05\x82\x01\x02\x10\x01R\n" +
+	"compliance\x18\b \x01(\x0e2..c1.connector.v2.ManagedDeviceTrait.ComplianceB\b\xfaB\x05\x82\x01\x02\x10\x01R\n" +
 	"compliance\x12=\n" +
-	"\fis_encrypted\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.BoolValueR\visEncrypted\x12?\n" +
-	"\ris_supervised\x18\v \x01(\v2\x1a.google.protobuf.BoolValueR\fisSupervised\x12;\n" +
-	"\vis_personal\x18\f \x01(\v2\x1a.google.protobuf.BoolValueR\n" +
+	"\fis_encrypted\x18\t \x01(\v2\x1a.google.protobuf.BoolValueR\visEncrypted\x12?\n" +
+	"\ris_supervised\x18\n" +
+	" \x01(\v2\x1a.google.protobuf.BoolValueR\fisSupervised\x12;\n" +
+	"\vis_personal\x18\v \x01(\v2\x1a.google.protobuf.BoolValueR\n" +
 	"isPersonal\x12h\n" +
-	"\x10management_state\x18\r \x01(\x0e23.c1.connector.v2.ManagedDeviceTrait.ManagementStateB\b\xfaB\x05\x82\x01\x02\x10\x01R\x0fmanagementState\x12;\n" +
-	"\venrolled_at\x18\x0e \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"enrolledAt\x121\n" +
-	"\aprofile\x18\x0f \x01(\v2\x17.google.protobuf.StructR\aprofile\"\xd2\x01\n" +
+	"\x10management_state\x18\f \x01(\x0e23.c1.connector.v2.ManagedDeviceTrait.ManagementStateB\b\xfaB\x05\x82\x01\x02\x10\x01R\x0fmanagementState\x12;\n" +
+	"\venrolled_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"enrolledAt\"\xd2\x01\n" +
 	"\n" +
 	"DeviceType\x12\x1b\n" +
 	"\x17DEVICE_TYPE_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -3111,14 +3092,13 @@ var file_c1_connector_v2_annotation_trait_proto_depIdxs = []int32{
 	32, // 37: c1.connector.v2.ManagedDeviceTrait.is_personal:type_name -> google.protobuf.BoolValue
 	7,  // 38: c1.connector.v2.ManagedDeviceTrait.management_state:type_name -> c1.connector.v2.ManagedDeviceTrait.ManagementState
 	30, // 39: c1.connector.v2.ManagedDeviceTrait.enrolled_at:type_name -> google.protobuf.Timestamp
-	28, // 40: c1.connector.v2.ManagedDeviceTrait.profile:type_name -> google.protobuf.Struct
-	9,  // 41: c1.connector.v2.DeviceOS.type:type_name -> c1.connector.v2.DeviceOS.OsType
-	1,  // 42: c1.connector.v2.UserTrait.Status.status:type_name -> c1.connector.v2.UserTrait.Status.Status
-	43, // [43:43] is the sub-list for method output_type
-	43, // [43:43] is the sub-list for method input_type
-	43, // [43:43] is the sub-list for extension type_name
-	43, // [43:43] is the sub-list for extension extendee
-	0,  // [0:43] is the sub-list for field type_name
+	9,  // 40: c1.connector.v2.DeviceOS.type:type_name -> c1.connector.v2.DeviceOS.OsType
+	1,  // 41: c1.connector.v2.UserTrait.Status.status:type_name -> c1.connector.v2.UserTrait.Status.Status
+	42, // [42:42] is the sub-list for method output_type
+	42, // [42:42] is the sub-list for method input_type
+	42, // [42:42] is the sub-list for extension type_name
+	42, // [42:42] is the sub-list for extension extendee
+	0,  // [0:42] is the sub-list for field type_name
 }
 
 func init() { file_c1_connector_v2_annotation_trait_proto_init() }
