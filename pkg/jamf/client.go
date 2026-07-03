@@ -109,7 +109,18 @@ func (c *Client) keepAliveToken(
 	var target TokenResponse
 	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(&target))
 	if err != nil {
-		return err
+		// The keep-alive endpoint requires a still-valid token. After an idle
+		// period (e.g. between syncs, or before a sporadic provisioning task)
+		// the token can fully expire, in which case keep-alive returns 401.
+		// A dead token can't be refreshed, so recover by minting a fresh one
+		// from the configured credentials.
+		l.Debug("token keep-alive failed; creating a new token from credentials", zap.Error(err))
+		token, createErr := c.CreateBearerToken(ctx, c.userName, c.password)
+		if createErr != nil {
+			return fmt.Errorf("jamf-connector: failed to refresh expired token: %w", createErr)
+		}
+		c.SetBearerToken(token)
+		return nil
 	}
 	err = response.Body.Close()
 	if err != nil {
