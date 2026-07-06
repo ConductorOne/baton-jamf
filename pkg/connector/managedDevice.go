@@ -61,7 +61,7 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 		return nil, nil, fmt.Errorf("jamf-connector: failed to parse device page token: %w", err)
 	}
 	if bag.Current() == nil {
-		bag.Push(pagination.PageState{ResourceTypeID: devicePhaseComputer, Token: "0"})
+		bag.Push(pagination.PageState{ResourceTypeID: devicePhaseComputer, Token: newDevicePageToken(0, 0)})
 	}
 
 	pageSize := attrs.PageToken.Size
@@ -70,10 +70,7 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 	}
 
 	current := bag.Current()
-	page, err := strconv.Atoi(current.Token)
-	if err != nil {
-		page = 0
-	}
+	page, seen := parseDevicePageToken(current.Token)
 
 	var resources []*v2.Resource
 
@@ -94,14 +91,14 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 			}
 			resources = append(resources, r)
 		}
-		if hasMorePages(page, pageSize, resp.TotalCount, len(resp.Results)) {
-			if err := bag.Next(strconv.Itoa(page + 1)); err != nil {
+		if hasMorePages(seen, pageSize, resp.TotalCount, len(resp.Results)) {
+			if err := bag.Next(newDevicePageToken(page+1, seen+len(resp.Results))); err != nil {
 				return nil, nil, err
 			}
 		} else {
 			// Computers exhausted; advance to the mobile-device phase.
 			bag.Pop()
-			bag.Push(pagination.PageState{ResourceTypeID: devicePhaseMobile, Token: "0"})
+			bag.Push(pagination.PageState{ResourceTypeID: devicePhaseMobile, Token: newDevicePageToken(0, 0)})
 		}
 
 	case devicePhaseMobile:
@@ -118,8 +115,8 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 			d.recordDeviceOwner(r, m.Username, "")
 			resources = append(resources, r)
 		}
-		if hasMorePages(page, pageSize, resp.TotalCount, len(resp.Results)) {
-			if err := bag.Next(strconv.Itoa(page + 1)); err != nil {
+		if hasMorePages(seen, pageSize, resp.TotalCount, len(resp.Results)) {
+			if err := bag.Next(newDevicePageToken(page+1, seen+len(resp.Results))); err != nil {
 				return nil, nil, err
 			}
 		} else {
@@ -338,15 +335,47 @@ func deviceObjectID(phase, id string) string {
 	return fmt.Sprintf("%s:%s", phase, id)
 }
 
-// hasMorePages reports whether another page should be fetched. It relies on the
-// API's totalCount when present, and otherwise falls back to "a full page means
-// there is probably more".
-func hasMorePages(page, pageSize, totalCount, gotThisPage int) bool {
+// newDevicePageToken encodes the next zero-indexed page together with the number
+// of records seen across all prior pages. Carrying the cumulative count lets
+// pagination terminate on actual progress rather than on the requested pageSize,
+// which Jamf may silently cap below the SDK-supplied value.
+func newDevicePageToken(page, seen int) string {
+	return fmt.Sprintf("%d:%d", page, seen)
+}
+
+// parseDevicePageToken decodes a token produced by newDevicePageToken. It also
+// accepts a bare page number ("0") for forward-compatibility with any token that
+// predates the cumulative-count format, treating seen as unknown (0).
+func parseDevicePageToken(token string) (int, int) {
+	if token == "" {
+		return 0, 0
+	}
+	parts := strings.SplitN(token, ":", 2)
+	page, err := strconv.Atoi(parts[0])
+	if err != nil {
+		page = 0
+	}
+	seen := 0
+	if len(parts) == 2 {
+		if s, err := strconv.Atoi(parts[1]); err == nil {
+			seen = s
+		}
+	}
+	return page, seen
+}
+
+// hasMorePages reports whether another page should be fetched. When the API
+// reports a totalCount it compares the cumulative records seen (seenBefore plus
+// this page) against it, so a Jamf-imposed page-size cap that returns short
+// pages cannot make the arithmetic overshoot totalCount and drop devices. When
+// totalCount is absent it falls back to "a full page means there is probably
+// more". An empty page always terminates, guarding against runaway pagination.
+func hasMorePages(seenBefore, pageSize, totalCount, gotThisPage int) bool {
 	if gotThisPage == 0 {
 		return false
 	}
 	if totalCount > 0 {
-		return (page+1)*pageSize < totalCount
+		return seenBefore+gotThisPage < totalCount
 	}
 	return gotThisPage >= pageSize
 }

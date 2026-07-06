@@ -301,21 +301,48 @@ func TestMobileDeviceResource_Mapping(t *testing.T) {
 
 func TestHasMorePages(t *testing.T) {
 	cases := []struct {
-		name                             string
-		page, pageSize, total, gotOnPage int
-		want                             bool
+		name                                   string
+		seenBefore, pageSize, total, gotOnPage int
+		want                                   bool
 	}{
-		{"empty page stops", 0, 100, 500, 0, false},
+		{"empty page stops", 500, 100, 500, 0, false},
 		{"more by total", 0, 100, 250, 100, true},
-		{"last by total", 2, 100, 250, 50, false},
-		{"exact boundary stops", 1, 100, 200, 100, false},
+		{"last by total", 200, 100, 250, 50, false},
+		{"exact boundary stops", 100, 100, 200, 100, false},
 		{"unknown total full page continues", 0, 100, 0, 100, true},
 		{"unknown total partial page stops", 0, 100, 0, 40, false},
+		// Jamf caps page-size below the requested value: pages return fewer
+		// records than pageSize, but cumulative progress keeps paging until
+		// totalCount is reached instead of terminating early.
+		{"capped first page continues", 0, 1000, 500, 200, true},
+		{"capped middle page continues", 200, 1000, 500, 200, true},
+		{"capped final page stops", 400, 1000, 500, 100, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := hasMorePages(tc.page, tc.pageSize, tc.total, tc.gotOnPage); got != tc.want {
-				t.Errorf("hasMorePages(%d,%d,%d,%d) = %v, want %v", tc.page, tc.pageSize, tc.total, tc.gotOnPage, got, tc.want)
+			if got := hasMorePages(tc.seenBefore, tc.pageSize, tc.total, tc.gotOnPage); got != tc.want {
+				t.Errorf("hasMorePages(%d,%d,%d,%d) = %v, want %v", tc.seenBefore, tc.pageSize, tc.total, tc.gotOnPage, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseDevicePageToken(t *testing.T) {
+	cases := []struct {
+		token              string
+		wantPage, wantSeen int
+	}{
+		{"", 0, 0},
+		{"0:0", 0, 0},
+		{"3:250", 3, 250},
+		{"5", 5, 0}, // bare page number: seen unknown
+		{"bad", 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.token, func(t *testing.T) {
+			page, seen := parseDevicePageToken(tc.token)
+			if page != tc.wantPage || seen != tc.wantSeen {
+				t.Errorf("parseDevicePageToken(%q) = (%d,%d), want (%d,%d)", tc.token, page, seen, tc.wantPage, tc.wantSeen)
 			}
 		})
 	}
