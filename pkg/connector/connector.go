@@ -57,10 +57,23 @@ var (
 			v2.ResourceType_TRAIT_ROLE,
 		},
 	}
+	resourceTypeManagedDevice = &v2.ResourceType{
+		Id:          "managedDevice",
+		DisplayName: "Managed Device",
+		Traits: []v2.ResourceType_Trait{
+			v2.ResourceType_TRAIT_MANAGED_DEVICE,
+		},
+		Annotations: annotationsForManagedDeviceResourceType(),
+	}
 )
 
 type Jamf struct {
 	client *jamf.Client
+
+	// opts carries the runtime sync-resource-type selection. It is nil for the
+	// zero-value builder used to emit capabilities/config metadata, and non-nil
+	// for every real sync (see cli.ConnectorOpts, populated in New).
+	opts *cli.ConnectorOpts
 }
 
 func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorbuilder.ConnectorBuilderV2, []connectorbuilder.Opt, error) {
@@ -83,13 +96,13 @@ func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorb
 	}
 	client.SetBearerToken(token)
 
-	return &Jamf{client: client}, nil, nil
+	return &Jamf{client: client, opts: opts}, nil, nil
 }
 
 func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
 	return &v2.ConnectorMetadata{
 		DisplayName: "Jamf",
-		Description: "Connector syncing groups, users, user accounts, user groups, sites, and roles from Jamf Pro to Baton",
+		Description: "Connector syncing groups, users, user accounts, user groups, sites, roles, and managed devices from Jamf Pro to Baton",
 	}, nil
 }
 
@@ -106,7 +119,7 @@ func (j *Jamf) Validate(ctx context.Context) (annotations.Annotations, error) {
 }
 
 func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncerV2 {
-	return []connectorbuilder.ResourceSyncerV2{
+	syncers := []connectorbuilder.ResourceSyncerV2{
 		userBuilder(j.client),
 		groupBuilder(j.client),
 		userAccountBuilder(j.client),
@@ -114,4 +127,31 @@ func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceS
 		siteBuilder(j.client),
 		roleBuilder(j.client),
 	}
+
+	// managedDevice is opt-in (see annotationsForManagedDeviceResourceType). The
+	// SDK sync engine does not itself honor the OptInRequired annotation — with
+	// no --sync-resource-types filter it syncs every advertised type
+	// (pkg/sync/syncer.go SyncResourceTypes). To keep the type OFF by default for
+	// local/CLI runs too, we only register the device syncer when the operator
+	// has explicitly selected it. The type is still advertised (with
+	// opt_in_required: true) whenever opts is absent, i.e. when the connector
+	// emits capabilities metadata.
+	if j.shouldSyncManagedDevice() {
+		syncers = append(syncers, managedDeviceBuilder(j.client))
+	}
+
+	return syncers
+}
+
+// shouldSyncManagedDevice reports whether the opt-in managedDevice syncer should
+// be registered for this run. Metadata generation (nil opts) always advertises
+// it so baton_capabilities.json carries opt_in_required: true. A real sync
+// registers it only when the resource-type filter explicitly names it, so an
+// empty filter ("sync everything") leaves devices — and their Jamf "Read
+// Computers" / "Read Mobile Devices" API calls — off.
+func (j *Jamf) shouldSyncManagedDevice() bool {
+	if j.opts == nil {
+		return true
+	}
+	return j.opts.SyncFilterIsExplicit() && j.opts.WillSyncResourceType(resourceTypeManagedDevice.Id)
 }

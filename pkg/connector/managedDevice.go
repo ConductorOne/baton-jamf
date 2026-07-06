@@ -1,0 +1,613 @@
+package connector
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/conductorone/baton-jamf/pkg/jamf"
+	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
+	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
+	"github.com/conductorone/baton-sdk/pkg/types/grant"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+)
+
+const (
+	// Sync phases, tracked in the pagination bag so the single ManagedDevice
+	// resource type can walk two Jamf endpoints (computers, then mobile devices)
+	// across many paginated List calls.
+	devicePhaseComputer = "computer"
+	devicePhaseMobile   = "mobile"
+
+	// defaultDevicePageSize is used when the SDK does not supply a page size.
+	defaultDevicePageSize = 100
+
+	// assignedEntitlement links a device to the user it is assigned to.
+	assignedEntitlement = "assigned"
+)
+
+type deviceOwner struct {
+	username string
+	email    string
+}
+
+type managedDeviceResourceType struct {
+	resourceType *v2.ResourceType
+	client       *jamf.Client
+
+	// userIndex maps lowercased username / email keys to the ResourceId of the
+	// synced Jamf user resource, so devices can cross-link their assigned owner.
+	// It is built lazily once per sync and cached.
+	//
+	// deviceOwners maps a device resource id to the assignee identity recorded
+	// while listing devices, so Entitlements/Grants can emit the device->user
+	// grant without carrying it on the resource.
+	mu           sync.Mutex
+	userIndex    map[string]*v2.ResourceId
+	deviceOwners map[string]deviceOwner
+}
+
+func (d *managedDeviceResourceType) ResourceType(_ context.Context) *v2.ResourceType {
+	return d.resourceType
+}
+
+func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
+	bag := &pagination.Bag{}
+	if err := bag.Unmarshal(attrs.PageToken.Token); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: failed to parse device page token: %w", err)
+	}
+	if bag.Current() == nil {
+		bag.Push(pagination.PageState{ResourceTypeID: devicePhaseComputer, Token: newDevicePageToken(0, 0)})
+	}
+
+	pageSize := attrs.PageToken.Size
+	if pageSize <= 0 {
+		pageSize = defaultDevicePageSize
+	}
+
+	current := bag.Current()
+	page, seen := parseDevicePageToken(current.Token)
+
+	var resources []*v2.Resource
+
+	switch current.ResourceTypeID {
+	case devicePhaseComputer:
+		resp, err := d.client.GetComputersInventory(ctx, page, pageSize, jamf.ComputerInventorySections)
+		if err != nil {
+			return nil, nil, fmt.Errorf("jamf-connector: failed to list computers inventory: %w", err)
+		}
+		for i := range resp.Results {
+			c := &resp.Results[i]
+			r, err := computerResource(c, parentId)
+			if err != nil {
+				return nil, nil, fmt.Errorf("jamf-connector: failed to build computer resource: %w", err)
+			}
+			if c.UserAndLocation != nil {
+				d.recordDeviceOwner(r, c.UserAndLocation.Username, c.UserAndLocation.EmailAddr())
+			}
+			resources = append(resources, r)
+		}
+		if hasMorePages(seen, pageSize, resp.TotalCount, len(resp.Results)) {
+			if err := bag.Next(newDevicePageToken(page+1, seen+len(resp.Results))); err != nil {
+				return nil, nil, err
+			}
+		} else {
+			// Computers exhausted; advance to the mobile-device phase.
+			bag.Pop()
+			bag.Push(pagination.PageState{ResourceTypeID: devicePhaseMobile, Token: newDevicePageToken(0, 0)})
+		}
+
+	case devicePhaseMobile:
+		resp, err := d.client.GetMobileDevices(ctx, page, pageSize)
+		if err != nil {
+			return nil, nil, fmt.Errorf("jamf-connector: failed to list mobile devices: %w", err)
+		}
+		for i := range resp.Results {
+			m := &resp.Results[i]
+			r, err := mobileDeviceResource(m, parentId)
+			if err != nil {
+				return nil, nil, fmt.Errorf("jamf-connector: failed to build mobile device resource: %w", err)
+			}
+			d.recordDeviceOwner(r, m.Username, "")
+			resources = append(resources, r)
+		}
+		if hasMorePages(seen, pageSize, resp.TotalCount, len(resp.Results)) {
+			if err := bag.Next(newDevicePageToken(page+1, seen+len(resp.Results))); err != nil {
+				return nil, nil, err
+			}
+		} else {
+			// Both phases exhausted; popping the last state ends the sync.
+			bag.Pop()
+		}
+
+	default:
+		return nil, nil, fmt.Errorf("jamf-connector: unknown device sync phase %q", current.ResourceTypeID)
+	}
+
+	nextToken, err := bag.Marshal()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return resources, &rs.SyncOpResults{NextPageToken: nextToken}, nil
+}
+
+// Entitlements exposes the "assigned" assignment entitlement, but only for
+// devices that actually report an assignee, so unassigned assets stay clean.
+func (d *managedDeviceResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	username, email := d.deviceAssignee(resource)
+	if username == "" && email == "" {
+		return nil, nil, nil
+	}
+
+	opts := []ent.EntitlementOption{
+		ent.WithGrantableTo(resourceTypeUser),
+		ent.WithDescription(fmt.Sprintf("Assigned user of the %s device", resource.DisplayName)),
+		ent.WithDisplayName(fmt.Sprintf("%s device %s", resource.DisplayName, assignedEntitlement)),
+	}
+
+	return []*v2.Entitlement{ent.NewAssignmentEntitlement(resource, assignedEntitlement, opts...)}, nil, nil
+}
+
+// Grants emits the device->user link as a grant on the "assigned" entitlement.
+// When the assignee is a synced Jamf user it grants that user directly; otherwise
+// it annotates the grant with an ExternalResourceMatch so the platform can bind it
+// to a directory identity from an external source.
+func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	username, email := d.deviceAssignee(resource)
+	if username == "" && email == "" {
+		return nil, nil, nil
+	}
+
+	userIndex, err := d.getUserIndex(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: failed to build user index for device owner resolution: %w", err)
+	}
+
+	grants, err := deviceGrants(resource, username, email, userIndex)
+	if err != nil {
+		return nil, nil, err
+	}
+	return grants, nil, nil
+}
+
+func managedDeviceBuilder(client *jamf.Client) *managedDeviceResourceType {
+	return &managedDeviceResourceType{
+		resourceType: resourceTypeManagedDevice,
+		client:       client,
+	}
+}
+
+// getUserIndex lazily builds (and caches) the username/email -> user ResourceId
+// lookup used to cross-link a device to its assigned owner. On error nothing is
+// cached, so a subsequent call retries.
+func (d *managedDeviceResourceType) getUserIndex(ctx context.Context) (map[string]*v2.ResourceId, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.userIndex != nil {
+		return d.userIndex, nil
+	}
+
+	users, err := d.client.GetUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	idx := make(map[string]*v2.ResourceId, len(users))
+	for _, u := range users {
+		if u == nil {
+			continue
+		}
+		rid := &v2.ResourceId{}
+		rid.SetResourceType(resourceTypeUser.Id)
+		rid.SetResource(strconv.Itoa(u.ID))
+
+		for _, key := range []string{u.Name, u.Username, u.Email, u.EmailAddress} {
+			key = strings.ToLower(strings.TrimSpace(key))
+			if key == "" {
+				continue
+			}
+			// First writer wins so a stable user keeps the key on collisions.
+			if _, exists := idx[key]; !exists {
+				idx[key] = rid
+			}
+		}
+	}
+
+	d.userIndex = idx
+	return d.userIndex, nil
+}
+
+// computerResource maps a Jamf computer-inventory record onto a ManagedDevice
+// resource carrying a ManagedDeviceTrait.
+func computerResource(c *jamf.ComputerInventory, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
+	var opts []rs.ManagedDeviceTraitOption
+
+	name := c.ID
+	if c.General != nil && c.General.Name != "" {
+		name = c.General.Name
+	}
+
+	if c.Hardware != nil && c.Hardware.SerialNumber != "" {
+		opts = append(opts, rs.WithManagedDeviceSerial(c.Hardware.SerialNumber))
+	}
+	if c.UDID != "" {
+		opts = append(opts, rs.WithManagedDeviceUDID(c.UDID))
+	}
+
+	if dt, ok := computerDeviceType(c.Hardware); ok {
+		opts = append(opts, rs.WithManagedDeviceType(dt))
+	}
+
+	if c.Hardware != nil {
+		if model := computerModel(c.Hardware); model != "" {
+			opts = append(opts, rs.WithManagedDeviceModel(model))
+		}
+		if c.Hardware.Make != "" {
+			opts = append(opts, rs.WithManagedDeviceVendor(c.Hardware.Make))
+		}
+	}
+
+	if os := computerOS(c.OperatingSystem); os != nil {
+		opts = append(opts, rs.WithManagedDeviceOS(os))
+	}
+
+	if enc, ok := isEncrypted(c.DiskEncryption); ok {
+		opts = append(opts, rs.WithManagedDeviceEncrypted(enc))
+	}
+
+	if c.General != nil {
+		opts = append(opts, rs.WithManagedDeviceSupervised(c.General.Supervised))
+	}
+
+	if managementStateManaged(c.General) {
+		opts = append(opts, rs.WithManagedDeviceManagementState(v2.ManagedDeviceTrait_MANAGEMENT_STATE_MANAGED))
+	}
+
+	if c.General != nil {
+		if t, ok := parseJamfTime(c.General.LastEnrolledDate); ok {
+			opts = append(opts, rs.WithManagedDeviceEnrolledAt(t))
+		}
+	}
+
+	return rs.NewManagedDeviceResource(
+		name,
+		resourceTypeManagedDevice,
+		deviceObjectID(devicePhaseComputer, c.ID),
+		opts,
+		rs.WithParentResourceID(parentResourceID),
+	)
+}
+
+// mobileDeviceResource maps a Jamf mobile-device record onto a ManagedDevice
+// resource. The v2 list endpoint exposes a flatter field set than the computers
+// inventory, so fewer trait fields are populated.
+func mobileDeviceResource(m *jamf.MobileDevice, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
+	var opts []rs.ManagedDeviceTraitOption
+
+	name := m.Name
+	if name == "" {
+		name = m.ID
+	}
+
+	if m.SerialNumber != "" {
+		opts = append(opts, rs.WithManagedDeviceSerial(m.SerialNumber))
+	}
+	if m.UDID != "" {
+		opts = append(opts, rs.WithManagedDeviceUDID(m.UDID))
+	}
+
+	if dt, ok := mobileDeviceType(m); ok {
+		opts = append(opts, rs.WithManagedDeviceType(dt))
+	}
+
+	if model := mobileModel(m); model != "" {
+		opts = append(opts, rs.WithManagedDeviceModel(model))
+	}
+
+	if os := mobileOS(m); os != nil {
+		opts = append(opts, rs.WithManagedDeviceOS(os))
+	}
+
+	opts = append(opts, rs.WithManagedDeviceSupervised(m.Supervised))
+
+	if m.Managed {
+		opts = append(opts, rs.WithManagedDeviceManagementState(v2.ManagedDeviceTrait_MANAGEMENT_STATE_MANAGED))
+	}
+
+	return rs.NewManagedDeviceResource(
+		name,
+		resourceTypeManagedDevice,
+		deviceObjectID(devicePhaseMobile, m.ID),
+		opts,
+		rs.WithParentResourceID(parentResourceID),
+	)
+}
+
+// deviceObjectID namespaces device IDs by source so a computer and a mobile
+// device that happen to share a numeric ID do not collide.
+func deviceObjectID(phase, id string) string {
+	return fmt.Sprintf("%s:%s", phase, id)
+}
+
+// newDevicePageToken encodes the next zero-indexed page together with the number
+// of records seen across all prior pages. Carrying the cumulative count lets
+// pagination terminate on actual progress rather than on the requested pageSize,
+// which Jamf may silently cap below the SDK-supplied value.
+func newDevicePageToken(page, seen int) string {
+	return fmt.Sprintf("%d:%d", page, seen)
+}
+
+// parseDevicePageToken decodes a token produced by newDevicePageToken. It also
+// accepts a bare page number ("0") for forward-compatibility with any token that
+// predates the cumulative-count format, treating seen as unknown (0).
+func parseDevicePageToken(token string) (int, int) {
+	if token == "" {
+		return 0, 0
+	}
+	parts := strings.SplitN(token, ":", 2)
+	page, err := strconv.Atoi(parts[0])
+	if err != nil {
+		page = 0
+	}
+	seen := 0
+	if len(parts) == 2 {
+		if s, err := strconv.Atoi(parts[1]); err == nil {
+			seen = s
+		}
+	}
+	return page, seen
+}
+
+// hasMorePages reports whether another page should be fetched. When the API
+// reports a totalCount it compares the cumulative records seen (seenBefore plus
+// this page) against it, so a Jamf-imposed page-size cap that returns short
+// pages cannot make the arithmetic overshoot totalCount and drop devices. When
+// totalCount is absent it falls back to "a full page means there is probably
+// more". An empty page always terminates, guarding against runaway pagination.
+func hasMorePages(seenBefore, pageSize, totalCount, gotThisPage int) bool {
+	if gotThisPage == 0 {
+		return false
+	}
+	if totalCount > 0 {
+		return seenBefore+gotThisPage < totalCount
+	}
+	return gotThisPage >= pageSize
+}
+
+// computerDeviceType derives LAPTOP vs DESKTOP from the Apple model identifier.
+// Every Mac is one or the other, so once a model string exists the only
+// ambiguity is laptop vs desktop, which "book" (MacBook / MacBook Pro / Air)
+// resolves cleanly.
+func computerDeviceType(hw *jamf.ComputerHardware) (v2.ManagedDeviceTrait_DeviceType, bool) {
+	if hw == nil {
+		return 0, false
+	}
+	id := strings.ToLower(hw.ModelIdentifier)
+	if id == "" {
+		id = strings.ToLower(hw.Model)
+	}
+	if id == "" {
+		return 0, false
+	}
+	if strings.Contains(id, "book") {
+		return v2.ManagedDeviceTrait_DEVICE_TYPE_LAPTOP, true
+	}
+	return v2.ManagedDeviceTrait_DEVICE_TYPE_DESKTOP, true
+}
+
+// computerModel prefers the human-friendly model name, falling back to the
+// model identifier.
+func computerModel(hw *jamf.ComputerHardware) string {
+	if hw.Model != "" {
+		return hw.Model
+	}
+	return hw.ModelIdentifier
+}
+
+// computerOS builds a DeviceOS from the operating-system section. Returns nil
+// when there is nothing to report.
+func computerOS(os *jamf.ComputerOperatingSystem) *v2.DeviceOS {
+	if os == nil {
+		return nil
+	}
+	if os.Name == "" && os.Version == "" && os.Build == "" {
+		return nil
+	}
+	d := &v2.DeviceOS{}
+	if t, ok := osTypeFromName(os.Name); ok {
+		d.SetType(t)
+	}
+	if os.Name != "" {
+		d.SetName(os.Name)
+	}
+	if os.Version != "" {
+		d.SetVersion(os.Version)
+	}
+	if os.Build != "" {
+		d.SetBuild_(os.Build)
+	}
+	return d
+}
+
+// osTypeFromName maps a Jamf OS name string onto a DeviceOS_OsType. Unknown
+// names leave the type unset rather than guessing.
+func osTypeFromName(name string) (v2.DeviceOS_OsType, bool) {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "ipados"):
+		return v2.DeviceOS_OS_TYPE_IPADOS, true
+	case strings.Contains(n, "ios"):
+		return v2.DeviceOS_OS_TYPE_IOS, true
+	case strings.Contains(n, "mac"): // "macOS", "Mac OS X"
+		return v2.DeviceOS_OS_TYPE_MACOS, true
+	}
+	return 0, false
+}
+
+// isEncrypted derives a tri-state disk-encryption flag from the boot partition
+// FileVault 2 state. Only definitive states assert a value; transitional or
+// unknown states leave it unset.
+func isEncrypted(de *jamf.ComputerDiskEncryption) (bool, bool) {
+	if de == nil || de.BootPartitionEncryptionDetails == nil {
+		return false, false
+	}
+	switch strings.ToUpper(strings.TrimSpace(de.BootPartitionEncryptionDetails.PartitionFileVault2State)) {
+	case "ENCRYPTED", "VALID":
+		return true, true
+	case "NOT_ENCRYPTED", "DECRYPTED":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// managementStateManaged reports whether a computer should be considered MANAGED:
+// it must be MDM-capable and actively remotely managed.
+func managementStateManaged(g *jamf.ComputerGeneral) bool {
+	if g == nil {
+		return false
+	}
+	mdm := g.MDMCapable != nil && g.MDMCapable.Capable
+	remote := g.RemoteManagement != nil && g.RemoteManagement.Managed
+	return mdm && remote
+}
+
+// mobileDeviceType derives the device form factor for a mobile device. iPads map
+// to TABLET; iPhones and other iOS devices map to MOBILE.
+func mobileDeviceType(m *jamf.MobileDevice) (v2.ManagedDeviceTrait_DeviceType, bool) {
+	id := strings.ToLower(strings.Join([]string{m.ModelIdentifier, m.Model, m.Type}, " "))
+	switch {
+	case strings.Contains(id, "ipad"):
+		return v2.ManagedDeviceTrait_DEVICE_TYPE_TABLET, true
+	case strings.Contains(id, "iphone"), strings.Contains(id, "ios"):
+		return v2.ManagedDeviceTrait_DEVICE_TYPE_MOBILE, true
+	}
+	return 0, false
+}
+
+// mobileModel prefers the model name, falling back to the model identifier.
+func mobileModel(m *jamf.MobileDevice) string {
+	if m.Model != "" {
+		return m.Model
+	}
+	return m.ModelIdentifier
+}
+
+// mobileOS builds a DeviceOS for a mobile device from the type / model hints and
+// the reported OS version/build.
+func mobileOS(m *jamf.MobileDevice) *v2.DeviceOS {
+	d := &v2.DeviceOS{}
+	id := strings.ToLower(strings.Join([]string{m.ModelIdentifier, m.Model}, " "))
+	switch {
+	case strings.Contains(id, "ipad"):
+		d.SetType(v2.DeviceOS_OS_TYPE_IPADOS)
+		d.SetName("iPadOS")
+	case strings.Contains(id, "iphone"), strings.Contains(strings.ToLower(m.Type), "ios"):
+		d.SetType(v2.DeviceOS_OS_TYPE_IOS)
+		d.SetName("iOS")
+	}
+	if m.OSVersion != "" {
+		d.SetVersion(m.OSVersion)
+	}
+	if m.OSBuild != "" {
+		d.SetBuild_(m.OSBuild)
+	}
+	if d.GetType() == v2.DeviceOS_OS_TYPE_UNSPECIFIED && d.GetName() == "" && d.GetVersion() == "" && d.GetBuild_() == "" {
+		return nil
+	}
+	return d
+}
+
+// resolveUser looks up a synced user ResourceId by username then email.
+func resolveUser(idx map[string]*v2.ResourceId, username, email string) (*v2.ResourceId, bool) {
+	for _, key := range []string{username, email} {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "" {
+			continue
+		}
+		if rid, ok := idx[key]; ok {
+			return rid, true
+		}
+	}
+	return nil, false
+}
+
+// recordDeviceOwner caches a device's assignee identity (keyed by device
+// resource id) while listing devices, so Entitlements/Grants can emit the
+// device->user grant. No-op when the device reports no owner.
+func (d *managedDeviceResourceType) recordDeviceOwner(resource *v2.Resource, username, email string) {
+	if username == "" && email == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.deviceOwners == nil {
+		d.deviceOwners = make(map[string]deviceOwner)
+	}
+	d.deviceOwners[resource.GetId().GetResource()] = deviceOwner{username: username, email: email}
+}
+
+// deviceAssignee returns the assignee identity (username, email) recorded for a
+// device during List. Empty strings mean the device reports no owner.
+func (d *managedDeviceResourceType) deviceAssignee(resource *v2.Resource) (string, string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	o := d.deviceOwners[resource.GetId().GetResource()]
+	return o.username, o.email
+}
+
+// deviceGrants builds the device->user grant(s) for the assignee. A synced Jamf
+// user is granted directly; an unsynced assignee produces a grant carrying an
+// ExternalResourceMatch so the platform binds it to a directory identity.
+func deviceGrants(resource *v2.Resource, username, email string, userIndex map[string]*v2.ResourceId) ([]*v2.Grant, error) {
+	if username == "" && email == "" {
+		return nil, nil
+	}
+
+	if rid, ok := resolveUser(userIndex, username, email); ok {
+		return []*v2.Grant{grant.NewGrant(resource, assignedEntitlement, rid)}, nil
+	}
+
+	key, value := "email", strings.TrimSpace(email)
+	if value == "" {
+		key, value = "username", strings.TrimSpace(username)
+	}
+
+	principal, err := rs.NewResourceID(resourceTypeUser, value)
+	if err != nil {
+		return nil, err
+	}
+	match := v2.ExternalResourceMatch_builder{
+		ResourceType: v2.ResourceType_TRAIT_USER,
+		Key:          key,
+		Value:        value,
+	}.Build()
+
+	return []*v2.Grant{grant.NewGrant(resource, assignedEntitlement, principal, grant.WithAnnotation(match))}, nil
+}
+
+// parseJamfTime parses the ISO-8601 timestamps Jamf returns. Returns ok=false
+// on empty or unparseable input so callers leave the field unset.
+func parseJamfTime(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.000-0700",
+		"2006-01-02T15:04:05-0700",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
