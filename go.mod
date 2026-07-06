@@ -1,6 +1,6 @@
 module github.com/conductorone/baton-jamf
 
-go 1.25.2
+go 1.25.10
 
 require (
 	github.com/conductorone/baton-sdk v0.17.0
