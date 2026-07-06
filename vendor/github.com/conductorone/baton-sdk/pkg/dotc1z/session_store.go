@@ -15,8 +15,6 @@ type SessionStore interface {
 	sessions.SessionStore
 }
 
-var _ sessions.SessionStore = (*C1File)(nil)
-
 const sessionStoreTableVersion = "1"
 const sessionStoreTableName = "connector_sessions"
 const sessionStoreTableSchema = `
@@ -55,8 +53,8 @@ func (r *sessionStoreTable) Schema() (string, []interface{}) {
 	}
 }
 
-func (r *sessionStoreTable) Migrations(ctx context.Context, db *goqu.Database) error {
-	return nil
+func (r *sessionStoreTable) Migrations(ctx context.Context, db *goqu.Database) (bool, error) {
+	return false, nil
 }
 
 func applyBag(ctx context.Context, opt ...sessions.SessionStoreOption) (*sessions.SessionStoreBag, error) {
@@ -74,7 +72,12 @@ func applyBag(ctx context.Context, opt ...sessions.SessionStoreOption) (*session
 }
 
 // Get implements types.SessionCache.
-func (c *C1File) Get(ctx context.Context, key string, opt ...sessions.SessionStoreOption) ([]byte, bool, error) {
+func (c *C1File) SessionGet(ctx context.Context, key string, opt ...sessions.SessionStoreOption) ([]byte, bool, error) {
+	err := c.validateDb(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+
 	bag, err := applyBag(ctx, opt...)
 	if err != nil {
 		return nil, false, fmt.Errorf("error applying session option: %w", err)
@@ -115,7 +118,12 @@ func (c *C1File) Get(ctx context.Context, key string, opt ...sessions.SessionSto
 }
 
 // Set implements types.SessionStore.
-func (c *C1File) Set(ctx context.Context, key string, value []byte, opt ...sessions.SessionStoreOption) error {
+func (c *C1File) SessionSet(ctx context.Context, key string, value []byte, opt ...sessions.SessionStoreOption) error {
+	err := c.validateDb(ctx)
+	if err != nil {
+		return err
+	}
+
 	bag, err := applyBag(ctx, opt...)
 	if err != nil {
 		return fmt.Errorf("error applying session option: %w", err)
@@ -144,7 +152,7 @@ func (c *C1File) Set(ctx context.Context, key string, value []byte, opt ...sessi
 }
 
 // SetMany implements types.SessionStore.
-func (c *C1File) SetMany(ctx context.Context, values map[string][]byte, opt ...sessions.SessionStoreOption) error {
+func (c *C1File) SessionSetMany(ctx context.Context, values map[string][]byte, opt ...sessions.SessionStoreOption) error {
 	bag, err := applyBag(ctx, opt...)
 	if err != nil {
 		return fmt.Errorf("error applying session option: %w", err)
@@ -152,6 +160,11 @@ func (c *C1File) SetMany(ctx context.Context, values map[string][]byte, opt ...s
 
 	if len(values) == 0 {
 		return nil
+	}
+
+	err = c.validateDb(ctx)
+	if err != nil {
+		return err
 	}
 
 	// Build batch insert
@@ -182,7 +195,12 @@ func (c *C1File) SetMany(ctx context.Context, values map[string][]byte, opt ...s
 }
 
 // Delete implements types.SessionStore.
-func (c *C1File) Delete(ctx context.Context, key string, opt ...sessions.SessionStoreOption) error {
+func (c *C1File) SessionDelete(ctx context.Context, key string, opt ...sessions.SessionStoreOption) error {
+	err := c.validateDb(ctx)
+	if err != nil {
+		return err
+	}
+
 	bag, err := applyBag(ctx, opt...)
 	if err != nil {
 		return fmt.Errorf("error applying session option: %w", err)
@@ -206,7 +224,12 @@ func (c *C1File) Delete(ctx context.Context, key string, opt ...sessions.Session
 }
 
 // Clear implements types.SessionStore.
-func (c *C1File) Clear(ctx context.Context, opt ...sessions.SessionStoreOption) error {
+func (c *C1File) SessionClear(ctx context.Context, opt ...sessions.SessionStoreOption) error {
+	err := c.validateDb(ctx)
+	if err != nil {
+		return err
+	}
+
 	bag, err := applyBag(ctx, opt...)
 	if err != nil {
 		return fmt.Errorf("error applying session option: %w", err)
@@ -234,7 +257,12 @@ func (c *C1File) Clear(ctx context.Context, opt ...sessions.SessionStoreOption) 
 }
 
 // GetMany implements types.SessionStore.
-func (c *C1File) GetMany(ctx context.Context, keys []string, opt ...sessions.SessionStoreOption) (map[string][]byte, []string, error) {
+func (c *C1File) SessionGetMany(ctx context.Context, keys []string, opt ...sessions.SessionStoreOption) (map[string][]byte, []string, error) {
+	err := c.validateDb(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	bag, err := applyBag(ctx, opt...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("session-get-many: error applying session option: %w", err)
@@ -321,7 +349,7 @@ func (c *C1File) GetMany(ctx context.Context, keys []string, opt ...sessions.Ses
 }
 
 // GetAll implements types.SessionStore.
-func (c *C1File) GetAll(ctx context.Context, pageToken string, opt ...sessions.SessionStoreOption) (map[string][]byte, string, error) {
+func (c *C1File) SessionGetAll(ctx context.Context, pageToken string, opt ...sessions.SessionStoreOption) (map[string][]byte, string, error) {
 	bag, err := applyBag(ctx, opt...)
 	if err != nil {
 		return nil, "", fmt.Errorf("session-get-all: error applying session option: %w", err)
@@ -360,6 +388,11 @@ func (c *C1File) GetAll(ctx context.Context, pageToken string, opt ...sessions.S
 }
 
 func (c *C1File) getAllChunk(ctx context.Context, pageToken string, sizeLimit int, bag *sessions.SessionStoreBag) (map[string][]byte, string, int, error) {
+	err := c.validateDb(ctx)
+	if err != nil {
+		return nil, "", 0, err
+	}
+
 	q := c.db.From(sessionStore.Name()).Prepared(true).
 		Select("key", "value").
 		Where(goqu.C("sync_id").Eq(bag.SyncID)).

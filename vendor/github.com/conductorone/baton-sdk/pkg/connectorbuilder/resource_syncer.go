@@ -9,6 +9,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/conductorone/baton-sdk/pkg/types/tasks"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -82,14 +83,15 @@ func (b *builder) ListResourceTypes(
 	request *v2.ResourceTypesServiceListResourceTypesRequest,
 ) (*v2.ResourceTypesServiceListResourceTypesResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.ListResourceTypes")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.ListResourceTypesType
 	var out []*v2.ResourceType
 
 	if len(b.resourceSyncers) == 0 {
-		err := status.Error(codes.FailedPrecondition, "no resource builders found")
+		err = status.Error(codes.FailedPrecondition, "no resource builders found")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -99,7 +101,7 @@ func (b *builder) ListResourceTypes(
 	}
 
 	if len(out) == 0 {
-		err := status.Error(codes.FailedPrecondition, "no resource types found")
+		err = status.Error(codes.FailedPrecondition, "no resource types found")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -111,13 +113,14 @@ func (b *builder) ListResourceTypes(
 // ListResources returns all available resources for a given resource type ID.
 func (b *builder) ListResources(ctx context.Context, request *v2.ResourcesServiceListResourcesRequest) (*v2.ResourcesServiceListResourcesResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.ListResources")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.ListResourcesType
 	rb, ok := b.resourceSyncers[request.GetResourceTypeId()]
 	if !ok {
-		err := status.Errorf(codes.NotFound, "error: list resources with unknown resource type %s", request.GetResourceTypeId())
+		err = status.Errorf(codes.NotFound, "error: list resources with unknown resource type %s", request.GetResourceTypeId())
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -142,7 +145,7 @@ func (b *builder) ListResources(ctx context.Context, request *v2.ResourcesServic
 		return resp, fmt.Errorf("error: listing resources failed: %w", err)
 	}
 	if request.GetPageToken() != "" && request.GetPageToken() == retOptions.NextPageToken {
-		err := status.Errorf(codes.Internal,
+		err = status.Errorf(codes.Internal,
 			"listing resources failed: next page token unchanged (token=%s, type=%s, parent=%s) - likely a connector bug",
 			request.GetPageToken(), request.GetResourceTypeId(), request.GetParentResourceId())
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
@@ -155,14 +158,15 @@ func (b *builder) ListResources(ctx context.Context, request *v2.ResourcesServic
 
 func (b *builder) GetResource(ctx context.Context, request *v2.ResourceGetterServiceGetResourceRequest) (*v2.ResourceGetterServiceGetResourceResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.GetResource")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.GetResourceType
 	resourceType := request.GetResourceId().GetResourceType()
 	rb, ok := b.resourceTargetedSyncers[resourceType]
 	if !ok {
-		err := status.Errorf(codes.Unimplemented, "error: get resource with unknown resource type %s", resourceType)
+		err = status.Errorf(codes.Unimplemented, "error: get resource with unknown resource type %s", resourceType)
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -172,7 +176,7 @@ func (b *builder) GetResource(ctx context.Context, request *v2.ResourceGetterSer
 		return nil, fmt.Errorf("error: get resource failed: %w", err)
 	}
 	if resource == nil {
-		err := status.Error(codes.NotFound, "error: get resource returned nil")
+		err = status.Error(codes.NotFound, "error: get resource returned nil")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -188,13 +192,14 @@ func (b *builder) GetResource(ctx context.Context, request *v2.ResourceGetterSer
 // Static entitlements are used to create entitlements for all resources of a given resource type.
 func (b *builder) ListStaticEntitlements(ctx context.Context, request *v2.EntitlementsServiceListStaticEntitlementsRequest) (*v2.EntitlementsServiceListStaticEntitlementsResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.ListStaticEntitlements")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.ListStaticEntitlementsType
 	rb, ok := b.resourceSyncers[request.GetResourceTypeId()]
 	if !ok {
-		err := status.Errorf(codes.NotFound, "error: list static entitlements with unknown resource type %s", request.GetResourceTypeId())
+		err = status.Errorf(codes.NotFound, "error: list static entitlements with unknown resource type %s", request.GetResourceTypeId())
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -228,9 +233,14 @@ func (b *builder) ListStaticEntitlements(ctx context.Context, request *v2.Entitl
 		return nil, fmt.Errorf("error: listing static entitlements failed: %w", err)
 	}
 	if request.GetPageToken() != "" && request.GetPageToken() == retOptions.NextPageToken {
-		err := status.Error(codes.Internal, "listing static entitlements failed: next page token unchanged - likely a connector bug")
+		err = status.Error(codes.Internal, "listing static entitlements failed: next page token unchanged - likely a connector bug")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return resp, err
+	}
+
+	if err = validateExclusionGroupAnnotations(out); err != nil {
+		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
+		return nil, err
 	}
 
 	b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
@@ -240,13 +250,14 @@ func (b *builder) ListStaticEntitlements(ctx context.Context, request *v2.Entitl
 // ListEntitlements returns all the entitlements for a given resource.
 func (b *builder) ListEntitlements(ctx context.Context, request *v2.EntitlementsServiceListEntitlementsRequest) (*v2.EntitlementsServiceListEntitlementsResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.ListEntitlements")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.ListEntitlementsType
 	rb, ok := b.resourceSyncers[request.GetResource().GetId().GetResourceType()]
 	if !ok {
-		err := status.Errorf(codes.NotFound, "error: list entitlements with unknown resource type %s", request.GetResource().GetId().GetResourceType())
+		err = status.Errorf(codes.NotFound, "error: list entitlements with unknown resource type %s", request.GetResource().GetId().GetResourceType())
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -270,9 +281,14 @@ func (b *builder) ListEntitlements(ctx context.Context, request *v2.Entitlements
 		return resp, fmt.Errorf("error: listing entitlements failed: %w", err)
 	}
 	if request.GetPageToken() != "" && request.GetPageToken() == retOptions.NextPageToken {
-		err := status.Error(codes.Internal, "listing entitlements failed: next page token unchanged - likely a connector bug")
+		err = status.Error(codes.Internal, "listing entitlements failed: next page token unchanged - likely a connector bug")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return resp, err
+	}
+
+	if err = validateExclusionGroupAnnotations(out); err != nil {
+		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
+		return nil, err
 	}
 
 	b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
@@ -282,13 +298,14 @@ func (b *builder) ListEntitlements(ctx context.Context, request *v2.Entitlements
 // ListGrants lists all the grants for a given resource.
 func (b *builder) ListGrants(ctx context.Context, request *v2.GrantsServiceListGrantsRequest) (*v2.GrantsServiceListGrantsResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.ListGrants")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.ListGrantsType
 
 	if request.GetResource() == nil {
-		err := status.Error(codes.InvalidArgument, "error: list grants requires a resource")
+		err = status.Error(codes.InvalidArgument, "error: list grants requires a resource")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -296,7 +313,7 @@ func (b *builder) ListGrants(ctx context.Context, request *v2.GrantsServiceListG
 	rid := request.GetResource().GetId()
 	rb, ok := b.resourceSyncers[rid.GetResourceType()]
 	if !ok {
-		err := status.Errorf(codes.NotFound, "error: list grants with unknown resource type %s", rid.GetResourceType())
+		err = status.Errorf(codes.NotFound, "error: list grants with unknown resource type %s", rid.GetResourceType())
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -322,7 +339,7 @@ func (b *builder) ListGrants(ctx context.Context, request *v2.GrantsServiceListG
 		return resp, fmt.Errorf("error: listing grants for resource %s/%s failed: %w", rid.GetResourceType(), rid.GetResource(), err)
 	}
 	if request.GetPageToken() != "" && request.GetPageToken() == retOptions.NextPageToken {
-		err := status.Errorf(codes.Internal,
+		err = status.Errorf(codes.Internal,
 			"listing grants for resource %s/%s failed: next page token unchanged - likely a connector bug",
 			rid.GetResourceType(), rid.GetResource())
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
@@ -418,5 +435,26 @@ func (b *builder) addResourceSyncers(ctx context.Context, typeId string, in any)
 		}
 	}
 
+	return nil
+}
+
+// validateExclusionGroupAnnotations checks that each entitlement has at most one
+// EntitlementExclusionGroup annotation. An entitlement may belong to at most one
+// exclusion group.
+func validateExclusionGroupAnnotations(ents []*v2.Entitlement) error {
+	for _, ent := range ents {
+		count := 0
+		for _, a := range ent.GetAnnotations() {
+			if a.MessageIs(&v2.EntitlementExclusionGroup{}) {
+				count++
+				if count > 1 {
+					return status.Errorf(codes.InvalidArgument,
+						"entitlement %s has multiple ExclusionGroup annotations; "+
+							"an entitlement may belong to at most one exclusion group",
+						ent.GetId())
+				}
+			}
+		}
+	}
 	return nil
 }

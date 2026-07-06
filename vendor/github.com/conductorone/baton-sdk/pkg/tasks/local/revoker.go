@@ -11,6 +11,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/provisioner"
 	"github.com/conductorone/baton-sdk/pkg/tasks"
 	"github.com/conductorone/baton-sdk/pkg/types"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
+	"github.com/conductorone/baton-sdk/pkg/uotel/uotelzap"
 )
 
 type localRevoker struct {
@@ -40,11 +42,13 @@ func (m *localRevoker) Next(ctx context.Context) (*v1.Task, time.Duration, error
 
 func (m *localRevoker) Process(ctx context.Context, task *v1.Task, cc types.ConnectorClient) error {
 	ctx, span := tracer.Start(ctx, "localRevoker.Process", trace.WithNewRoot())
-	defer span.End()
+	ctx = uotelzap.WithSpanLogFields(ctx)
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	granter := provisioner.NewRevoker(cc, m.dbPath, m.grantID)
 
-	err := granter.Run(ctx)
+	err = granter.Run(ctx)
 	if err != nil {
 		return err
 	}
