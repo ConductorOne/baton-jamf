@@ -14,6 +14,11 @@ sidebarTitle: "Jamf"
 | Groups | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
 | Roles | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
 | Sites | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
+| Managed Devices | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
+
+<Note>
+**Managed Devices is opt-in.** This resource type is off by default so existing connectors keep working after upgrading. Enable it by selecting the **Managed Device** resource type in the connector's sync configuration. When enabled, the Jamf API role used by the connector must additionally have the **Read Computers** and **Read Mobile Devices** privileges, or the sync will fail.
+</Note>
 
 ## Gather Jamf credentials 
 

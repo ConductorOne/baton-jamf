@@ -44,6 +44,7 @@ baton resources
 - User Groups
 - Roles
 - Sites
+- Managed Devices
 
 # Contributing, Support, and Issues
 

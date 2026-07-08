@@ -30,8 +30,11 @@ func RunConnector[T field.Configurable](
 ) {
 	f := func(ctx context.Context, cfg T, runTimeOpts cli.RunTimeOpts) (types.ConnectorServer, error) {
 		l := ctxzap.Extract(ctx)
-		connector, builderOpts, err := cf(ctx, cfg, &cli.ConnectorOpts{TokenSource: runTimeOpts.TokenSource,
-			SelectedAuthMethod: runTimeOpts.SelectedAuthMethod})
+		connector, builderOpts, err := cf(ctx, cfg, &cli.ConnectorOpts{
+			TokenSource:         runTimeOpts.TokenSource,
+			SelectedAuthMethod:  runTimeOpts.SelectedAuthMethod,
+			SyncResourceTypeIDs: runTimeOpts.SyncResourceTypeIDs,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -212,7 +215,11 @@ func DefineConfigurationV2[T field.Configurable](
 	if err != nil {
 		return nil, nil, err
 	}
-	if defaultConnector == nil {
+	defaultCapabilitiesFactory, err := connectorrunner.ExtractDefaultCapabilitiesConnectorFactory(ctx, options...)
+	if err != nil {
+		return nil, nil, err
+	}
+	if defaultConnector == nil && defaultCapabilitiesFactory == nil {
 		_, err = cli.AddCommand(mainCMD, v, &schema, &cobra.Command{
 			Use:   "capabilities",
 			Short: "Get connector capabilities",
@@ -278,7 +285,7 @@ func verifyStructFields[T field.Configurable](schema field.Configuration) error 
 		return nil
 	}
 	configType := reflect.TypeOf(config)
-	if configType.Kind() == reflect.Ptr {
+	if configType.Kind() == reflect.Pointer {
 		configType = configType.Elem()
 	}
 	if configType.Kind() != reflect.Struct {

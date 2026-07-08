@@ -13,6 +13,8 @@ import (
 
 	"github.com/conductorone/baton-sdk/pkg/bid"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
+	"github.com/conductorone/baton-sdk/pkg/dotc1z"
+	"github.com/conductorone/baton-sdk/pkg/field"
 	"github.com/conductorone/baton-sdk/pkg/healthcheck"
 	"github.com/conductorone/baton-sdk/pkg/synccompactor"
 	"golang.org/x/sync/semaphore"
@@ -34,18 +36,14 @@ import (
 	"github.com/conductorone/baton-sdk/internal/connector"
 )
 
-const (
-	// taskConcurrency configures how many tasks we run concurrently.
-	taskConcurrency = 3
-)
-
 type connectorRunner struct {
-	cw             types.ClientWrapper
-	oneShot        bool
-	tasks          tasks.Manager
-	debugFile      *os.File
-	debugFileMutex sync.Mutex
-	healthServer   *healthcheck.Server
+	cw              types.ClientWrapper
+	oneShot         bool
+	tasks           tasks.Manager
+	taskConcurrency int // concurrent task slots (>= 1)
+	debugFile       *os.File
+	debugFileMutex  sync.Mutex
+	healthServer    *healthcheck.Server
 }
 
 var ErrSigTerm = errors.New("context cancelled by process shutdown")
@@ -207,9 +205,13 @@ func (c *connectorRunner) backoff(_ context.Context, errCount int) time.Duration
 func (c *connectorRunner) run(ctx context.Context) error {
 	l := ctxzap.Extract(ctx)
 
-	sem := semaphore.NewWeighted(int64(taskConcurrency))
+	if !c.oneShot && c.taskConcurrency != field.TaskConcurrencySchemaDefault {
+		l.Info("runner: task concurrency", zap.Int("slots", c.taskConcurrency))
+	}
 
-	waitDuration := time.Second * 0
+	sem := semaphore.NewWeighted(int64(c.taskConcurrency))
+
+	nextCheckAfter := time.Second * 0
 	errCount := 0
 	stopForLoop := false
 	var err error
@@ -217,7 +219,7 @@ func (c *connectorRunner) run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return c.handleContextCancel(ctx)
-		case <-time.After(waitDuration):
+		case <-time.After(nextCheckAfter):
 			l.Debug("runner: claiming worker")
 			// Acquire a worker slot before we call Next() so we don't claim a task before we can actually process it.
 			err = sem.Acquire(ctx, 1)
@@ -227,24 +229,25 @@ func (c *connectorRunner) run(ctx context.Context) error {
 			}
 			l.Debug("runner: worker claimed, checking for next task")
 
-			// Fetch the next task.
-			nextTask, nextWaitDuration, err := c.tasks.Next(ctx)
+			// Ask the manager for local or remote work. With batched task managers,
+			// the manager owns remote poll deadlines while it buffers local tasks.
+			nextTask, nextCheckAfterFromManager, err := c.tasks.Next(ctx)
 			if err != nil {
 				// TODO(morgabra) Use a library with jitter for this?
 				errCount++
-				waitDuration = c.backoff(ctx, errCount)
-				l.Error("runner: error getting next task", zap.Error(err), zap.Int("err_count", errCount), zap.Duration("wait_duration", waitDuration))
+				nextCheckAfter = c.backoff(ctx, errCount)
+				l.Error("runner: error getting next task", zap.Error(err), zap.Int("err_count", errCount), zap.Duration("next_check_after", nextCheckAfter))
 				sem.Release(1)
 				continue
 			}
 
 			errCount = 0
-			waitDuration = nextWaitDuration
+			nextCheckAfter = nextCheckAfterFromManager
 
 			// nil tasks mean there are no tasks to process.
 			if nextTask == nil {
 				sem.Release(1)
-				l.Debug("runner: no tasks to process", zap.Duration("wait_duration", waitDuration))
+				l.Debug("runner: no tasks to process", zap.Duration("next_check_after", nextCheckAfter))
 				if c.oneShot {
 					l.Debug("runner: one-shot mode enabled. Exiting.")
 					return nil
@@ -286,7 +289,7 @@ func (c *connectorRunner) run(ctx context.Context) error {
 				l.Debug("runner: task processed", zap.String("task_id", t.GetId()), zap.String("task_type", tasks.GetType(t).String()))
 			}(nextTask)
 
-			l.Debug("runner: dispatched task, waiting for next task", zap.Duration("wait_duration", waitDuration))
+			l.Debug("runner: dispatched task, asking manager again after delay", zap.Duration("next_check_after", nextCheckAfter))
 		}
 	}
 
@@ -419,19 +422,25 @@ type runnerConfig struct {
 	syncDifferConfig                      *syncDifferConfig
 	syncCompactorConfig                   *syncCompactorConfig
 	skipFullSync                          bool
+	storageEngine                         dotc1z.Engine
 	workerCount                           int
 	targetedSyncResourceIDs               []string
 	externalResourceC1Z                   string
 	externalResourceEntitlementIdFilter   string
+	keepPreviousSyncC1ZCapable            bool
+	keepPreviousSyncC1ZEnabled            bool
 	skipEntitlementsAndGrants             bool
 	skipGrants                            bool
 	sessionStoreEnabled                   bool
 	syncResourceTypeIDs                   []string
 	defaultCapabilitiesConnectorBuilder   connectorbuilder.ConnectorBuilder
 	defaultCapabilitiesConnectorBuilderV2 connectorbuilder.ConnectorBuilderV2
+	defaultCapabilitiesConnectorFactory   func(ctx context.Context) (types.ConnectorServer, error)
 	healthCheckEnabled                    bool
 	healthCheckPort                       int
 	healthCheckBindAddress                string
+	taskConcurrency                       int // effective task slots after applying WithTaskConcurrency
+	taskConcurrencySet                    bool
 }
 
 func WithSessionStoreEnabled() Option {
@@ -660,6 +669,24 @@ func WithWorkerCount(workerCount int) Option {
 	}
 }
 
+func WithStorageEngine(engine dotc1z.Engine) Option {
+	return func(ctx context.Context, cfg *runnerConfig) error {
+		cfg.storageEngine = engine
+		return nil
+	}
+}
+
+// WithTaskConcurrency sets how many Baton tasks may run concurrently in service mode.
+// n uses the same raw sentinels as sync workers: -1 for auto-detect, 0 for sequential,
+// and >0 for that many concurrent tasks.
+func WithTaskConcurrency(n int) Option {
+	return func(ctx context.Context, cfg *runnerConfig) error {
+		cfg.taskConcurrency = n
+		cfg.taskConcurrencySet = true
+		return nil
+	}
+}
+
 func WithTargetedSyncResources(resourceIDs []string) Option {
 	return func(ctx context.Context, cfg *runnerConfig) error {
 		cfg.targetedSyncResourceIDs = resourceIDs
@@ -740,6 +767,41 @@ func WithExternalResourceEntitlementFilter(entitlementId string) Option {
 	}
 }
 
+// WithKeepPreviousSyncC1Z is the connector AUTHOR's build-time
+// declaration that this connector supports ETag replay in service
+// mode: after each successful upload the runner retains the uploaded
+// c1z as a local spare (one file, fixed name, replaced atomically each
+// sync) and feeds it to the next full sync as the previous-sync replay
+// source.
+//
+// The capability alone does nothing — the CUSTOMER must also enable it
+// at runtime (--keep-previous-sync-c1z / BATON_KEEP_PREVIOUS_SYNC_C1Z,
+// which sets WithKeepPreviousSyncC1ZRuntimeOptIn). Both are required:
+// the author knows whether the connector emits ETags; the customer
+// decides whether to spend a c1z of host disk on the spare. No effect
+// in local/on-demand modes, which keep their c1z at a stable path
+// already.
+func WithKeepPreviousSyncC1Z() Option {
+	return func(ctx context.Context, cfg *runnerConfig) error {
+		cfg.keepPreviousSyncC1ZCapable = true
+		return nil
+	}
+}
+
+// WithKeepPreviousSyncC1ZRuntimeOptIn is the customer's runtime half of
+// the ETag-replay opt-in, set by the --keep-previous-sync-c1z flag /
+// BATON_KEEP_PREVIOUS_SYNC_C1Z env var. It only takes effect on
+// connectors whose author declared the capability via
+// WithKeepPreviousSyncC1Z; on any other connector it is inert (and the
+// runner logs a warning so the customer isn't left wondering why ETag
+// replay never activates).
+func WithKeepPreviousSyncC1ZRuntimeOptIn() Option {
+	return func(ctx context.Context, cfg *runnerConfig) error {
+		cfg.keepPreviousSyncC1ZEnabled = true
+		return nil
+	}
+}
+
 func WithDiffSyncs(c1zPath string, baseSyncID string, newSyncID string) Option {
 	return func(ctx context.Context, cfg *runnerConfig) error {
 		cfg.onDemand = true
@@ -801,6 +863,22 @@ func WithDefaultCapabilitiesConnectorBuilderV2(t connectorbuilder.ConnectorBuild
 	}
 }
 
+// WithDefaultCapabilitiesConnectorFactory sets a factory that supplies the connector
+// used by the "capabilities" sub-command. Unlike WithDefaultCapabilitiesConnectorBuilder,
+// the factory returns a fully-constructed types.ConnectorServer directly, so the connector
+// is not wrapped by connectorbuilder.NewConnector. This lets callers provide a connector
+// (such as an embedded connector) whose capabilities are reported via GetMetadata rather
+// than via the optional GetCapabilities getter.
+//
+// The factory is only invoked inside the capabilities command, and its returned connector
+// is closed (if it implements Close) once capabilities have been read.
+func WithDefaultCapabilitiesConnectorFactory(f func(ctx context.Context) (types.ConnectorServer, error)) Option {
+	return func(ctx context.Context, cfg *runnerConfig) error {
+		cfg.defaultCapabilitiesConnectorFactory = f
+		return nil
+	}
+}
+
 // WithHealthCheck enables the HTTP health check server.
 func WithHealthCheck(enabled bool, port int, bindAddress string) Option {
 	return func(ctx context.Context, cfg *runnerConfig) error {
@@ -830,6 +908,21 @@ func ExtractDefaultConnector(ctx context.Context, options ...Option) (any, error
 	}
 
 	return nil, nil
+}
+
+// ExtractDefaultCapabilitiesConnectorFactory returns the factory registered via
+// WithDefaultCapabilitiesConnectorFactory, or nil if none was set.
+func ExtractDefaultCapabilitiesConnectorFactory(ctx context.Context, options ...Option) (func(ctx context.Context) (types.ConnectorServer, error), error) {
+	cfg := &runnerConfig{}
+
+	for _, o := range options {
+		err := o(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return cfg.defaultCapabilitiesConnectorFactory, nil
 }
 
 func IsSessionStoreEnabled(ctx context.Context, options ...Option) (bool, error) {
@@ -892,6 +985,15 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 	if err != nil {
 		return nil, err
 	}
+	// From here on, any error path that hasn't flipped cwReady leaves the
+	// connector wrapper to be closed by the deferred guard so we don't leak
+	// its subprocess plugin / pooled resources.
+	cwReady := false
+	defer func() {
+		if !cwReady {
+			_ = cw.Close()
+		}
+	}()
 
 	resources := make([]*v2.Resource, 0, len(cfg.targetedSyncResourceIDs))
 	for _, resourceId := range cfg.targetedSyncResourceIDs {
@@ -903,6 +1005,12 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 	}
 
 	runner.cw = cw
+
+	if cfg.taskConcurrencySet {
+		runner.taskConcurrency = cfg.taskConcurrency
+	} else {
+		runner.taskConcurrency = field.TaskConcurrencySchemaDefault
+	}
 
 	if cfg.onDemand {
 		if cfg.c1zPath == "" &&
@@ -968,7 +1076,7 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 					SyncID:   c.syncIDs[i],
 				})
 			}
-			tm = local.NewLocalCompactor(ctx, cfg.syncCompactorConfig.outputPath, configs, cfg.tempDir)
+			tm = local.NewLocalCompactor(ctx, cfg.syncCompactorConfig.outputPath, configs, cfg.tempDir, local.WithCompactorStorageEngine(cfg.storageEngine))
 		default:
 			tm, err = local.NewSyncer(ctx, cfg.c1zPath,
 				local.WithTmpDir(cfg.tempDir),
@@ -979,6 +1087,7 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 				local.WithSkipGrants(cfg.skipGrants),
 				local.WithSyncResourceTypeIDs(cfg.syncResourceTypeIDs),
 				local.WithWorkerCount(cfg.workerCount),
+				local.WithStorageEngine(cfg.storageEngine),
 			)
 			if err != nil {
 				return nil, err
@@ -988,7 +1097,23 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 		runner.tasks = tm
 
 		runner.oneShot = true
+		cwReady = true
 		return runner, nil
+	}
+
+	// At this point we are definitively in service / daemon mode: one-shot
+	// (cfg.onDemand) returned above, and Lambda mode never reaches
+	// NewConnectorRunner. Only this path sends a startup Hello to Conductor
+	// One — local / one-shot managers and Lambda intentionally do not.
+
+	// ETag replay requires BOTH halves of the opt-in: the author's
+	// build-time capability declaration AND the customer's runtime flag.
+	// A runtime flag on a connector without the capability is inert —
+	// warn so the customer isn't left wondering why replay never
+	// activates.
+	keepPreviousSyncC1Z := cfg.keepPreviousSyncC1ZCapable && cfg.keepPreviousSyncC1ZEnabled
+	if cfg.keepPreviousSyncC1ZEnabled && !cfg.keepPreviousSyncC1ZCapable {
+		ctxzap.Extract(ctx).Warn("keep-previous-sync-c1z is set, but this connector does not declare ETag-replay support; the flag has no effect")
 	}
 
 	tm, err := c1api.NewC1TaskManager(
@@ -1002,9 +1127,24 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 		resources,
 		cfg.syncResourceTypeIDs,
 		cfg.workerCount,
+		cfg.storageEngine,
+		runner.taskConcurrency,
+		keepPreviousSyncC1Z,
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	// Run the startup Hello handshake before handing control to the task loop.
+	// Bootstrap blocks (with exponential backoff up to 5 minutes) on transient
+	// failures and returns an error on ctx cancel or non-retryable responses
+	// like bad credentials.
+	cc, err := cw.C(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("runner: failed to get connector client for startup Hello: %w", err)
+	}
+	if err := tm.Bootstrap(ctx, cc); err != nil {
+		return nil, fmt.Errorf("runner: startup Hello failed: %w", err)
 	}
 	runner.tasks = tm
 
@@ -1017,11 +1157,11 @@ func NewConnectorRunner(ctx context.Context, c types.ConnectorServer, opts ...Op
 		}
 		healthServer := healthcheck.NewServer(healthCfg, cw.C)
 		if err := healthServer.Start(ctx); err != nil {
-			_ = cw.Close() // Clean up connector wrapper on failure
 			return nil, fmt.Errorf("failed to start health check server: %w", err)
 		}
 		runner.healthServer = healthServer
 	}
 
+	cwReady = true
 	return runner, nil
 }

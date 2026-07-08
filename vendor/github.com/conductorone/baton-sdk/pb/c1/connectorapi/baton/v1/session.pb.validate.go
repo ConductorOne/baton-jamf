@@ -68,10 +68,10 @@ func (m *GetRequest) validate(all bool) error {
 		errors = append(errors, err)
 	}
 
-	if l := utf8.RuneCountInString(m.GetKey()); l < 1 || l > 256 {
+	if l := utf8.RuneCountInString(m.GetKey()); l < 1 || l > 512 {
 		err := GetRequestValidationError{
 			field:  "Key",
-			reason: "value length must be between 1 and 256 runes, inclusive",
+			reason: "value length must be between 1 and 512 runes, inclusive",
 		}
 		if !all {
 			return err
@@ -79,10 +79,10 @@ func (m *GetRequest) validate(all bool) error {
 		errors = append(errors, err)
 	}
 
-	if utf8.RuneCountInString(m.GetPrefix()) > 256 {
+	if utf8.RuneCountInString(m.GetPrefix()) > 512 {
 		err := GetRequestValidationError{
 			field:  "Prefix",
-			reason: "value length must be at most 256 runes",
+			reason: "value length must be at most 512 runes",
 		}
 		if !all {
 			return err
@@ -334,10 +334,10 @@ func (m *GetManyRequest) validate(all bool) error {
 			_GetManyRequest_Keys_Unique[item] = struct{}{}
 		}
 
-		if l := utf8.RuneCountInString(item); l < 1 || l > 256 {
+		if l := utf8.RuneCountInString(item); l < 1 || l > 512 {
 			err := GetManyRequestValidationError{
 				field:  fmt.Sprintf("Keys[%v]", idx),
-				reason: "value length must be between 1 and 256 runes, inclusive",
+				reason: "value length must be between 1 and 512 runes, inclusive",
 			}
 			if !all {
 				return err
@@ -347,10 +347,10 @@ func (m *GetManyRequest) validate(all bool) error {
 
 	}
 
-	if utf8.RuneCountInString(m.GetPrefix()) > 256 {
+	if utf8.RuneCountInString(m.GetPrefix()) > 512 {
 		err := GetManyRequestValidationError{
 			field:  "Prefix",
-			reason: "value length must be at most 256 runes",
+			reason: "value length must be at most 512 runes",
 		}
 		if !all {
 			return err
@@ -710,10 +710,10 @@ func (m *GetAllRequest) validate(all bool) error {
 
 	// no validation rules for PageToken
 
-	if utf8.RuneCountInString(m.GetPrefix()) > 256 {
+	if utf8.RuneCountInString(m.GetPrefix()) > 512 {
 		err := GetAllRequestValidationError{
 			field:  "Prefix",
-			reason: "value length must be at most 256 runes",
+			reason: "value length must be at most 512 runes",
 		}
 		if !all {
 			return err
@@ -1073,10 +1073,10 @@ func (m *SetRequest) validate(all bool) error {
 		errors = append(errors, err)
 	}
 
-	if l := utf8.RuneCountInString(m.GetKey()); l < 1 || l > 256 {
+	if l := utf8.RuneCountInString(m.GetKey()); l < 1 || l > 512 {
 		err := SetRequestValidationError{
 			field:  "Key",
-			reason: "value length must be between 1 and 256 runes, inclusive",
+			reason: "value length must be between 1 and 512 runes, inclusive",
 		}
 		if !all {
 			return err
@@ -1084,10 +1084,10 @@ func (m *SetRequest) validate(all bool) error {
 		errors = append(errors, err)
 	}
 
-	if l := len(m.GetValue()); l < 0 || l > 4158464 {
+	if l := len(m.GetValue()); l < 0 || l > 4132864 {
 		err := SetRequestValidationError{
 			field:  "Value",
-			reason: "value length must be between 0 and 4158464 bytes, inclusive",
+			reason: "value length must be between 0 and 4132864 bytes, inclusive",
 		}
 		if !all {
 			return err
@@ -1095,10 +1095,10 @@ func (m *SetRequest) validate(all bool) error {
 		errors = append(errors, err)
 	}
 
-	if utf8.RuneCountInString(m.GetPrefix()) > 256 {
+	if utf8.RuneCountInString(m.GetPrefix()) > 512 {
 		err := SetRequestValidationError{
 			field:  "Prefix",
-			reason: "value length must be at most 256 runes",
+			reason: "value length must be at most 512 runes",
 		}
 		if !all {
 			return err
@@ -1340,10 +1340,10 @@ func (m *SetManyRequest) validate(all bool) error {
 			val := m.GetValues()[key]
 			_ = val
 
-			if l := utf8.RuneCountInString(key); l < 1 || l > 256 {
+			if l := utf8.RuneCountInString(key); l < 1 || l > 512 {
 				err := SetManyRequestValidationError{
 					field:  fmt.Sprintf("Values[%v]", key),
-					reason: "value length must be between 1 and 256 runes, inclusive",
+					reason: "value length must be between 1 and 512 runes, inclusive",
 				}
 				if !all {
 					return err
@@ -1351,10 +1351,10 @@ func (m *SetManyRequest) validate(all bool) error {
 				errors = append(errors, err)
 			}
 
-			if l := len(val); l < 0 || l > 4158464 {
+			if l := len(val); l < 0 || l > 4132864 {
 				err := SetManyRequestValidationError{
 					field:  fmt.Sprintf("Values[%v]", key),
-					reason: "value length must be between 0 and 4158464 bytes, inclusive",
+					reason: "value length must be between 0 and 4132864 bytes, inclusive",
 				}
 				if !all {
 					return err
@@ -1365,10 +1365,10 @@ func (m *SetManyRequest) validate(all bool) error {
 		}
 	}
 
-	if utf8.RuneCountInString(m.GetPrefix()) > 256 {
+	if utf8.RuneCountInString(m.GetPrefix()) > 512 {
 		err := SetManyRequestValidationError{
 			field:  "Prefix",
-			reason: "value length must be at most 256 runes",
+			reason: "value length must be at most 512 runes",
 		}
 		if !all {
 			return err
@@ -1589,10 +1589,10 @@ func (m *DeleteRequest) validate(all bool) error {
 		errors = append(errors, err)
 	}
 
-	if l := utf8.RuneCountInString(m.GetKey()); l < 1 || l > 256 {
+	if l := utf8.RuneCountInString(m.GetKey()); l < 1 || l > 512 {
 		err := DeleteRequestValidationError{
 			field:  "Key",
-			reason: "value length must be between 1 and 256 runes, inclusive",
+			reason: "value length must be between 1 and 512 runes, inclusive",
 		}
 		if !all {
 			return err
@@ -1600,10 +1600,10 @@ func (m *DeleteRequest) validate(all bool) error {
 		errors = append(errors, err)
 	}
 
-	if utf8.RuneCountInString(m.GetPrefix()) > 256 {
+	if utf8.RuneCountInString(m.GetPrefix()) > 512 {
 		err := DeleteRequestValidationError{
 			field:  "Prefix",
-			reason: "value length must be at most 256 runes",
+			reason: "value length must be at most 512 runes",
 		}
 		if !all {
 			return err
@@ -1838,10 +1838,10 @@ func (m *DeleteManyRequest) validate(all bool) error {
 	for idx, item := range m.GetKeys() {
 		_, _ = idx, item
 
-		if l := utf8.RuneCountInString(item); l < 1 || l > 256 {
+		if l := utf8.RuneCountInString(item); l < 1 || l > 512 {
 			err := DeleteManyRequestValidationError{
 				field:  fmt.Sprintf("Keys[%v]", idx),
-				reason: "value length must be between 1 and 256 runes, inclusive",
+				reason: "value length must be between 1 and 512 runes, inclusive",
 			}
 			if !all {
 				return err
@@ -1851,10 +1851,10 @@ func (m *DeleteManyRequest) validate(all bool) error {
 
 	}
 
-	if utf8.RuneCountInString(m.GetPrefix()) > 256 {
+	if utf8.RuneCountInString(m.GetPrefix()) > 512 {
 		err := DeleteManyRequestValidationError{
 			field:  "Prefix",
-			reason: "value length must be at most 256 runes",
+			reason: "value length must be at most 512 runes",
 		}
 		if !all {
 			return err
@@ -2079,10 +2079,10 @@ func (m *ClearRequest) validate(all bool) error {
 		errors = append(errors, err)
 	}
 
-	if utf8.RuneCountInString(m.GetPrefix()) > 256 {
+	if utf8.RuneCountInString(m.GetPrefix()) > 512 {
 		err := ClearRequestValidationError{
 			field:  "Prefix",
-			reason: "value length must be at most 256 runes",
+			reason: "value length must be at most 512 runes",
 		}
 		if !all {
 			return err

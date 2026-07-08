@@ -10,6 +10,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/retry"
 	"github.com/conductorone/baton-sdk/pkg/types/tasks"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -34,19 +35,20 @@ type TicketManagerLimited interface {
 
 func (b *builder) BulkCreateTickets(ctx context.Context, request *v2.TicketsServiceBulkCreateTicketsRequest) (*v2.TicketsServiceBulkCreateTicketsResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.BulkCreateTickets")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.BulkCreateTicketsType
 	if b.ticketManager == nil {
-		err := status.Error(codes.Unimplemented, "ticket manager not implemented")
+		err = status.Error(codes.Unimplemented, "ticket manager not implemented")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
 
 	reqBody := request.GetTicketRequests()
 	if len(reqBody) == 0 {
-		err := status.Error(codes.InvalidArgument, "request body had no items")
+		err = status.Error(codes.InvalidArgument, "request body had no items")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -65,19 +67,20 @@ func (b *builder) BulkCreateTickets(ctx context.Context, request *v2.TicketsServ
 
 func (b *builder) BulkGetTickets(ctx context.Context, request *v2.TicketsServiceBulkGetTicketsRequest) (*v2.TicketsServiceBulkGetTicketsResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.BulkGetTickets")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.BulkGetTicketsType
 	if b.ticketManager == nil {
-		err := status.Error(codes.Unimplemented, "ticket manager not implemented")
+		err = status.Error(codes.Unimplemented, "ticket manager not implemented")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
 
 	reqBody := request.GetTicketRequests()
 	if len(reqBody) == 0 {
-		err := status.Error(codes.InvalidArgument, "request body had no items")
+		err = status.Error(codes.InvalidArgument, "request body had no items")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -96,12 +99,13 @@ func (b *builder) BulkGetTickets(ctx context.Context, request *v2.TicketsService
 
 func (b *builder) ListTicketSchemas(ctx context.Context, request *v2.TicketsServiceListTicketSchemasRequest) (*v2.TicketsServiceListTicketSchemasResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.ListTicketSchemas")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.ListTicketSchemasType
 	if b.ticketManager == nil {
-		err := status.Error(codes.Unimplemented, "ticket manager not implemented")
+		err = status.Error(codes.Unimplemented, "ticket manager not implemented")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -113,13 +117,13 @@ func (b *builder) ListTicketSchemas(ctx context.Context, request *v2.TicketsServ
 	})
 
 	for {
-		out, nextPageToken, annos, err := b.ticketManager.ListTicketSchemas(ctx, &pagination.Token{
+		out, nextPageToken, annos, listErr := b.ticketManager.ListTicketSchemas(ctx, &pagination.Token{
 			Size:  int(request.GetPageSize()),
 			Token: request.GetPageToken(),
 		})
-		if err == nil {
+		if listErr == nil {
 			if request.GetPageToken() != "" && request.GetPageToken() == nextPageToken {
-				err := status.Error(codes.Internal, "listing ticket schemas failed: next page token unchanged - likely a connector bug")
+				err = status.Error(codes.Internal, "listing ticket schemas failed: next page token unchanged - likely a connector bug")
 				b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 				return nil, err
 			}
@@ -131,29 +135,31 @@ func (b *builder) ListTicketSchemas(ctx context.Context, request *v2.TicketsServ
 				Annotations:   annos,
 			}.Build(), nil
 		}
-		if retryer.ShouldWaitAndRetry(ctx, err) {
+		if retryer.ShouldWaitAndRetry(ctx, listErr) {
 			continue
 		}
-		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
-		return nil, fmt.Errorf("error: listing ticket schemas failed: %w", err)
+		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), listErr)
+		err = fmt.Errorf("error: listing ticket schemas failed: %w", listErr)
+		return nil, err
 	}
 }
 
 func (b *builder) CreateTicket(ctx context.Context, request *v2.TicketsServiceCreateTicketRequest) (*v2.TicketsServiceCreateTicketResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.CreateTicket")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.CreateTicketType
 	if b.ticketManager == nil {
-		err := status.Error(codes.Unimplemented, "ticket manager not implemented")
+		err = status.Error(codes.Unimplemented, "ticket manager not implemented")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
 
 	reqBody := request.GetRequest()
 	if reqBody == nil {
-		err := status.Error(codes.InvalidArgument, "request body is nil")
+		err = status.Error(codes.InvalidArgument, "request body is nil")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -188,12 +194,13 @@ func (b *builder) CreateTicket(ctx context.Context, request *v2.TicketsServiceCr
 
 func (b *builder) GetTicket(ctx context.Context, request *v2.TicketsServiceGetTicketRequest) (*v2.TicketsServiceGetTicketResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.GetTicket")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.GetTicketType
 	if b.ticketManager == nil {
-		err := status.Error(codes.Unimplemented, "ticket manager not implemented")
+		err = status.Error(codes.Unimplemented, "ticket manager not implemented")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}
@@ -220,12 +227,13 @@ func (b *builder) GetTicket(ctx context.Context, request *v2.TicketsServiceGetTi
 
 func (b *builder) GetTicketSchema(ctx context.Context, request *v2.TicketsServiceGetTicketSchemaRequest) (*v2.TicketsServiceGetTicketSchemaResponse, error) {
 	ctx, span := tracer.Start(ctx, "builder.GetTicketSchema")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	start := b.nowFunc()
 	tt := tasks.GetTicketSchemaType
 	if b.ticketManager == nil {
-		err := status.Error(codes.Unimplemented, "ticket manager not implemented")
+		err = status.Error(codes.Unimplemented, "ticket manager not implemented")
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start), err)
 		return nil, err
 	}

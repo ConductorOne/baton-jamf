@@ -6,9 +6,11 @@ import (
 
 	"github.com/doug-martin/goqu/v9"
 
+	c1zpb "github.com/conductorone/baton-sdk/pb/c1/c1z/v1"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	reader_v2 "github.com/conductorone/baton-sdk/pb/c1/reader/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
 )
 
 const resourceTypesTableVersion = "1"
@@ -43,14 +45,21 @@ func (r *resourceTypesTable) Schema() (string, []interface{}) {
 	}
 }
 
-func (r *resourceTypesTable) Migrations(ctx context.Context, db *goqu.Database) error {
-	return nil
+func (r *resourceTypesTable) Migrations(ctx context.Context, db *goqu.Database) (bool, error) {
+	return false, nil
 }
 
 func (c *C1File) ListResourceTypes(ctx context.Context, request *v2.ResourceTypesServiceListResourceTypesRequest) (*v2.ResourceTypesServiceListResourceTypesResponse, error) {
 	ctx, span := tracer.Start(ctx, "C1File.ListResourceTypes")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
+	// If sync ID is specified, add it to the annotations so we get resource types for the correct sync.
+	if request.GetActiveSyncId() != "" {
+		annos := annotations.Annotations(request.GetAnnotations())
+		annos.Update(c1zpb.SyncDetails_builder{Id: request.GetActiveSyncId()}.Build())
+		request.SetAnnotations(annos)
+	}
 	ret, nextPageToken, err := listConnectorObjects(ctx, c, resourceTypes.Name(), request, func() *v2.ResourceType { return &v2.ResourceType{} })
 	if err != nil {
 		return nil, fmt.Errorf("error listing resource types: %w", err)
@@ -64,7 +73,8 @@ func (c *C1File) ListResourceTypes(ctx context.Context, request *v2.ResourceType
 
 func (c *C1File) GetResourceType(ctx context.Context, request *reader_v2.ResourceTypesReaderServiceGetResourceTypeRequest) (*reader_v2.ResourceTypesReaderServiceGetResourceTypeResponse, error) {
 	ctx, span := tracer.Start(ctx, "C1File.GetResourceType")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	ret := &v2.ResourceType{}
 	syncId, err := annotations.GetSyncIdFromAnnotations(request.GetAnnotations())
@@ -83,16 +93,10 @@ func (c *C1File) GetResourceType(ctx context.Context, request *reader_v2.Resourc
 
 func (c *C1File) PutResourceTypes(ctx context.Context, resourceTypesObjs ...*v2.ResourceType) error {
 	ctx, span := tracer.Start(ctx, "C1File.PutResourceTypes")
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	return c.putResourceTypesInternal(ctx, bulkPutConnectorObject, resourceTypesObjs...)
-}
-
-func (c *C1File) PutResourceTypesIfNewer(ctx context.Context, resourceTypesObjs ...*v2.ResourceType) error {
-	ctx, span := tracer.Start(ctx, "C1File.PutResourceTypesIfNewer")
-	defer span.End()
-
-	return c.putResourceTypesInternal(ctx, bulkPutConnectorObjectIfNewer, resourceTypesObjs...)
 }
 
 type resourceTypePutFunc func(context.Context, *C1File, string, func(m *v2.ResourceType) (goqu.Record, error), ...*v2.ResourceType) error

@@ -14,6 +14,7 @@ import (
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	anypb "google.golang.org/protobuf/types/known/anypb"
 	structpb "google.golang.org/protobuf/types/known/structpb"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	unsafe "unsafe"
 )
@@ -36,19 +37,29 @@ const (
 	ResourceType_TRAIT_SECRET           ResourceType_Trait = 5
 	ResourceType_TRAIT_SECURITY_INSIGHT ResourceType_Trait = 6
 	ResourceType_TRAIT_SCOPE_BINDING    ResourceType_Trait = 7
+	ResourceType_TRAIT_VENDOR           ResourceType_Trait = 8
+	ResourceType_TRAIT_VENDOR_AGREEMENT ResourceType_Trait = 9
+	ResourceType_TRAIT_LICENSE_PROFILE  ResourceType_Trait = 10
+	ResourceType_TRAIT_AGENT            ResourceType_Trait = 11
+	ResourceType_TRAIT_MANAGED_DEVICE   ResourceType_Trait = 12
 )
 
 // Enum value maps for ResourceType_Trait.
 var (
 	ResourceType_Trait_name = map[int32]string{
-		0: "TRAIT_UNSPECIFIED",
-		1: "TRAIT_USER",
-		2: "TRAIT_GROUP",
-		3: "TRAIT_ROLE",
-		4: "TRAIT_APP",
-		5: "TRAIT_SECRET",
-		6: "TRAIT_SECURITY_INSIGHT",
-		7: "TRAIT_SCOPE_BINDING",
+		0:  "TRAIT_UNSPECIFIED",
+		1:  "TRAIT_USER",
+		2:  "TRAIT_GROUP",
+		3:  "TRAIT_ROLE",
+		4:  "TRAIT_APP",
+		5:  "TRAIT_SECRET",
+		6:  "TRAIT_SECURITY_INSIGHT",
+		7:  "TRAIT_SCOPE_BINDING",
+		8:  "TRAIT_VENDOR",
+		9:  "TRAIT_VENDOR_AGREEMENT",
+		10: "TRAIT_LICENSE_PROFILE",
+		11: "TRAIT_AGENT",
+		12: "TRAIT_MANAGED_DEVICE",
 	}
 	ResourceType_Trait_value = map[string]int32{
 		"TRAIT_UNSPECIFIED":      0,
@@ -59,6 +70,11 @@ var (
 		"TRAIT_SECRET":           5,
 		"TRAIT_SECURITY_INSIGHT": 6,
 		"TRAIT_SCOPE_BINDING":    7,
+		"TRAIT_VENDOR":           8,
+		"TRAIT_VENDOR_AGREEMENT": 9,
+		"TRAIT_LICENSE_PROFILE":  10,
+		"TRAIT_AGENT":            11,
+		"TRAIT_MANAGED_DEVICE":   12,
 	}
 )
 
@@ -3035,8 +3051,12 @@ type ResourcesServiceListResourcesRequest struct {
 	PageToken        string                 `protobuf:"bytes,4,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	Annotations      []*anypb.Any           `protobuf:"bytes,5,rep,name=annotations,proto3" json:"annotations,omitempty"`
 	ActiveSyncId     string                 `protobuf:"bytes,6,opt,name=active_sync_id,json=activeSyncId,proto3" json:"active_sync_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Deprecated. Do not set this field.
+	//
+	// Deprecated: Marked as deprecated in c1/connector/v2/resource.proto.
+	Trait         ResourceType_Trait `protobuf:"varint,7,opt,name=trait,proto3,enum=c1.connector.v2.ResourceType_Trait" json:"trait,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ResourcesServiceListResourcesRequest) Reset() {
@@ -3106,6 +3126,14 @@ func (x *ResourcesServiceListResourcesRequest) GetActiveSyncId() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in c1/connector/v2/resource.proto.
+func (x *ResourcesServiceListResourcesRequest) GetTrait() ResourceType_Trait {
+	if x != nil {
+		return x.Trait
+	}
+	return ResourceType_TRAIT_UNSPECIFIED
+}
+
 func (x *ResourcesServiceListResourcesRequest) SetResourceTypeId(v string) {
 	x.ResourceTypeId = v
 }
@@ -3130,6 +3158,11 @@ func (x *ResourcesServiceListResourcesRequest) SetActiveSyncId(v string) {
 	x.ActiveSyncId = v
 }
 
+// Deprecated: Marked as deprecated in c1/connector/v2/resource.proto.
+func (x *ResourcesServiceListResourcesRequest) SetTrait(v ResourceType_Trait) {
+	x.Trait = v
+}
+
 func (x *ResourcesServiceListResourcesRequest) HasParentResourceId() bool {
 	if x == nil {
 		return false
@@ -3150,6 +3183,10 @@ type ResourcesServiceListResourcesRequest_builder struct {
 	PageToken        string
 	Annotations      []*anypb.Any
 	ActiveSyncId     string
+	// Deprecated. Do not set this field.
+	//
+	// Deprecated: Marked as deprecated in c1/connector/v2/resource.proto.
+	Trait ResourceType_Trait
 }
 
 func (b0 ResourcesServiceListResourcesRequest_builder) Build() *ResourcesServiceListResourcesRequest {
@@ -3162,6 +3199,7 @@ func (b0 ResourcesServiceListResourcesRequest_builder) Build() *ResourcesService
 	x.PageToken = b.PageToken
 	x.Annotations = b.Annotations
 	x.ActiveSyncId = b.ActiveSyncId
+	x.Trait = b.Trait
 	return m0
 }
 
@@ -4071,8 +4109,18 @@ type CreateAccountResponse_SuccessResult struct {
 	state                 protoimpl.MessageState `protogen:"hybrid.v1"`
 	Resource              *Resource              `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
 	IsCreateAccountResult bool                   `protobuf:"varint,2,opt,name=is_create_account_result,json=isCreateAccountResult,proto3" json:"is_create_account_result,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Optional. When the connector created an invitation-style artifact
+	// (e.g. a GitHub org invite) rather than a fully-provisioned account,
+	// this is the absolute wall-clock time at which that invitation expires
+	// and becomes unusable. c1 surfaces this in the task UI and transitions
+	// the provisioning action to a terminal failure if the user has not
+	// accepted the invitation by this time. Leave unset for connectors whose
+	// CreateAccount truly creates a usable account, or for invitations with
+	// no enforced TTL.
+	// Construct with: timestamppb.New(t).
+	InvitationExpiresAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=invitation_expires_at,json=invitationExpiresAt,proto3" json:"invitation_expires_at,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *CreateAccountResponse_SuccessResult) Reset() {
@@ -4114,12 +4162,23 @@ func (x *CreateAccountResponse_SuccessResult) GetIsCreateAccountResult() bool {
 	return false
 }
 
+func (x *CreateAccountResponse_SuccessResult) GetInvitationExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.InvitationExpiresAt
+	}
+	return nil
+}
+
 func (x *CreateAccountResponse_SuccessResult) SetResource(v *Resource) {
 	x.Resource = v
 }
 
 func (x *CreateAccountResponse_SuccessResult) SetIsCreateAccountResult(v bool) {
 	x.IsCreateAccountResult = v
+}
+
+func (x *CreateAccountResponse_SuccessResult) SetInvitationExpiresAt(v *timestamppb.Timestamp) {
+	x.InvitationExpiresAt = v
 }
 
 func (x *CreateAccountResponse_SuccessResult) HasResource() bool {
@@ -4129,8 +4188,19 @@ func (x *CreateAccountResponse_SuccessResult) HasResource() bool {
 	return x.Resource != nil
 }
 
+func (x *CreateAccountResponse_SuccessResult) HasInvitationExpiresAt() bool {
+	if x == nil {
+		return false
+	}
+	return x.InvitationExpiresAt != nil
+}
+
 func (x *CreateAccountResponse_SuccessResult) ClearResource() {
 	x.Resource = nil
+}
+
+func (x *CreateAccountResponse_SuccessResult) ClearInvitationExpiresAt() {
+	x.InvitationExpiresAt = nil
 }
 
 type CreateAccountResponse_SuccessResult_builder struct {
@@ -4138,6 +4208,16 @@ type CreateAccountResponse_SuccessResult_builder struct {
 
 	Resource              *Resource
 	IsCreateAccountResult bool
+	// Optional. When the connector created an invitation-style artifact
+	// (e.g. a GitHub org invite) rather than a fully-provisioned account,
+	// this is the absolute wall-clock time at which that invitation expires
+	// and becomes unusable. c1 surfaces this in the task UI and transitions
+	// the provisioning action to a terminal failure if the user has not
+	// accepted the invitation by this time. Leave unset for connectors whose
+	// CreateAccount truly creates a usable account, or for invitations with
+	// no enforced TTL.
+	// Construct with: timestamppb.New(t).
+	InvitationExpiresAt *timestamppb.Timestamp
 }
 
 func (b0 CreateAccountResponse_SuccessResult_builder) Build() *CreateAccountResponse_SuccessResult {
@@ -4146,6 +4226,7 @@ func (b0 CreateAccountResponse_SuccessResult_builder) Build() *CreateAccountResp
 	_, _ = b, x
 	x.Resource = b.Resource
 	x.IsCreateAccountResult = b.IsCreateAccountResult
+	x.InvitationExpiresAt = b.InvitationExpiresAt
 	return m0
 }
 
@@ -4473,7 +4554,7 @@ var File_c1_connector_v2_resource_proto protoreflect.FileDescriptor
 
 const file_c1_connector_v2_resource_proto_rawDesc = "" +
 	"\n" +
-	"\x1ec1/connector/v2/resource.proto\x12\x0fc1.connector.v2\x1a\x19google/protobuf/any.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x17validate/validate.proto\"\xea\x03\n" +
+	"\x1ec1/connector/v2/resource.proto\x12\x0fc1.connector.v2\x1a\x19google/protobuf/any.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x17validate/validate.proto\"\xde\x04\n" +
 	"\fResourceType\x12\x1a\n" +
 	"\x02id\x18\x01 \x01(\tB\n" +
 	"\xfaB\ar\x05 \x01(\x80\bR\x02id\x120\n" +
@@ -4483,7 +4564,7 @@ const file_c1_connector_v2_resource_proto_rawDesc = "" +
 	"\vannotations\x18\x04 \x03(\v2\x14.google.protobuf.AnyR\vannotations\x12/\n" +
 	"\vdescription\x18\x05 \x01(\tB\r\xfaB\n" +
 	"r\b \x01(\x80 \xd0\x01\x01R\vdescription\x12-\n" +
-	"\x12sourced_externally\x18\x06 \x01(\bR\x11sourcedExternally\"\xa5\x01\n" +
+	"\x12sourced_externally\x18\x06 \x01(\bR\x11sourcedExternally\"\x99\x02\n" +
 	"\x05Trait\x12\x15\n" +
 	"\x11TRAIT_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -4494,7 +4575,13 @@ const file_c1_connector_v2_resource_proto_rawDesc = "" +
 	"\tTRAIT_APP\x10\x04\x12\x10\n" +
 	"\fTRAIT_SECRET\x10\x05\x12\x1a\n" +
 	"\x16TRAIT_SECURITY_INSIGHT\x10\x06\x12\x17\n" +
-	"\x13TRAIT_SCOPE_BINDING\x10\a\"\xa6\x02\n" +
+	"\x13TRAIT_SCOPE_BINDING\x10\a\x12\x10\n" +
+	"\fTRAIT_VENDOR\x10\b\x12\x1a\n" +
+	"\x16TRAIT_VENDOR_AGREEMENT\x10\t\x12\x19\n" +
+	"\x15TRAIT_LICENSE_PROFILE\x10\n" +
+	"\x12\x0f\n" +
+	"\vTRAIT_AGENT\x10\v\x12\x18\n" +
+	"\x14TRAIT_MANAGED_DEVICE\x10\f\"\xa6\x02\n" +
 	",ResourceTypesServiceListResourceTypesRequest\x121\n" +
 	"\x06parent\x18\x01 \x01(\v2\x19.c1.connector.v2.ResourceR\x06parent\x12'\n" +
 	"\tpage_size\x18\x02 \x01(\rB\n" +
@@ -4586,7 +4673,7 @@ const file_c1_connector_v2_resource_proto_rawDesc = "" +
 	"\x12credential_options\x18\x02 \x01(\v2\".c1.connector.v2.CredentialOptionsR\x11credentialOptions\x12P\n" +
 	"\x12encryption_configs\x18\x03 \x03(\v2!.c1.connector.v2.EncryptionConfigR\x11encryptionConfigs\x127\n" +
 	"\x10resource_type_id\x18\x04 \x01(\tB\r\xfaB\n" +
-	"r\b \x01(\x80\b\xd0\x01\x01R\x0eresourceTypeId\"\xcc\b\n" +
+	"r\b \x01(\x80\b\xd0\x01\x01R\x0eresourceTypeId\"\x9d\t\n" +
 	"\x15CreateAccountResponse\x12P\n" +
 	"\asuccess\x18d \x01(\v24.c1.connector.v2.CreateAccountResponse.SuccessResultH\x00R\asuccess\x12f\n" +
 	"\x0faction_required\x18e \x01(\v2;.c1.connector.v2.CreateAccountResponse.ActionRequiredResultH\x00R\x0eactionRequired\x12c\n" +
@@ -4594,10 +4681,11 @@ const file_c1_connector_v2_resource_proto_rawDesc = "" +
 	"\vin_progress\x18g \x01(\v27.c1.connector.v2.CreateAccountResponse.InProgressResultH\x00R\n" +
 	"inProgress\x12E\n" +
 	"\x0eencrypted_data\x18\x02 \x03(\v2\x1e.c1.connector.v2.EncryptedDataR\rencryptedData\x126\n" +
-	"\vannotations\x18\x03 \x03(\v2\x14.google.protobuf.AnyR\vannotations\x1a\x7f\n" +
+	"\vannotations\x18\x03 \x03(\v2\x14.google.protobuf.AnyR\vannotations\x1a\xcf\x01\n" +
 	"\rSuccessResult\x125\n" +
 	"\bresource\x18\x01 \x01(\v2\x19.c1.connector.v2.ResourceR\bresource\x127\n" +
-	"\x18is_create_account_result\x18\x02 \x01(\bR\x15isCreateAccountResult\x1a\xa0\x01\n" +
+	"\x18is_create_account_result\x18\x02 \x01(\bR\x15isCreateAccountResult\x12N\n" +
+	"\x15invitation_expires_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\x13invitationExpiresAt\x1a\xa0\x01\n" +
 	"\x14ActionRequiredResult\x125\n" +
 	"\bresource\x18\x01 \x01(\v2\x19.c1.connector.v2.ResourceR\bresource\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x127\n" +
@@ -4652,7 +4740,7 @@ const file_c1_connector_v2_resource_proto_rawDesc = "" +
 	"\x0eCreationSource\x12\x1f\n" +
 	"\x1bCREATION_SOURCE_UNSPECIFIED\x10\x00\x12,\n" +
 	"(CREATION_SOURCE_CONNECTOR_LIST_RESOURCES\x10\x01\x127\n" +
-	"3CREATION_SOURCE_CONNECTOR_LIST_GRANTS_PRINCIPAL_JIT\x10\x02\"\xf6\x02\n" +
+	"3CREATION_SOURCE_CONNECTOR_LIST_GRANTS_PRINCIPAL_JIT\x10\x02\"\xb5\x03\n" +
 	"$ResourcesServiceListResourcesRequest\x124\n" +
 	"\x10resource_type_id\x18\x01 \x01(\tB\n" +
 	"\xfaB\ar\x05 \x01(\x80\bR\x0eresourceTypeId\x12S\n" +
@@ -4663,7 +4751,8 @@ const file_c1_connector_v2_resource_proto_rawDesc = "" +
 	"page_token\x18\x04 \x01(\tB\x0e\xfaB\vr\t \x01(\x80\x80@\xd0\x01\x01R\tpageToken\x126\n" +
 	"\vannotations\x18\x05 \x03(\v2\x14.google.protobuf.AnyR\vannotations\x123\n" +
 	"\x0eactive_sync_id\x18\x06 \x01(\tB\r\xfaB\n" +
-	"r\b \x01(\x80\b\xd0\x01\x01R\factiveSyncId\"\xc6\x01\n" +
+	"r\b \x01(\x80\b\xd0\x01\x01R\factiveSyncId\x12=\n" +
+	"\x05trait\x18\a \x01(\x0e2#.c1.connector.v2.ResourceType.TraitB\x02\x18\x01R\x05trait\"\xc6\x01\n" +
 	"%ResourcesServiceListResourcesResponse\x12-\n" +
 	"\x04list\x18\x01 \x03(\v2\x19.c1.connector.v2.ResourceR\x04list\x126\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tB\x0e\xfaB\vr\t \x01(\x80\x80@\xd0\x01\x01R\rnextPageToken\x126\n" +
@@ -4747,6 +4836,7 @@ var file_c1_connector_v2_resource_proto_goTypes = []any{
 	(*EncryptionConfig_JWKPublicKeyConfig)(nil),           // 42: c1.connector.v2.EncryptionConfig.JWKPublicKeyConfig
 	(*anypb.Any)(nil),                                     // 43: google.protobuf.Any
 	(*structpb.Struct)(nil),                               // 44: google.protobuf.Struct
+	(*timestamppb.Timestamp)(nil),                         // 45: google.protobuf.Timestamp
 }
 var file_c1_connector_v2_resource_proto_depIdxs = []int32{
 	0,  // 0: c1.connector.v2.ResourceType.traits:type_name -> c1.connector.v2.ResourceType.Trait
@@ -4798,41 +4888,43 @@ var file_c1_connector_v2_resource_proto_depIdxs = []int32{
 	1,  // 46: c1.connector.v2.Resource.creation_source:type_name -> c1.connector.v2.Resource.CreationSource
 	22, // 47: c1.connector.v2.ResourcesServiceListResourcesRequest.parent_resource_id:type_name -> c1.connector.v2.ResourceId
 	43, // 48: c1.connector.v2.ResourcesServiceListResourcesRequest.annotations:type_name -> google.protobuf.Any
-	23, // 49: c1.connector.v2.ResourcesServiceListResourcesResponse.list:type_name -> c1.connector.v2.Resource
-	43, // 50: c1.connector.v2.ResourcesServiceListResourcesResponse.annotations:type_name -> google.protobuf.Any
-	22, // 51: c1.connector.v2.ResourceGetterServiceGetResourceRequest.resource_id:type_name -> c1.connector.v2.ResourceId
-	22, // 52: c1.connector.v2.ResourceGetterServiceGetResourceRequest.parent_resource_id:type_name -> c1.connector.v2.ResourceId
-	43, // 53: c1.connector.v2.ResourceGetterServiceGetResourceRequest.annotations:type_name -> google.protobuf.Any
-	23, // 54: c1.connector.v2.ResourceGetterServiceGetResourceResponse.resource:type_name -> c1.connector.v2.Resource
-	43, // 55: c1.connector.v2.ResourceGetterServiceGetResourceResponse.annotations:type_name -> google.protobuf.Any
-	16, // 56: c1.connector.v2.CredentialOptions.RandomPassword.constraints:type_name -> c1.connector.v2.PasswordConstraint
-	19, // 57: c1.connector.v2.CredentialOptions.EncryptedPassword.encrypted_passwords:type_name -> c1.connector.v2.EncryptedData
-	16, // 58: c1.connector.v2.LocalCredentialOptions.RandomPassword.constraints:type_name -> c1.connector.v2.PasswordConstraint
-	23, // 59: c1.connector.v2.CreateAccountResponse.SuccessResult.resource:type_name -> c1.connector.v2.Resource
-	23, // 60: c1.connector.v2.CreateAccountResponse.ActionRequiredResult.resource:type_name -> c1.connector.v2.Resource
-	23, // 61: c1.connector.v2.CreateAccountResponse.AlreadyExistsResult.resource:type_name -> c1.connector.v2.Resource
-	23, // 62: c1.connector.v2.CreateAccountResponse.InProgressResult.resource:type_name -> c1.connector.v2.Resource
-	3,  // 63: c1.connector.v2.ResourceTypesService.ListResourceTypes:input_type -> c1.connector.v2.ResourceTypesServiceListResourceTypesRequest
-	24, // 64: c1.connector.v2.ResourcesService.ListResources:input_type -> c1.connector.v2.ResourcesServiceListResourcesRequest
-	26, // 65: c1.connector.v2.ResourceGetterService.GetResource:input_type -> c1.connector.v2.ResourceGetterServiceGetResourceRequest
-	5,  // 66: c1.connector.v2.ResourceManagerService.CreateResource:input_type -> c1.connector.v2.CreateResourceRequest
-	7,  // 67: c1.connector.v2.ResourceManagerService.DeleteResource:input_type -> c1.connector.v2.DeleteResourceRequest
-	9,  // 68: c1.connector.v2.ResourceDeleterService.DeleteResourceV2:input_type -> c1.connector.v2.DeleteResourceV2Request
-	11, // 69: c1.connector.v2.CredentialManagerService.RotateCredential:input_type -> c1.connector.v2.RotateCredentialRequest
-	17, // 70: c1.connector.v2.AccountManagerService.CreateAccount:input_type -> c1.connector.v2.CreateAccountRequest
-	4,  // 71: c1.connector.v2.ResourceTypesService.ListResourceTypes:output_type -> c1.connector.v2.ResourceTypesServiceListResourceTypesResponse
-	25, // 72: c1.connector.v2.ResourcesService.ListResources:output_type -> c1.connector.v2.ResourcesServiceListResourcesResponse
-	27, // 73: c1.connector.v2.ResourceGetterService.GetResource:output_type -> c1.connector.v2.ResourceGetterServiceGetResourceResponse
-	6,  // 74: c1.connector.v2.ResourceManagerService.CreateResource:output_type -> c1.connector.v2.CreateResourceResponse
-	8,  // 75: c1.connector.v2.ResourceManagerService.DeleteResource:output_type -> c1.connector.v2.DeleteResourceResponse
-	10, // 76: c1.connector.v2.ResourceDeleterService.DeleteResourceV2:output_type -> c1.connector.v2.DeleteResourceV2Response
-	12, // 77: c1.connector.v2.CredentialManagerService.RotateCredential:output_type -> c1.connector.v2.RotateCredentialResponse
-	18, // 78: c1.connector.v2.AccountManagerService.CreateAccount:output_type -> c1.connector.v2.CreateAccountResponse
-	71, // [71:79] is the sub-list for method output_type
-	63, // [63:71] is the sub-list for method input_type
-	63, // [63:63] is the sub-list for extension type_name
-	63, // [63:63] is the sub-list for extension extendee
-	0,  // [0:63] is the sub-list for field type_name
+	0,  // 49: c1.connector.v2.ResourcesServiceListResourcesRequest.trait:type_name -> c1.connector.v2.ResourceType.Trait
+	23, // 50: c1.connector.v2.ResourcesServiceListResourcesResponse.list:type_name -> c1.connector.v2.Resource
+	43, // 51: c1.connector.v2.ResourcesServiceListResourcesResponse.annotations:type_name -> google.protobuf.Any
+	22, // 52: c1.connector.v2.ResourceGetterServiceGetResourceRequest.resource_id:type_name -> c1.connector.v2.ResourceId
+	22, // 53: c1.connector.v2.ResourceGetterServiceGetResourceRequest.parent_resource_id:type_name -> c1.connector.v2.ResourceId
+	43, // 54: c1.connector.v2.ResourceGetterServiceGetResourceRequest.annotations:type_name -> google.protobuf.Any
+	23, // 55: c1.connector.v2.ResourceGetterServiceGetResourceResponse.resource:type_name -> c1.connector.v2.Resource
+	43, // 56: c1.connector.v2.ResourceGetterServiceGetResourceResponse.annotations:type_name -> google.protobuf.Any
+	16, // 57: c1.connector.v2.CredentialOptions.RandomPassword.constraints:type_name -> c1.connector.v2.PasswordConstraint
+	19, // 58: c1.connector.v2.CredentialOptions.EncryptedPassword.encrypted_passwords:type_name -> c1.connector.v2.EncryptedData
+	16, // 59: c1.connector.v2.LocalCredentialOptions.RandomPassword.constraints:type_name -> c1.connector.v2.PasswordConstraint
+	23, // 60: c1.connector.v2.CreateAccountResponse.SuccessResult.resource:type_name -> c1.connector.v2.Resource
+	45, // 61: c1.connector.v2.CreateAccountResponse.SuccessResult.invitation_expires_at:type_name -> google.protobuf.Timestamp
+	23, // 62: c1.connector.v2.CreateAccountResponse.ActionRequiredResult.resource:type_name -> c1.connector.v2.Resource
+	23, // 63: c1.connector.v2.CreateAccountResponse.AlreadyExistsResult.resource:type_name -> c1.connector.v2.Resource
+	23, // 64: c1.connector.v2.CreateAccountResponse.InProgressResult.resource:type_name -> c1.connector.v2.Resource
+	3,  // 65: c1.connector.v2.ResourceTypesService.ListResourceTypes:input_type -> c1.connector.v2.ResourceTypesServiceListResourceTypesRequest
+	24, // 66: c1.connector.v2.ResourcesService.ListResources:input_type -> c1.connector.v2.ResourcesServiceListResourcesRequest
+	26, // 67: c1.connector.v2.ResourceGetterService.GetResource:input_type -> c1.connector.v2.ResourceGetterServiceGetResourceRequest
+	5,  // 68: c1.connector.v2.ResourceManagerService.CreateResource:input_type -> c1.connector.v2.CreateResourceRequest
+	7,  // 69: c1.connector.v2.ResourceManagerService.DeleteResource:input_type -> c1.connector.v2.DeleteResourceRequest
+	9,  // 70: c1.connector.v2.ResourceDeleterService.DeleteResourceV2:input_type -> c1.connector.v2.DeleteResourceV2Request
+	11, // 71: c1.connector.v2.CredentialManagerService.RotateCredential:input_type -> c1.connector.v2.RotateCredentialRequest
+	17, // 72: c1.connector.v2.AccountManagerService.CreateAccount:input_type -> c1.connector.v2.CreateAccountRequest
+	4,  // 73: c1.connector.v2.ResourceTypesService.ListResourceTypes:output_type -> c1.connector.v2.ResourceTypesServiceListResourceTypesResponse
+	25, // 74: c1.connector.v2.ResourcesService.ListResources:output_type -> c1.connector.v2.ResourcesServiceListResourcesResponse
+	27, // 75: c1.connector.v2.ResourceGetterService.GetResource:output_type -> c1.connector.v2.ResourceGetterServiceGetResourceResponse
+	6,  // 76: c1.connector.v2.ResourceManagerService.CreateResource:output_type -> c1.connector.v2.CreateResourceResponse
+	8,  // 77: c1.connector.v2.ResourceManagerService.DeleteResource:output_type -> c1.connector.v2.DeleteResourceResponse
+	10, // 78: c1.connector.v2.ResourceDeleterService.DeleteResourceV2:output_type -> c1.connector.v2.DeleteResourceV2Response
+	12, // 79: c1.connector.v2.CredentialManagerService.RotateCredential:output_type -> c1.connector.v2.RotateCredentialResponse
+	18, // 80: c1.connector.v2.AccountManagerService.CreateAccount:output_type -> c1.connector.v2.CreateAccountResponse
+	73, // [73:81] is the sub-list for method output_type
+	65, // [65:73] is the sub-list for method input_type
+	65, // [65:65] is the sub-list for extension type_name
+	65, // [65:65] is the sub-list for extension extendee
+	0,  // [0:65] is the sub-list for field type_name
 }
 
 func init() { file_c1_connector_v2_resource_proto_init() }
