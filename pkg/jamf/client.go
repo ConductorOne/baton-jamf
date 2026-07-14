@@ -504,7 +504,12 @@ GotoRetry:
 	}
 	response, err := c.wrapper.Do(request)
 	if err != nil {
-		l.Error("failed to perform request", zap.Error(err))
+		// uhttp already logs the underlying HTTP failure at the appropriate
+		// level (Warn for 4xx, Error for 5xx) — this is just a debug trace of
+		// where it surfaced. Callers routinely treat 404/409 here as success
+		// (CreateAccount already-exists, Delete not-found), so logging at
+		// Error would misrepresent expected idempotent outcomes as failures.
+		l.Debug("failed to perform request", zap.Error(err))
 		if status.Code(err) == codes.Unauthenticated && firstTry {
 			l.Debug("retrying request with new token")
 			token, err := c.CreateBearerToken(ctx, c.userName, c.password)
