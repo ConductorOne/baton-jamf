@@ -74,6 +74,21 @@ type Jamf struct {
 	// zero-value builder used to emit capabilities/config metadata, and non-nil
 	// for every real sync (see cli.ConnectorOpts, populated in New).
 	opts *cli.ConnectorOpts
+
+	// accountProvisioningTarget is the resource type ID ("user" or
+	// "userAccount") that CreateAccount is allowed to create for this
+	// connector instance. C1 only supports one creatable account type per
+	// connector instance; Delete is not gated by this and works for both
+	// types regardless of the configured target.
+	accountProvisioningTarget string
+}
+
+func (j *Jamf) userProvisioningActive() bool {
+	return j.accountProvisioningTarget == resourceTypeUser.Id
+}
+
+func (j *Jamf) userAccountProvisioningActive() bool {
+	return j.accountProvisioningTarget == resourceTypeUserAccount.Id
 }
 
 func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorbuilder.ConnectorBuilderV2, []connectorbuilder.Opt, error) {
@@ -96,13 +111,19 @@ func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorb
 	}
 	client.SetBearerToken(token)
 
-	return &Jamf{client: client, opts: opts}, nil, nil
+	accountProvisioningTarget := cc.CreateAccountResourceType
+	if accountProvisioningTarget == "" {
+		accountProvisioningTarget = resourceTypeUser.Id
+	}
+
+	return &Jamf{client: client, opts: opts, accountProvisioningTarget: accountProvisioningTarget}, nil, nil
 }
 
 func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
 	return &v2.ConnectorMetadata{
-		DisplayName: "Jamf",
-		Description: "Connector syncing groups, users, user accounts, user groups, sites, roles, and managed devices from Jamf Pro to Baton",
+		DisplayName:           "Jamf",
+		Description:           "Connector syncing groups, users, user accounts, user groups, sites, roles, and managed devices from Jamf Pro to Baton",
+		AccountCreationSchema: j.accountCreationSchema(),
 	}, nil
 }
 
@@ -120,9 +141,9 @@ func (j *Jamf) Validate(ctx context.Context) (annotations.Annotations, error) {
 
 func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncerV2 {
 	syncers := []connectorbuilder.ResourceSyncerV2{
-		userBuilder(j.client),
+		userBuilder(j.client, j),
 		groupBuilder(j.client),
-		userAccountBuilder(j.client),
+		userAccountBuilder(j.client, j),
 		userGroupBuilder(j.client),
 		siteBuilder(j.client),
 		roleBuilder(j.client),
@@ -141,6 +162,15 @@ func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceS
 	}
 
 	return syncers
+}
+
+// accountCreationSchema declares the C1 UI form fields for whichever account
+// type is currently configured for creation (see accountProvisioningTarget).
+func (j *Jamf) accountCreationSchema() *v2.ConnectorAccountCreationSchema {
+	if j.userAccountProvisioningActive() {
+		return userAccountCreationSchema()
+	}
+	return userCreationSchema()
 }
 
 // shouldSyncManagedDevice reports whether the opt-in managedDevice syncer should

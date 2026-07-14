@@ -28,6 +28,11 @@ const (
 
 	// assignedEntitlement links a device to the user it is assigned to.
 	assignedEntitlement = "assigned"
+
+	// ExternalResourceMatch key names used when a device's assignee can't be
+	// resolved to a synced Jamf user.
+	matchKeyEmail    = "email"
+	matchKeyUsername = "username"
 )
 
 type deviceOwner struct {
@@ -574,9 +579,9 @@ func deviceGrants(resource *v2.Resource, username, email string, userIndex map[s
 		return []*v2.Grant{grant.NewGrant(resource, assignedEntitlement, rid)}, nil
 	}
 
-	key, value := "email", strings.TrimSpace(email)
+	key, value := matchKeyEmail, strings.TrimSpace(email)
 	if value == "" {
-		key, value = "username", strings.TrimSpace(username)
+		key, value = matchKeyUsername, strings.TrimSpace(username)
 	}
 
 	principal, err := rs.NewResourceID(resourceTypeUser, value)

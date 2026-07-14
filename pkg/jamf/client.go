@@ -17,18 +17,25 @@ import (
 )
 
 const (
-	accountUrlPath    = "/JSSResource/accounts/userid/%d"
-	accountsUrlPath   = "/JSSResource/accounts"
-	authUrlPath       = "/api/v1/auth"
-	groupUrlPath      = "/JSSResource/accounts/groupid/%d"
-	sitesUrlPath      = "/JSSResource/sites"
-	tokenUrlPath      = "/api/v1/auth/token" //nolint:golint,gosec // not a token
-	userGroupUrlPath  = "/JSSResource/usergroups/id/%d"
-	userGroupsUrlPath = "/JSSResource/usergroups"
-	userUrlPath       = "/JSSResource/users/id/%d"
-	usersUrlPath      = "/JSSResource/users"
-	keepAliveUrlPath  = "/api/v1/auth/keep-alive"
-	privilegesUrlPath = "/api/v1/api-role-privileges"
+	accountUrlPath         = "/JSSResource/accounts/userid/%d"
+	accountUsernameUrlPath = "/JSSResource/accounts/username/%s"
+	accountsUrlPath        = "/JSSResource/accounts"
+	authUrlPath            = "/api/v1/auth"
+	groupUrlPath           = "/JSSResource/accounts/groupid/%d"
+	sitesUrlPath           = "/JSSResource/sites"
+	tokenUrlPath           = "/api/v1/auth/token" //nolint:golint,gosec // not a token
+	userGroupUrlPath       = "/JSSResource/usergroups/id/%d"
+	userGroupsUrlPath      = "/JSSResource/usergroups"
+	userUrlPath            = "/JSSResource/users/id/%d"
+	userNameUrlPath        = "/JSSResource/users/name/%s"
+	usersUrlPath           = "/JSSResource/users"
+	keepAliveUrlPath       = "/api/v1/auth/keep-alive"
+	privilegesUrlPath      = "/api/v1/api-role-privileges"
+
+	// newResourceID is the Jamf Classic API sentinel used in the URL path when
+	// creating a new user or account — the server assigns the real ID and
+	// returns it in the response.
+	newResourceID = 0
 )
 
 type Client struct {
@@ -360,10 +367,106 @@ func (c *Client) GetAccounts(ctx context.Context) ([]*UserAccount, []*Group, err
 	return userAccounts, groups, nil
 }
 
-// doRequest performs an authenticated request to the Jamf API.
+// GetUserByName returns the Jamf user with the given username (login name).
+func (c *Client) GetUserByName(ctx context.Context, name string) (*User, error) {
+	url, err := c.getUrl(fmt.Sprintf(userNameUrlPath, liburl.PathEscape(name)))
+	if err != nil {
+		return nil, err
+	}
+
+	var target UserResponse
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
+	}
+
+	return &target.User, nil
+}
+
+// CreateUser creates a new Jamf user. Returns a gRPC AlreadyExists error
+// (surfaced via IsAlreadyExistsError) if a user with this name already exists.
+func (c *Client) CreateUser(ctx context.Context, name, fullName, email string) error {
+	url, err := c.getUrl(fmt.Sprintf(userUrlPath, newResourceID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := UserCreateBody{
+		Name:     name,
+		FullName: fullName,
+		Email:    email,
+	}
+
+	return c.doRequestWithMethod(ctx, http.MethodPost, url, reqBody, nil)
+}
+
+// DeleteUser deletes the Jamf user with the given ID. Returns a gRPC NotFound
+// error (surfaced via IsNotFoundError) if the user doesn't exist.
+func (c *Client) DeleteUser(ctx context.Context, userID int) error {
+	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userID))
+	if err != nil {
+		return err
+	}
+
+	return c.doRequestWithMethod(ctx, http.MethodDelete, url, nil, nil)
+}
+
+// GetUserAccountByName returns the Jamf admin account with the given username.
+func (c *Client) GetUserAccountByName(ctx context.Context, name string) (*UserAccount, error) {
+	url, err := c.getUrl(fmt.Sprintf(accountUsernameUrlPath, liburl.PathEscape(name)))
+	if err != nil {
+		return nil, err
+	}
+
+	var target UserAccountResponse
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
+	}
+
+	return &target.UserAccount, nil
+}
+
+// CreateUserAccount creates a new Jamf Pro console admin account. Returns a
+// gRPC AlreadyExists error (surfaced via IsAlreadyExistsError) if an account
+// with this name already exists.
+func (c *Client) CreateUserAccount(ctx context.Context, account UserAccountCreateBody) error {
+	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, newResourceID))
+	if err != nil {
+		return err
+	}
+
+	return c.doRequestWithMethod(ctx, http.MethodPost, url, account, nil)
+}
+
+// DeleteUserAccount deletes the Jamf admin account with the given ID. Returns
+// a gRPC NotFound error (surfaced via IsNotFoundError) if the account doesn't exist.
+func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
+	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, accountID))
+	if err != nil {
+		return err
+	}
+
+	return c.doRequestWithMethod(ctx, http.MethodDelete, url, nil, nil)
+}
+
+// doRequest performs an authenticated GET request to the Jamf API.
 func (c *Client) doRequest(
 	ctx context.Context,
 	url *liburl.URL,
+	target interface{},
+) error {
+	return c.doRequestWithMethod(ctx, http.MethodGet, url, nil, target)
+}
+
+// doRequestWithMethod performs an authenticated request to the Jamf API for
+// any HTTP method, optionally sending reqBody as an XML request body (the
+// only format the Classic API accepts for POST/PUT). Passing a nil target
+// skips decoding the response body (used for DELETE and other no-content
+// responses).
+func (c *Client) doRequestWithMethod(
+	ctx context.Context,
+	method string,
+	url *liburl.URL,
+	reqBody interface{},
 	target interface{},
 ) error {
 	l := ctxzap.Extract(ctx)
@@ -376,15 +479,25 @@ func (c *Client) doRequest(
 	firstTry := true
 
 GotoRetry:
-	request, err := c.wrapper.NewRequest(
-		ctx,
-		http.MethodGet,
-		url,
+	requestOpts := []uhttp.RequestOption{
 		uhttp.WithAcceptJSONHeader(),
 		uhttp.WithHeader(
 			"Authorization",
 			fmt.Sprintf("Bearer %s", c.token),
 		),
+	}
+	if reqBody != nil {
+		// The Classic API only accepts XML for POST/PUT request bodies (JSON
+		// is GET-response-only); see
+		// https://developer.jamf.com/jamf-pro/docs/getting-started-2.
+		requestOpts = append(requestOpts, uhttp.WithXMLBody(reqBody))
+	}
+
+	request, err := c.wrapper.NewRequest(
+		ctx,
+		method,
+		url,
+		requestOpts...,
 	)
 	if err != nil {
 		return err

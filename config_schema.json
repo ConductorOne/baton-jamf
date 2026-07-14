@@ -125,6 +125,20 @@
           "isRequired": true
         }
       }
+    },
+    {
+      "name": "create-account-resource-type",
+      "displayName": "Account Provisioning Target",
+      "description": "Which Jamf account type C1 should create when provisioning accounts. 'user' (default) creates directory users; 'userAccount' creates Jamf Pro console admin accounts. Only one type can be created at a time per connector instance.",
+      "stringField": {
+        "defaultValue": "user",
+        "rules": {
+          "in": [
+            "user",
+            "userAccount"
+          ]
+        }
+      }
     }
   ],
   "displayName": "Jamf",
