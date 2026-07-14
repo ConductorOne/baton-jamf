@@ -109,7 +109,18 @@ func (c *Client) keepAliveToken(
 	var target TokenResponse
 	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(&target))
 	if err != nil {
-		return err
+		// The keep-alive endpoint requires a still-valid token. After an idle
+		// period (e.g. between syncs, or before a sporadic provisioning task)
+		// the token can fully expire, in which case keep-alive returns 401.
+		// A dead token can't be refreshed, so recover by minting a fresh one
+		// from the configured credentials.
+		l.Debug("token keep-alive failed; creating a new token from credentials", zap.Error(err))
+		token, createErr := c.CreateBearerToken(ctx, c.userName, c.password)
+		if createErr != nil {
+			return fmt.Errorf("jamf-connector: failed to refresh expired token: %w", createErr)
+		}
+		c.SetBearerToken(token)
+		return nil
 	}
 	err = response.Body.Close()
 	if err != nil {
@@ -292,6 +303,32 @@ func (c *Client) GetUserGroupDetails(ctx context.Context, userGroupId int) (*Use
 	return &target.UserGroup, nil
 }
 
+// AddUserToUserGroup adds a user to a Jamf user group.
+func (c *Client) AddUserToUserGroup(ctx context.Context, userGroupID, userID int) error {
+	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, userGroupID))
+	if err != nil {
+		return err
+	}
+
+	body := UserGroupMembershipUpdate{
+		UserAdditions: &UserGroupMemberEdits{Users: []UserGroupMemberRef{{ID: userID}}},
+	}
+	return c.doPutXML(ctx, url, body)
+}
+
+// RemoveUserFromUserGroup removes a user from a Jamf user group.
+func (c *Client) RemoveUserFromUserGroup(ctx context.Context, userGroupID, userID int) error {
+	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, userGroupID))
+	if err != nil {
+		return err
+	}
+
+	body := UserGroupMembershipUpdate{
+		UserDeletions: &UserGroupMemberEdits{Users: []UserGroupMemberRef{{ID: userID}}},
+	}
+	return c.doPutXML(ctx, url, body)
+}
+
 // GetUsers returns all Jamf users.
 func (c *Client) GetUsers(ctx context.Context) ([]*User, error) {
 	var users []*User
@@ -423,6 +460,59 @@ GotoRetry:
 	}
 
 	return nil
+}
+
+// doPutXML performs an authenticated PUT request with an XML body to the Jamf
+// Classic API. It mirrors doRequest's token keep-alive and one-shot re-auth on
+// an Unauthenticated response.
+func (c *Client) doPutXML(
+	ctx context.Context,
+	url *liburl.URL,
+	body any,
+) error {
+	l := ctxzap.Extract(ctx)
+
+	err := c.keepAliveToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	firstTry := true
+
+GotoRetry:
+	request, err := c.wrapper.NewRequest(
+		ctx,
+		http.MethodPut,
+		url,
+		uhttp.WithContentTypeXMLHeader(),
+		uhttp.WithXMLBody(body),
+		uhttp.WithHeader(
+			"Authorization",
+			fmt.Sprintf("Bearer %s", c.token),
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	response, err := c.wrapper.Do(request)
+	if err != nil {
+		l.Error("failed to perform request", zap.Error(err))
+		if status.Code(err) == codes.Unauthenticated && firstTry {
+			l.Debug("retrying request with new token")
+			token, err := c.CreateBearerToken(ctx, c.userName, c.password)
+			if err != nil {
+				return err
+			}
+
+			c.SetBearerToken(token)
+			firstTry = false
+			goto GotoRetry
+		}
+		return err
+	}
+
+	return response.Body.Close()
 }
 
 func logBody(body []byte, size int) string {

@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -42,6 +43,7 @@ func userResource(user *jamf.User, parentResourceID *v2.ResourceId) (*v2.Resourc
 		user.ID,
 		userTraitOptions,
 		rs.WithParentResourceID(parentResourceID),
+		rs.WithExternalID(&v2.ExternalId{Id: strconv.Itoa(user.ID)}),
 	)
 	if err != nil {
 		return nil, err

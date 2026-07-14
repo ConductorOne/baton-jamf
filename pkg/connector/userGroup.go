@@ -7,6 +7,7 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
@@ -103,6 +104,76 @@ func (g *userGroupResourceType) Grants(ctx context.Context, resource *v2.Resourc
 	}
 
 	return rv, nil, nil
+}
+
+func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	if principal.Id.ResourceType != resourceTypeUser.Id {
+		return nil, nil, fmt.Errorf(
+			"jamf-connector: only %s resources can be granted user group membership, got %q",
+			resourceTypeUser.Id, principal.Id.ResourceType,
+		)
+	}
+
+	userID, err := nativeUserID(principal)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	userGroupID, err := strconv.Atoi(entitlement.Resource.Id.Resource)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: invalid user group id %q: %w", entitlement.Resource.Id.Resource, err)
+	}
+
+	group, err := g.client.GetUserGroupDetails(ctx, userGroupID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: failed to get user group details: %w", err)
+	}
+	if group.IsSmart {
+		return nil, nil, fmt.Errorf("jamf-connector: cannot modify membership of smart user group %q (membership is determined by criteria)", group.Name)
+	}
+
+	if err := g.client.AddUserToUserGroup(ctx, userGroupID, userID); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: failed to add user to user group: %w", err)
+	}
+
+	newGrant := grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)
+	return []*v2.Grant{newGrant}, nil, nil
+}
+
+func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
+	principal := gr.Principal
+	entitlement := gr.Entitlement
+
+	if principal.Id.ResourceType != resourceTypeUser.Id {
+		return nil, fmt.Errorf(
+			"jamf-connector: only %s resources can be revoked from user group membership, got %q",
+			resourceTypeUser.Id, principal.Id.ResourceType,
+		)
+	}
+
+	userID, err := nativeUserID(principal)
+	if err != nil {
+		return nil, err
+	}
+
+	userGroupID, err := strconv.Atoi(entitlement.Resource.Id.Resource)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: invalid user group id %q: %w", entitlement.Resource.Id.Resource, err)
+	}
+
+	group, err := g.client.GetUserGroupDetails(ctx, userGroupID)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: failed to get user group details: %w", err)
+	}
+	if group.IsSmart {
+		return nil, fmt.Errorf("jamf-connector: cannot modify membership of smart user group %q (membership is determined by criteria)", group.Name)
+	}
+
+	if err := g.client.RemoveUserFromUserGroup(ctx, userGroupID, userID); err != nil {
+		return nil, fmt.Errorf("jamf-connector: failed to remove user from user group: %w", err)
+	}
+
+	return nil, nil
 }
 
 func userGroupBuilder(client *jamf.Client) *userGroupResourceType {
