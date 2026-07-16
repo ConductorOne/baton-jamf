@@ -12,14 +12,11 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/crypto"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type userAccountResourceType struct {
 	resourceType *v2.ResourceType
 	client       *jamf.Client
-	jamf         *Jamf
 }
 
 // knownPrivilegeSets are the valid values Jamf accepts for an admin account's
@@ -157,10 +154,22 @@ func userAccountCreationSchema() *v2.ConnectorAccountCreationSchema {
 	}
 }
 
+// provisionableUserAccountType adds account-creation capability on top of
+// userAccountResourceType. It is only constructed — and therefore only
+// satisfies the SDK's AccountManagerLimited interface — when the connector is
+// configured with create-account-resource-type=userAccount (see
+// Jamf.userAccountSyncer). See provisionableUserType for why this matters:
+// registering CreateAccount unconditionally on both resource types would make
+// the SDK see two account managers and default ambiguous CreateAccount calls
+// to "user" regardless of config.
+type provisionableUserAccountType struct {
+	*userAccountResourceType
+}
+
 // CreateAccountCapabilityDetails is required alongside CreateAccount and
 // Delete for the SDK to detect AccountManagerV2. Jamf console admin accounts
 // require a password, so C1 generates one and returns it as plaintext data.
-func (o *userAccountResourceType) CreateAccountCapabilityDetails(_ context.Context) (*v2.CredentialDetailsAccountProvisioning, annotations.Annotations, error) {
+func (o *provisionableUserAccountType) CreateAccountCapabilityDetails(_ context.Context) (*v2.CredentialDetailsAccountProvisioning, annotations.Annotations, error) {
 	return &v2.CredentialDetailsAccountProvisioning{
 		SupportedCredentialOptions: []v2.CapabilityDetailCredentialOption{
 			v2.CapabilityDetailCredentialOption_CAPABILITY_DETAIL_CREDENTIAL_OPTION_RANDOM_PASSWORD,
@@ -169,21 +178,12 @@ func (o *userAccountResourceType) CreateAccountCapabilityDetails(_ context.Conte
 	}, nil, nil
 }
 
-// CreateAccount creates a new Jamf Pro console admin account. Gated by the
-// connector's create-account-resource-type config — only active when that's
-// set to "userAccount".
-func (o *userAccountResourceType) CreateAccount(
+// CreateAccount creates a new Jamf Pro console admin account.
+func (o *provisionableUserAccountType) CreateAccount(
 	ctx context.Context,
 	accountInfo *v2.AccountInfo,
 	credentialOptions *v2.LocalCredentialOptions,
 ) (connectorbuilder.CreateAccountResponse, []*v2.PlaintextData, annotations.Annotations, error) {
-	if !o.jamf.userAccountProvisioningActive() {
-		return nil, nil, nil, status.Error(
-			codes.Unimplemented,
-			"jamf-connector: userAccount provisioning is disabled; set BATON_CREATE_ACCOUNT_RESOURCE_TYPE=userAccount",
-		)
-	}
-
 	name, err := requireLogin(accountInfo)
 	if err != nil {
 		return nil, nil, nil, err
@@ -265,10 +265,9 @@ func (o *userAccountResourceType) Delete(ctx context.Context, resourceID *v2.Res
 	return nil, nil
 }
 
-func userAccountBuilder(client *jamf.Client, j *Jamf) *userAccountResourceType {
+func userAccountBuilder(client *jamf.Client) *userAccountResourceType {
 	return &userAccountResourceType{
 		resourceType: resourceTypeUserAccount,
 		client:       client,
-		jamf:         j,
 	}
 }

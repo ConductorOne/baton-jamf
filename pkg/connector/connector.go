@@ -83,8 +83,12 @@ type Jamf struct {
 	accountProvisioningTarget string
 }
 
+// userProvisioningActive treats an empty accountProvisioningTarget as "user"
+// (the documented default), so the zero-value *Jamf{} used for capabilities
+// generation (main.go, bypassing New()) resolves the same default New()
+// would apply from an empty config value.
 func (j *Jamf) userProvisioningActive() bool {
-	return j.accountProvisioningTarget == resourceTypeUser.Id
+	return j.accountProvisioningTarget == "" || j.accountProvisioningTarget == resourceTypeUser.Id
 }
 
 func (j *Jamf) userAccountProvisioningActive() bool {
@@ -141,9 +145,9 @@ func (j *Jamf) Validate(ctx context.Context) (annotations.Annotations, error) {
 
 func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncerV2 {
 	syncers := []connectorbuilder.ResourceSyncerV2{
-		userBuilder(j.client, j),
+		j.userSyncer(),
 		groupBuilder(j.client),
-		userAccountBuilder(j.client, j),
+		j.userAccountSyncer(),
 		userGroupBuilder(j.client),
 		siteBuilder(j.client),
 		roleBuilder(j.client),
@@ -171,6 +175,30 @@ func (j *Jamf) accountCreationSchema() *v2.ConnectorAccountCreationSchema {
 		return userAccountCreationSchema()
 	}
 	return userCreationSchema()
+}
+
+// userSyncer returns the "user" resource syncer, wrapped with account-creation
+// capability only when create-account-resource-type targets "user". See
+// provisionableUserType for why only ever registering one target as an
+// AccountManagerV2 matters.
+func (j *Jamf) userSyncer() connectorbuilder.ResourceSyncerV2 {
+	base := userBuilder(j.client)
+	if j.userProvisioningActive() {
+		return &provisionableUserType{base}
+	}
+	return base
+}
+
+// userAccountSyncer returns the "userAccount" resource syncer, wrapped with
+// account-creation capability only when create-account-resource-type targets
+// "userAccount". See provisionableUserType for why only ever registering one
+// target as an AccountManagerV2 matters.
+func (j *Jamf) userAccountSyncer() connectorbuilder.ResourceSyncerV2 {
+	base := userAccountBuilder(j.client)
+	if j.userAccountProvisioningActive() {
+		return &provisionableUserAccountType{base}
+	}
+	return base
 }
 
 // shouldSyncManagedDevice reports whether the opt-in managedDevice syncer should

@@ -10,14 +10,11 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type userResourceType struct {
 	resourceType *v2.ResourceType
 	client       *jamf.Client
-	jamf         *Jamf
 }
 
 // Account-creation profile field names, shared between the "user" and
@@ -131,11 +128,25 @@ func userCreationSchema() *v2.ConnectorAccountCreationSchema {
 	}
 }
 
+// provisionableUserType adds account-creation capability on top of
+// userResourceType. It is only constructed — and therefore only satisfies the
+// SDK's AccountManagerLimited interface — when the connector is configured
+// with create-account-resource-type=user (see Jamf.userSyncer). Registering
+// CreateAccount unconditionally on both "user" and "userAccount" would make
+// the SDK see two account managers at once; when a CreateAccount request
+// omits resource_type_id, the SDK then defaults to "user" regardless of
+// config, and getCredentialDetails picks an arbitrary one of the two
+// registered managers' credential options. Only ever registering the
+// currently-active target as an account manager avoids both.
+type provisionableUserType struct {
+	*userResourceType
+}
+
 // CreateAccountCapabilityDetails is required alongside CreateAccount and
 // Delete for the SDK to detect AccountManagerV2. Jamf directory users have no
 // login credential of their own (they're directory metadata, not console
 // logins), so no password option applies.
-func (o *userResourceType) CreateAccountCapabilityDetails(_ context.Context) (*v2.CredentialDetailsAccountProvisioning, annotations.Annotations, error) {
+func (o *provisionableUserType) CreateAccountCapabilityDetails(_ context.Context) (*v2.CredentialDetailsAccountProvisioning, annotations.Annotations, error) {
 	return &v2.CredentialDetailsAccountProvisioning{
 		SupportedCredentialOptions: []v2.CapabilityDetailCredentialOption{
 			v2.CapabilityDetailCredentialOption_CAPABILITY_DETAIL_CREDENTIAL_OPTION_NO_PASSWORD,
@@ -144,20 +155,12 @@ func (o *userResourceType) CreateAccountCapabilityDetails(_ context.Context) (*v
 	}, nil, nil
 }
 
-// CreateAccount creates a new Jamf directory user. Gated by the connector's
-// create-account-resource-type config — only active when that's set to "user".
-func (o *userResourceType) CreateAccount(
+// CreateAccount creates a new Jamf directory user.
+func (o *provisionableUserType) CreateAccount(
 	ctx context.Context,
 	accountInfo *v2.AccountInfo,
 	_ *v2.LocalCredentialOptions,
 ) (connectorbuilder.CreateAccountResponse, []*v2.PlaintextData, annotations.Annotations, error) {
-	if !o.jamf.userProvisioningActive() {
-		return nil, nil, nil, status.Error(
-			codes.Unimplemented,
-			"jamf-connector: user provisioning is disabled; set BATON_CREATE_ACCOUNT_RESOURCE_TYPE=user",
-		)
-	}
-
 	name, err := requireLogin(accountInfo)
 	if err != nil {
 		return nil, nil, nil, err
@@ -211,10 +214,9 @@ func (o *userResourceType) Delete(ctx context.Context, resourceID *v2.ResourceId
 	return nil, nil
 }
 
-func userBuilder(client *jamf.Client, j *Jamf) *userResourceType {
+func userBuilder(client *jamf.Client) *userResourceType {
 	return &userResourceType{
 		resourceType: resourceTypeUser,
 		client:       client,
-		jamf:         j,
 	}
 }
