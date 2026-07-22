@@ -74,6 +74,25 @@ type Jamf struct {
 	// zero-value builder used to emit capabilities/config metadata, and non-nil
 	// for every real sync (see cli.ConnectorOpts, populated in New).
 	opts *cli.ConnectorOpts
+
+	// accountProvisioningTarget is the resource type ID ("user" or
+	// "userAccount") that CreateAccount is allowed to create for this
+	// connector instance. C1 only supports one creatable account type per
+	// connector instance; Delete is not gated by this and works for both
+	// types regardless of the configured target.
+	accountProvisioningTarget string
+}
+
+// userProvisioningActive treats an empty accountProvisioningTarget as "user"
+// (the documented default), so the zero-value *Jamf{} used for capabilities
+// generation (main.go, bypassing New()) resolves the same default New()
+// would apply from an empty config value.
+func (j *Jamf) userProvisioningActive() bool {
+	return j.accountProvisioningTarget == "" || j.accountProvisioningTarget == resourceTypeUser.Id
+}
+
+func (j *Jamf) userAccountProvisioningActive() bool {
+	return j.accountProvisioningTarget == resourceTypeUserAccount.Id
 }
 
 func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorbuilder.ConnectorBuilderV2, []connectorbuilder.Opt, error) {
@@ -96,13 +115,20 @@ func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorb
 	}
 	client.SetBearerToken(token)
 
-	return &Jamf{client: client, opts: opts}, nil, nil
+	accountProvisioningTarget := cc.CreateAccountResourceType
+	if accountProvisioningTarget == "" {
+		accountProvisioningTarget = resourceTypeUser.Id
+	}
+
+	return &Jamf{client: client, opts: opts, accountProvisioningTarget: accountProvisioningTarget}, nil, nil
 }
 
 func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
 	return &v2.ConnectorMetadata{
 		DisplayName: "Jamf",
-		Description: "Connector syncing groups, users, user accounts, user groups, sites, roles, and managed devices from Jamf Pro to Baton",
+		Description: "Connector syncing groups, users, user accounts, user groups, sites, roles, and managed devices from Jamf Pro to Baton, " +
+			"with account provisioning (create/delete) for users and user accounts",
+		AccountCreationSchema: j.accountCreationSchema(),
 	}, nil
 }
 
@@ -120,9 +146,9 @@ func (j *Jamf) Validate(ctx context.Context) (annotations.Annotations, error) {
 
 func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncerV2 {
 	syncers := []connectorbuilder.ResourceSyncerV2{
-		userBuilder(j.client),
+		j.userSyncer(),
 		groupBuilder(j.client),
-		userAccountBuilder(j.client),
+		j.userAccountSyncer(),
 		userGroupBuilder(j.client),
 		siteBuilder(j.client),
 		roleBuilder(j.client),
@@ -141,6 +167,39 @@ func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceS
 	}
 
 	return syncers
+}
+
+// accountCreationSchema declares the C1 UI form fields for whichever account
+// type is currently configured for creation (see accountProvisioningTarget).
+func (j *Jamf) accountCreationSchema() *v2.ConnectorAccountCreationSchema {
+	if j.userAccountProvisioningActive() {
+		return userAccountCreationSchema()
+	}
+	return userCreationSchema()
+}
+
+// userSyncer returns the "user" resource syncer, wrapped with account-creation
+// capability only when create-account-resource-type targets "user". See
+// provisionableUserType for why only ever registering one target as an
+// AccountManagerV2 matters.
+func (j *Jamf) userSyncer() connectorbuilder.ResourceSyncerV2 {
+	base := userBuilder(j.client)
+	if j.userProvisioningActive() {
+		return &provisionableUserType{base}
+	}
+	return base
+}
+
+// userAccountSyncer returns the "userAccount" resource syncer, wrapped with
+// account-creation capability only when create-account-resource-type targets
+// "userAccount". See provisionableUserType for why only ever registering one
+// target as an AccountManagerV2 matters.
+func (j *Jamf) userAccountSyncer() connectorbuilder.ResourceSyncerV2 {
+	base := userAccountBuilder(j.client)
+	if j.userAccountProvisioningActive() {
+		return &provisionableUserAccountType{base}
+	}
+	return base
 }
 
 // shouldSyncManagedDevice reports whether the opt-in managedDevice syncer should

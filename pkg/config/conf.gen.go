@@ -7,6 +7,7 @@ type Jamf struct {
 	Username string `mapstructure:"username"`
 	Password string `mapstructure:"password"`
 	InstanceUrl string `mapstructure:"instance-url"`
+	CreateAccountResourceType string `mapstructure:"create-account-resource-type"`
 }
 
 func (c *Jamf) findFieldByTag(tagValue string) (any, bool) {

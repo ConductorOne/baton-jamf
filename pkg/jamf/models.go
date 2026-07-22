@@ -1,5 +1,7 @@
 package jamf
 
+import "encoding/xml"
+
 type BaseType struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
@@ -104,6 +106,30 @@ type UserResponse struct {
 
 type UserAccountResponse struct {
 	UserAccount UserAccount `json:"account"`
+}
+
+// UserCreateBody is the XML request body for POST /JSSResource/users/id/0.
+// The Classic API only accepts XML for POST/PUT requests (JSON is GET-only),
+// so this is marshaled with encoding/xml, not encoding/json.
+type UserCreateBody struct {
+	XMLName  xml.Name `xml:"user"`
+	Name     string   `xml:"name"`
+	FullName string   `xml:"full_name,omitempty"`
+	Email    string   `xml:"email,omitempty"`
+}
+
+// UserAccountCreateBody is the XML request body for POST /JSSResource/accounts/userid/0.
+// The Classic API only accepts XML for POST/PUT requests (JSON is GET-only),
+// so this is marshaled with encoding/xml, not encoding/json.
+type UserAccountCreateBody struct {
+	XMLName      xml.Name `xml:"account"`
+	Name         string   `xml:"name"`
+	Password     string   `xml:"password"`
+	FullName     string   `xml:"full_name,omitempty"`
+	Email        string   `xml:"email,omitempty"`
+	Enabled      string   `xml:"enabled,omitempty"`
+	AccessLevel  string   `xml:"access_level,omitempty"`
+	PrivilegeSet string   `xml:"privilege_set,omitempty"`
 }
 
 type UserGroupsResponse struct {

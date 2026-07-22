@@ -28,14 +28,13 @@ func userGroupResource(group *jamf.UserGroup, parentResourceID *v2.ResourceId) (
 		"group_name": group.Name,
 	}
 
-	groupTraitOptions := []rs.GroupTraitOption{rs.WithGroupProfile(profile)}
-
 	ret, err := rs.NewGroupResource(
 		group.Name,
 		resourceTypeUserGroup,
 		group.ID,
-		groupTraitOptions,
+		nil,
 		rs.WithParentResourceID(parentResourceID),
+		rs.WithResourceProfile(profile),
 	)
 	if err != nil {
 		return nil, err
