@@ -125,8 +125,9 @@ func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorb
 
 func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
 	return &v2.ConnectorMetadata{
-		DisplayName:           "Jamf",
-		Description:           "Connector syncing groups, users, user accounts, user groups, sites, roles, and managed devices from Jamf Pro to Baton",
+		DisplayName: "Jamf",
+		Description: "Connector syncing groups, users, user accounts, user groups, sites, roles, and managed devices from Jamf Pro to Baton, " +
+			"with account provisioning (create/delete) for users and user accounts",
 		AccountCreationSchema: j.accountCreationSchema(),
 	}, nil
 }
