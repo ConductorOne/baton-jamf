@@ -34,16 +34,13 @@ func roleResource(ctx context.Context, role string, parentResourceID *v2.Resourc
 		"role_id":   role,
 	}
 
-	roleTraitOptions := []resource.RoleTraitOption{
-		resource.WithRoleProfile(profile),
-	}
-
 	ret, err := resource.NewRoleResource(
 		role,
 		resourceTypeRole,
 		role,
-		roleTraitOptions,
+		nil,
 		resource.WithParentResourceID(parentResourceID),
+		resource.WithResourceProfile(profile),
 	)
 	if err != nil {
 		return nil, err

@@ -55,17 +55,15 @@ func userAccountResource(account *jamf.UserAccount, parentResourceID *v2.Resourc
 		"user_id":    fmt.Sprintf("account:%d", account.ID),
 	}
 
-	var userStatus v2.UserTrait_Status_Status
+	var resourceStatus v2.Status_ResourceStatus
 	if account.Enabled == enabledValue {
-		userStatus = v2.UserTrait_Status_STATUS_ENABLED
+		resourceStatus = v2.Status_RESOURCE_STATUS_ENABLED
 	} else {
-		userStatus = v2.UserTrait_Status_STATUS_DISABLED
+		resourceStatus = v2.Status_RESOURCE_STATUS_DISABLED
 	}
 
 	userTraitOptions := []rs.UserTraitOption{
-		rs.WithUserProfile(profile),
 		rs.WithEmail(account.Email, true),
-		rs.WithStatus(userStatus),
 	}
 
 	ret, err := rs.NewUserResource(
@@ -74,6 +72,8 @@ func userAccountResource(account *jamf.UserAccount, parentResourceID *v2.Resourc
 		account.ID,
 		userTraitOptions,
 		rs.WithParentResourceID(parentResourceID),
+		rs.WithResourceProfile(profile),
+		rs.WithResourceStatus(resourceStatus, ""),
 	)
 	if err != nil {
 		return nil, err
