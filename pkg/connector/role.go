@@ -105,7 +105,7 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 			return nil, nil, err
 		}
 
-		if isCustomPrivilege && slices.Contains(group.Privileges.JSSObjects, resource.Id.Resource) {
+		if isCustomPrivilege && group.Privileges.Contains(resource.Id.Resource) {
 			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
 			rv = append(rv, privilegeGrant)
 			continue
@@ -123,7 +123,7 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 			return nil, nil, err
 		}
 
-		if isCustomPrivilege && slices.Contains(userAccount.Privileges.JSSObjects, resource.Id.Resource) {
+		if isCustomPrivilege && userAccount.Privileges.Contains(resource.Id.Resource) {
 			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
 			rv = append(rv, privilegeGrant)
 			continue
