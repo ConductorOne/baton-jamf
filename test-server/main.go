@@ -370,7 +370,7 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 
 		s.mu.Lock()
 		// NOTE: same caveat as the account create path below — 409 here is
-		// unverified against a live Jamf tenant. See CXH-1487.
+		// unverified against a live Jamf tenant. See CXH-2156.
 		if existing, dup := s.findUserByNameLocked(body.Name); dup {
 			s.mu.Unlock()
 			_ = existing
@@ -531,7 +531,7 @@ func (s *server) handleAccountByID(w http.ResponseWriter, r *http.Request) {
 		// NOTE: Jamf does not document a per-endpoint error code for a name
 		// collision on createaccountbyid — 409 only appears in the Classic
 		// API Overview's generic response-code table, alongside 400 for a
-		// malformed XML body. Unverified against a live tenant; see CXH-1487.
+		// malformed XML body. Unverified against a live tenant; see CXH-2156.
 		if existing, dup := s.findAccountByNameLocked(body.Name); dup {
 			s.mu.Unlock()
 			_ = existing
@@ -779,7 +779,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 // Left as JSON: the connector maps errors purely off HTTP status code, via
 // vendor/github.com/conductorone/baton-sdk/pkg/uhttp (GrpcCodeFromHTTPStatus)
 // — it never parses this body — so this divergence has no functional effect
-// on the connector today. Unverified against a live tenant; see CXH-1487.
+// on the connector today. Unverified against a live tenant; see CXH-2156.
 type errorBody struct {
 	Message string `json:"message"`
 }
