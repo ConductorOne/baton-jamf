@@ -69,6 +69,40 @@ var customPrivilegeFields = []struct {
 	{profileFieldPrivilegesCasperImaging, "Privileges: Casper Imaging"},
 }
 
+// resolvePrivileges reads the 7 privileges_* profile fields and validates
+// them against privilegeSet: a Custom account must specify at least one
+// privilege, and a non-Custom account must specify none (Privileges only has
+// meaning for Custom — see jamf.UserAccountCreateBody.Privileges). Returns
+// nil, nil for a non-Custom account with no privileges fields set.
+func resolvePrivileges(profileMap map[string]interface{}, privilegeSet string) (*jamf.Privileges, error) {
+	provided := &jamf.Privileges{
+		JSSObjects:    stringSliceFromProfile(profileMap, profileFieldPrivilegesJSSObjects),
+		JSSSettings:   stringSliceFromProfile(profileMap, profileFieldPrivilegesJSSSettings),
+		JSSActions:    stringSliceFromProfile(profileMap, profileFieldPrivilegesJSSActions),
+		Recon:         stringSliceFromProfile(profileMap, profileFieldPrivilegesRecon),
+		CasperAdmin:   stringSliceFromProfile(profileMap, profileFieldPrivilegesCasperAdmin),
+		CasperRemote:  stringSliceFromProfile(profileMap, profileFieldPrivilegesCasperRemote),
+		CasperImaging: stringSliceFromProfile(profileMap, profileFieldPrivilegesCasperImaging),
+	}
+
+	switch {
+	case privilegeSet == privilegeSetCustom && provided.IsEmpty():
+		return nil, fmt.Errorf("jamf-connector: privilege_set is %q but no privileges were set — set at least one of the Privileges fields", privilegeSetCustom)
+	case privilegeSet == privilegeSetCustom:
+		return provided, nil
+	case !provided.IsEmpty():
+		// Privileges fields are only meaningful for a Custom privilege_set — reject rather
+		// than silently discarding them, which would leave the operator with an account
+		// that has none of the access they asked for and no indication why.
+		return nil, fmt.Errorf(
+			"jamf-connector: privileges were set but privilege_set is %q, not %q — Privileges fields only apply to %q accounts",
+			privilegeSet, privilegeSetCustom, privilegeSetCustom,
+		)
+	default:
+		return nil, nil
+	}
+}
+
 const (
 	defaultAccessLevel  = "Full Access"
 	defaultPrivilegeSet = privilegeSetAuditor
@@ -260,20 +294,9 @@ func (o *provisionableUserAccountType) CreateAccount(
 		return nil, nil, nil, fmt.Errorf("jamf-connector: failed to generate random password: %w", err)
 	}
 
-	var privileges *jamf.Privileges
-	if privilegeSet == privilegeSetCustom {
-		privileges = &jamf.Privileges{
-			JSSObjects:    stringSliceFromProfile(profileMap, profileFieldPrivilegesJSSObjects),
-			JSSSettings:   stringSliceFromProfile(profileMap, profileFieldPrivilegesJSSSettings),
-			JSSActions:    stringSliceFromProfile(profileMap, profileFieldPrivilegesJSSActions),
-			Recon:         stringSliceFromProfile(profileMap, profileFieldPrivilegesRecon),
-			CasperAdmin:   stringSliceFromProfile(profileMap, profileFieldPrivilegesCasperAdmin),
-			CasperRemote:  stringSliceFromProfile(profileMap, profileFieldPrivilegesCasperRemote),
-			CasperImaging: stringSliceFromProfile(profileMap, profileFieldPrivilegesCasperImaging),
-		}
-		if privileges.IsEmpty() {
-			return nil, nil, nil, fmt.Errorf("jamf-connector: privilege_set is %q but no privileges were set — set at least one of the Privileges fields", privilegeSetCustom)
-		}
+	privileges, err := resolvePrivileges(profileMap, privilegeSet)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	// Step 1: attempt creation.
