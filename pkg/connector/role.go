@@ -21,11 +21,9 @@ func (o *roleResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 	return o.resourceType
 }
 
-var privilegeSets = []string{
-	"Administrator",
-	"Auditor",
-	"Enrollment Only",
-}
+// privilegeSets are the built-in sets; privilegeSetCustom is deliberately
+// excluded — a Custom account's access is described by its individual privileges.
+var privilegeSets = []string{privilegeSetAdministrator, privilegeSetAuditor, privilegeSetEnrollmentOnly}
 
 // Create a new connector resource for a Jamf role.
 func roleResource(ctx context.Context, role string, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
@@ -90,6 +88,15 @@ func (o *roleResourceType) Entitlements(_ context.Context, resource *v2.Resource
 	return rv, nil, nil
 }
 
+// matchesIndividualPrivilege reports whether an account/group holding
+// privilegeSet and privileges should be granted the given individual
+// privilege role. Privileges is only meaningful for a Custom privilege_set
+// (see jamf.UserAccountCreateBody.Privileges) — a built-in set's Privileges
+// data, if Jamf ever returns any, must not be treated as an access grant.
+func matchesIndividualPrivilege(privilegeSet string, privileges *jamf.Privileges, privilege string) bool {
+	return privilegeSet == privilegeSetCustom && privileges.Contains(privilege)
+}
+
 func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, attrs resource.SyncOpAttrs) ([]*v2.Grant, *resource.SyncOpResults, error) {
 	var rv []*v2.Grant
 	isCustomPrivilege := !slices.Contains(privilegeSets, resource.Id.Resource)
@@ -105,7 +112,7 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 			return nil, nil, err
 		}
 
-		if isCustomPrivilege && slices.Contains(group.Privileges.JSSObjects, resource.Id.Resource) {
+		if isCustomPrivilege && matchesIndividualPrivilege(group.PrivilegeSet, &group.Privileges, resource.Id.Resource) {
 			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
 			rv = append(rv, privilegeGrant)
 			continue
@@ -123,7 +130,7 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 			return nil, nil, err
 		}
 
-		if isCustomPrivilege && slices.Contains(userAccount.Privileges.JSSObjects, resource.Id.Resource) {
+		if isCustomPrivilege && matchesIndividualPrivilege(userAccount.PrivilegeSet, &userAccount.Privileges, resource.Id.Resource) {
 			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
 			rv = append(rv, privilegeGrant)
 			continue

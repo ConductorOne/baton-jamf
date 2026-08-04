@@ -59,6 +59,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -78,8 +79,20 @@ const (
 
 	accessLevelFullAccess     = "Full Access"
 	privilegeSetAdministrator = "Administrator"
+	privilegeSetAuditor       = "Auditor"
+	privilegeSetCustom        = "Custom"
+	enabledValue              = "Enabled"
 
 	privilegeReadAdvancedComputerSearches = "Read Advanced Computer Searches"
+)
+
+// Enums declared on the Classic API "account" schema — see
+// https://developer.jamf.com/jamf-pro/reference/createaccountbyid and
+// https://developer.jamf.com/jamf-pro/reference/findaccountsbyid.
+var (
+	validAccessLevels  = []string{"Full Access", "Site Access", "Group Access"}
+	validPrivilegeSets = []string{privilegeSetAdministrator, privilegeSetAuditor, "Enrollment Only", privilegeSetCustom}
+	validEnabledValues = []string{enabledValue, "Disabled"}
 )
 
 type server struct {
@@ -159,15 +172,15 @@ func (s *server) seedData() {
 
 	admin1 := &jamf.UserAccount{
 		BaseType: jamf.BaseType{ID: 101, Name: "admin1"}, FullName: "Admin One", Email: "admin1@example.com",
-		Enabled: "Enabled", AccessLevel: accessLevelFullAccess, PrivilegeSet: privilegeSetAdministrator, Site: headquarters,
+		Enabled: enabledValue, AccessLevel: accessLevelFullAccess, PrivilegeSet: privilegeSetAdministrator, Site: headquarters,
 	}
 	admin2 := &jamf.UserAccount{
 		BaseType: jamf.BaseType{ID: 102, Name: "admin2"}, FullName: "Admin Two", Email: "admin2@example.com",
-		Enabled: "Disabled", AccessLevel: accessLevelFullAccess, PrivilegeSet: "Auditor", Site: headquarters,
+		Enabled: "Disabled", AccessLevel: accessLevelFullAccess, PrivilegeSet: privilegeSetAuditor, Site: headquarters,
 	}
 	admin3 := &jamf.UserAccount{
 		BaseType: jamf.BaseType{ID: 103, Name: "admin3"}, FullName: "Admin Three", Email: "admin3@example.com",
-		Enabled: "Enabled", AccessLevel: accessLevelFullAccess, PrivilegeSet: "Custom", Site: remote,
+		Enabled: enabledValue, AccessLevel: accessLevelFullAccess, PrivilegeSet: privilegeSetCustom, Site: remote,
 		Privileges: jamf.Privileges{JSSObjects: []string{privilegeReadAdvancedComputerSearches}},
 	}
 	accounts := []*jamf.UserAccount{admin1, admin2, admin3}
@@ -187,11 +200,11 @@ func (s *server) seedData() {
 			Members: []jamf.BaseType{admin1Ref, admin2Ref},
 		},
 		{
-			BaseType: jamf.BaseType{ID: 202, Name: "group-auditors"}, AccessLevel: accessLevelFullAccess, PrivilegeSet: "Auditor", Site: headquarters,
+			BaseType: jamf.BaseType{ID: 202, Name: "group-auditors"}, AccessLevel: accessLevelFullAccess, PrivilegeSet: privilegeSetAuditor, Site: headquarters,
 			Members: []jamf.BaseType{admin2Ref, admin3Ref},
 		},
 		{
-			BaseType: jamf.BaseType{ID: 203, Name: "group-custom"}, AccessLevel: accessLevelFullAccess, PrivilegeSet: "Custom", Site: remote,
+			BaseType: jamf.BaseType{ID: 203, Name: "group-custom"}, AccessLevel: accessLevelFullAccess, PrivilegeSet: privilegeSetCustom, Site: remote,
 			Privileges: jamf.Privileges{JSSObjects: []string{privilegeReadAdvancedComputerSearches}},
 			Members:    []jamf.BaseType{admin3Ref},
 		},
@@ -356,6 +369,8 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.mu.Lock()
+		// NOTE: same caveat as the account create path below — 409 here is
+		// unverified against a live Jamf tenant. See CXH-2156.
 		if existing, dup := s.findUserByNameLocked(body.Name); dup {
 			s.mu.Unlock()
 			_ = existing
@@ -370,10 +385,13 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 		}
 		s.users[u.ID] = u
 		s.userList = append(s.userList, u)
-		cp := *u
+		id := u.ID
 		s.mu.Unlock()
 
-		writeJSON(w, http.StatusCreated, jamf.UserResponse{User: cp})
+		// createuserbyid declares 201 with no response body schema; the docs
+		// state only that the result includes the created resource's ID —
+		// see https://developer.jamf.com/jamf-pro/reference/createuserbyid.
+		writeJSON(w, http.StatusCreated, createResponse{ID: id})
 
 	case http.MethodDelete:
 		s.mu.Lock()
@@ -493,8 +511,27 @@ func (s *server) handleAccountByID(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "name and password are required")
 			return
 		}
+		enumChecks := []struct {
+			name    string
+			value   string
+			allowed []string
+		}{
+			{"access_level", body.AccessLevel, validAccessLevels},
+			{"privilege_set", body.PrivilegeSet, validPrivilegeSets},
+			{"enabled", body.Enabled, validEnabledValues},
+		}
+		for _, c := range enumChecks {
+			if c.value != "" && !slices.Contains(c.allowed, c.value) {
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid %s %q", c.name, c.value))
+				return
+			}
+		}
 
 		s.mu.Lock()
+		// NOTE: Jamf does not document a per-endpoint error code for a name
+		// collision on createaccountbyid — 409 only appears in the Classic
+		// API Overview's generic response-code table, alongside 400 for a
+		// malformed XML body. Unverified against a live tenant; see CXH-2156.
 		if existing, dup := s.findAccountByNameLocked(body.Name); dup {
 			s.mu.Unlock()
 			_ = existing
@@ -510,12 +547,18 @@ func (s *server) handleAccountByID(w http.ResponseWriter, r *http.Request) {
 			AccessLevel:  body.AccessLevel,
 			PrivilegeSet: body.PrivilegeSet,
 		}
+		if body.Privileges != nil {
+			a.Privileges = *body.Privileges
+		}
 		s.accounts[a.ID] = a
 		s.accountList = append(s.accountList, a)
-		cp := *a
+		id := a.ID
 		s.mu.Unlock()
 
-		writeJSON(w, http.StatusCreated, jamf.UserAccountResponse{UserAccount: cp})
+		// createaccountbyid declares 201 with no response body schema; the
+		// docs state only that the result includes the created resource's
+		// ID — see https://developer.jamf.com/jamf-pro/reference/createaccountbyid.
+		writeJSON(w, http.StatusCreated, createResponse{ID: id})
 
 	case http.MethodDelete:
 		s.mu.Lock()
@@ -730,8 +773,21 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// errorBody is JSON for every mocked error, including auth and validation
+// failures. The Classic API Overview states error responses are HTML, not
+// JSON — https://developer.jamf.com/jamf-pro/docs/classic-api-overview.
+// Left as JSON: the connector maps errors purely off HTTP status code, via
+// vendor/github.com/conductorone/baton-sdk/pkg/uhttp (GrpcCodeFromHTTPStatus)
+// — it never parses this body — so this divergence has no functional effect
+// on the connector today. Unverified against a live tenant; see CXH-2156.
 type errorBody struct {
 	Message string `json:"message"`
+}
+
+// createResponse mirrors the only field the Classic API's create endpoints
+// actually document returning — the new resource's ID.
+type createResponse struct {
+	ID int `json:"id"`
 }
 
 func writeJSONError(w http.ResponseWriter, code int, message string) {

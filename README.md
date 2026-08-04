@@ -13,6 +13,27 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 | Account Deletion (Users, User Accounts) | Yes |
 | Provisioning (Grant/Revoke) | No — Groups, User Groups, Roles, and Sites are synced for visibility only |
 
+## Jamf Pro console admin account privileges (`userAccount`)
+
+When `--create-account-resource-type=userAccount`, the account's `privilege_set`
+profile field controls its access level: `Administrator`, `Auditor`,
+`Enrollment Only`, or `Custom`.
+
+For `Custom`, set at least one of the following profile fields to a list of
+Jamf privilege names for that category — Jamf creates the account with no
+privileges at all otherwise:
+
+- `privileges_jss_objects`
+- `privileges_jss_settings`
+- `privileges_jss_actions`
+- `privileges_recon`
+- `privileges_casper_admin`
+- `privileges_casper_remote`
+- `privileges_casper_imaging`
+
+Privilege names are validated server-side by Jamf, not by this connector — an
+invalid name returns a Jamf API error rather than a local validation error.
+
 # Getting Started
 
 ## Prerequisites

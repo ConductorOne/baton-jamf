@@ -28,6 +28,7 @@ The Jamf connector syncs the following resources:
 **Notes:**
 - Jamf has two distinct account types: **Users** (directory users) and **User Accounts** (Jamf Pro console admins). The connector can only create **one** of these types per connector instance — set by the **Account Provisioning Target** configuration field. Deletion works for both types regardless of this setting.
 - Groups, User Groups, Roles, and Sites are synced for visibility (including membership) but are not provisionable — access changes to these resources must be made directly in Jamf Pro.
+- When creating a **User Account**, the `privilege_set` profile field sets its access level (`Administrator`, `Auditor`, `Enrollment Only`, or `Custom`). For `Custom`, at least one of `privileges_jss_objects`, `privileges_jss_settings`, `privileges_jss_actions`, `privileges_recon`, `privileges_casper_admin`, `privileges_casper_remote`, or `privileges_casper_imaging` must be set to a list of Jamf privilege names — Jamf validates these names server-side, not the connector.
 
 <Note>
 **Managed Devices is opt-in.** This resource type is off by default so existing connectors keep working after upgrading. Enable it by selecting the **Managed Device** resource type in the connector's sync configuration. When enabled, the Jamf API role used by the connector must additionally have the **Read Computers** and **Read Mobile Devices** privileges, or the sync will fail.

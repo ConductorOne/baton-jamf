@@ -5,6 +5,23 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 )
 
+// stringSliceFromProfile reads a repeated-string field out of an account
+// creation profile map (as produced by structpb's AsMap — a []interface{} of
+// strings), tolerating an absent or wrongly-typed field by returning nil.
+func stringSliceFromProfile(profileMap map[string]interface{}, key string) []string {
+	raw, ok := profileMap[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func annotationsForUserResourceType() annotations.Annotations {
 	annos := annotations.Annotations{}
 	annos.Update(&v2.SkipEntitlementsAndGrants{})
