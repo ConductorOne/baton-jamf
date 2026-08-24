@@ -2,6 +2,8 @@ module github.com/conductorone/baton-jamf
 
 go 1.25.10
 
+toolchain go1.25.13
+
 require (
 	github.com/conductorone/baton-sdk v0.25.0
 	github.com/ennyjfrick/ruleguard-logfatal v0.0.2
