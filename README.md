@@ -51,7 +51,7 @@ baton resources
 ## docker
 
 ```
-docker run --rm -v $(pwd):/out -e BATON_USERNAME=jamfUsername BATON_PASSWORD=jamfPassword BATON_INSTANCE_URL=https://jamfProServerUrl.example.com ghcr.io/conductorone/baton-jamf:latest -f "/out/sync.c1z"
+docker run --rm -v $(pwd):/out -e BATON_USERNAME=jamfUsername BATON_PASSWORD=jamfPassword BATON_INSTANCE_URL=https://jamfProServerUrl.example.com public.ecr.aws/conductorone/baton-jamf:latest -f "/out/sync.c1z"
 docker run --rm -v $(pwd):/out ghcr.io/conductorone/baton:latest -f "/out/sync.c1z" resources
 ```
 
