@@ -10,6 +10,7 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
@@ -151,7 +152,7 @@ func (d *managedDeviceResourceType) Entitlements(_ context.Context, resource *v2
 
 	opts := []ent.EntitlementOption{
 		ent.WithGrantableTo(resourceTypeUser),
-		ent.WithDescription(fmt.Sprintf("Assigned user of the %s device", resource.DisplayName)),
+		ent.WithDescription(fmt.Sprintf("Assigned user of the %s device — granting this to a new user overwrites the current device owner", resource.DisplayName)),
 		ent.WithDisplayName(fmt.Sprintf("%s device %s", resource.DisplayName, assignedEntitlement)),
 	}
 
@@ -178,6 +179,94 @@ func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Res
 		return nil, nil, err
 	}
 	return grants, nil, nil
+}
+
+// Grant sets principal (a Jamf user) as the assigned user of the device
+// backing entitlement's resource. Single-valued/exclusive: this displaces
+// whatever user was previously assigned.
+func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	if principal.Id.ResourceType != resourceTypeUser.Id {
+		return nil, nil, fmt.Errorf("jamf-connector: device assignment can only be granted to users, got resource type %q", principal.Id.ResourceType)
+	}
+
+	username, err := usernameForPrincipal(ctx, d.client, principal)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: resolve username: %w", err)
+	}
+
+	if err := d.setAssignedUser(ctx, entitlement.Resource, username); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: %w", err)
+	}
+	return []*v2.Grant{grant.NewGrant(entitlement.Resource, assignedEntitlement, principal.Id)}, nil, nil
+}
+
+// Revoke clears the assigned user of the device backing gr's entitlement
+// resource.
+func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
+	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
+		return nil, fmt.Errorf("jamf-connector: device assignment can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
+	}
+
+	// TODO(verify-in-verify-plan): clearing via an empty username string is a
+	// best-guess default — the actual clear-value semantics (empty string vs.
+	// omitted field vs. a sentinel) are unverified against a live tenant. See
+	// architecture-plan.md §4.3 item 1, api-research.md §4.5/§6.
+	if err := d.setAssignedUser(ctx, gr.Entitlement.Resource, ""); err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke device assigned: %w", err)
+	}
+	return nil, nil
+}
+
+// setAssignedUser dispatches to the computer or mobile-device client call
+// based on the device-type prefix deviceObjectID encoded into the resource
+// id at List() time.
+func (d *managedDeviceResourceType) setAssignedUser(ctx context.Context, resource *v2.Resource, username string) error {
+	phase, id, err := parseDeviceObjectID(resource.Id.Resource)
+	if err != nil {
+		return err
+	}
+
+	switch phase {
+	case devicePhaseComputer:
+		return d.client.SetComputerAssignedUser(ctx, id, username)
+	case devicePhaseMobile:
+		return d.client.SetMobileDeviceAssignedUser(ctx, id, username)
+	default:
+		return fmt.Errorf("jamf-connector: unknown managed device phase %q", phase)
+	}
+}
+
+// parseDeviceObjectID reverses deviceObjectID, splitting a resource id like
+// "computer:17" back into its phase and native Jamf id.
+func parseDeviceObjectID(objectID string) (phase string, id string, err error) {
+	parts := strings.SplitN(objectID, ":", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("jamf-connector: invalid managed device resource id %q", objectID)
+	}
+	return parts[0], parts[1], nil
+}
+
+// usernameForPrincipal resolves a "user" principal's ResourceId to the Jamf
+// username Managed Device assignment expects.
+func usernameForPrincipal(ctx context.Context, client *jamf.Client, principal *v2.Resource) (string, error) {
+	userID, err := strconv.Atoi(principal.Id.Resource)
+	if err != nil {
+		return "", fmt.Errorf("invalid user id %q: %w", principal.Id.Resource, err)
+	}
+
+	user, err := client.GetUserDetails(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+
+	username := user.Username
+	if username == "" {
+		username = user.Name
+	}
+	if username == "" {
+		return "", fmt.Errorf("jamf user %d has no username", userID)
+	}
+	return username, nil
 }
 
 func managedDeviceBuilder(client *jamf.Client) *managedDeviceResourceType {

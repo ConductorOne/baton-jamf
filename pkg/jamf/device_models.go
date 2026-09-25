@@ -142,3 +142,31 @@ type MobileDevice struct {
 	WifiMacAddress  string `json:"wifiMacAddress"`
 	PhoneNumber     string `json:"phoneNumber"`
 }
+
+// ComputerAssignedUserUpdate is the PATCH body for
+// /api/v1/computers-inventory-detail/{id} that sets (Grant) or clears
+// (Revoke) the assigned user via userAndLocation.username.
+type ComputerAssignedUserUpdate struct {
+	UserAndLocation ComputerAssignedUserUpdateLocation `json:"userAndLocation"`
+}
+
+type ComputerAssignedUserUpdateLocation struct {
+	// TODO(verify-in-verify-plan): whether an empty string clears username or
+	// is rejected/no-op (vs. requiring the field to be omitted entirely) is
+	// unverified against a live tenant — see architecture-plan.md §4.3 item 1,
+	// api-research.md §4.5/§6.
+	Username string `json:"username"`
+}
+
+// MobileDeviceAssignedUserUpdate is the PATCH body for
+// /api/v2/mobile-devices/{id} that sets (Grant) or clears (Revoke) the
+// assigned user via location.username.
+type MobileDeviceAssignedUserUpdate struct {
+	Location MobileDeviceAssignedUserUpdateLocation `json:"location"`
+}
+
+type MobileDeviceAssignedUserUpdateLocation struct {
+	// TODO(verify-in-verify-plan): same open question as
+	// ComputerAssignedUserUpdateLocation.Username above.
+	Username string `json:"username"`
+}

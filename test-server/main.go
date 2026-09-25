@@ -47,7 +47,17 @@
 //
 // managedDevice (computers / mobile devices) is opt-in in the connector and
 // is NOT mocked here — it targets separate v1 inventory endpoints outside
-// the scope of this test server. Do not select it against this mock.
+// the scope of this test server. Do not select it against this mock. This
+// remains true after CXH-2344 (Grant/Revoke of the `assigned` entitlement):
+// the PATCH endpoints it needs (/api/v1/computers-inventory-detail/{id},
+// /api/v2/mobile-devices/{id}) build on the same unmocked inventory surface,
+// so Managed Device Grant/Revoke has unit-test coverage only
+// (pkg/connector/managedDevice_test.go), not baton-test-against-this-mock
+// coverage.
+//
+// CXH-2344 also added Grant/Revoke for User Groups (PUT .../usergroups/id/{id}
+// with <user_additions>/<user_deletions>) and Sites' `user` principal (PUT
+// .../users/id/{id} with <sites>) — both are mocked below.
 package main
 
 import (
@@ -356,6 +366,13 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, jamf.UserResponse{User: cp})
 
+	case http.MethodPut:
+		// Site Grant/Revoke (CXH-2344): AddUserSite/RemoveUserSite PUT the
+		// full desired <sites> list after a read-modify-write in the client.
+		// Per Classic API field-level-merge semantics, only <sites> is
+		// touched — every other field on the user record is left as-is.
+		s.handleUpdateUserSites(w, r, id)
+
 	case http.MethodPost:
 		// The Classic API only accepts XML for POST/PUT bodies (JSON is
 		// GET-response-only) — see https://developer.jamf.com/jamf-pro/docs/getting-started-2.
@@ -410,6 +427,55 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// handleUpdateUserSites implements the write half of Site Grant/Revoke's
+// read-modify-write: PUT /JSSResource/users/id/{id} carrying only <sites>.
+// There is no distinct "already a member"/"not a member" error status here —
+// AddUserSite/RemoveUserSite absorb both cases client-side before ever
+// issuing this PUT (see pkg/jamf/client.go), so this handler simply replaces
+// the user's Sites wholesale and always succeeds for a known user.
+func (s *server) handleUpdateUserSites(w http.ResponseWriter, r *http.Request, id int) {
+	body, ok := decodeXMLBody[jamf.UserSitesUpdateBody](w, r)
+	if !ok {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, ok := s.users[id]
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	newSites := make([]struct {
+		Site jamf.BaseType `json:"site"`
+	}, 0, len(body.Sites))
+	for _, item := range body.Sites {
+		site, ok := s.findSiteByIDLocked(item.ID)
+		if !ok {
+			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown site id %d", item.ID))
+			return
+		}
+		newSites = append(newSites, struct {
+			Site jamf.BaseType `json:"site"`
+		}{Site: site.BaseType})
+	}
+	u.Sites = newSites
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// findSiteByIDLocked assumes the caller already holds s.mu.
+func (s *server) findSiteByIDLocked(id int) (jamf.Site, bool) {
+	for _, site := range s.sites {
+		if site.ID == id {
+			return site, true
+		}
+	}
+	return jamf.Site{}, false
 }
 
 // Doc URL: https://developer.jamf.com/jamf-pro/reference/findusersbyname
@@ -666,28 +732,93 @@ func (s *server) handleUserGroupByID(w http.ResponseWriter, r *http.Request) {
 	if !s.requireBearer(w, r) {
 		return
 	}
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "method must be GET")
-		return
-	}
 	id, err := pathID(r.URL.Path, "/JSSResource/usergroups/id/")
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
-	s.mu.Lock()
-	g, ok := s.userGroups[id]
-	var cp jamf.UserGroup
-	if ok {
-		cp = *g
+	switch r.Method {
+	case http.MethodGet:
+		s.mu.Lock()
+		g, ok := s.userGroups[id]
+		var cp jamf.UserGroup
+		if ok {
+			cp = *g
+		}
+		s.mu.Unlock()
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "user group not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, jamf.UserGroupResponse{UserGroup: cp})
+
+	case http.MethodPut:
+		s.handleUpdateUserGroupMembers(w, r, id)
+
+	default:
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
-	s.mu.Unlock()
+}
+
+// handleUpdateUserGroupMembers implements User Group Grant/Revoke
+// (CXH-2344): PUT /JSSResource/usergroups/id/{id} carrying either
+// <user_additions> or <user_deletions>. Mirrors the idempotency mapping the
+// connector assumes (architecture-plan.md §2.4/§9 item 1, unverified against
+// a live tenant): adding an existing member 409s, removing a non-member
+// 404s.
+func (s *server) handleUpdateUserGroupMembers(w http.ResponseWriter, r *http.Request, id int) {
+	body, ok := decodeXMLBody[jamf.UserGroupMemberMutation](w, r)
+	if !ok {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, ok := s.userGroups[id]
 	if !ok {
 		writeJSONError(w, http.StatusNotFound, "user group not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, jamf.UserGroupResponse{UserGroup: cp})
+
+	switch {
+	case body.Additions != nil:
+		for _, u := range body.Additions.Users {
+			member, ok := s.users[u.ID]
+			if !ok {
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown user id %d", u.ID))
+				return
+			}
+			if userGroupHasMember(g, u.ID) {
+				writeJSONError(w, http.StatusConflict, fmt.Sprintf("user %d is already a member of this group", u.ID))
+				return
+			}
+			g.Users = append(g.Users, *member)
+		}
+	case body.Deletions != nil:
+		for _, u := range body.Deletions.Users {
+			if !userGroupHasMember(g, u.ID) {
+				writeJSONError(w, http.StatusNotFound, fmt.Sprintf("user %d is not a member of this group", u.ID))
+				return
+			}
+			g.Users = deleteByID(g.Users, u.ID, func(m jamf.User) int { return m.ID })
+		}
+	default:
+		writeJSONError(w, http.StatusBadRequest, "request must set user_additions or user_deletions")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func userGroupHasMember(g *jamf.UserGroup, userID int) bool {
+	for _, u := range g.Users {
+		if u.ID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // ── Sites & privileges ───────────────────────────────────────────────────────
