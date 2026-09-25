@@ -210,6 +210,11 @@ func (c *Client) getUserDetails(ctx context.Context, userId int) (*User, error) 
 	return &target.User, nil
 }
 
+// GetUserDetails returns Jamf user details for a single directory user.
+func (c *Client) GetUserDetails(ctx context.Context, userId int) (*User, error) {
+	return c.getUserDetails(ctx, userId)
+}
+
 func (c *Client) getBaseAccounts(ctx context.Context) (*BaseAccount, error) {
 	url, err := c.getUrl(accountsUrlPath)
 	if err != nil {
@@ -316,6 +321,43 @@ func (c *Client) GetUsers(ctx context.Context) ([]*User, error) {
 	}
 
 	return users, nil
+}
+
+// AddUserGroupMembers adds the given user IDs to a static Jamf user group via
+// the additions verb (PUT .../usergroups/id/{id} <user_group><user_additions>).
+// Atomic — no read-modify-write. Returns a gRPC NotFound error if the group
+// doesn't exist (surfaced via IsNotFoundError).
+func (c *Client) AddUserGroupMembers(ctx context.Context, groupID int, userIDs []int) error {
+	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, groupID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := UserGroupMemberMutation{Additions: &userGroupUsers{Users: baseTypesFromIDs(userIDs)}}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
+// RemoveUserGroupMembers removes the given user IDs from a static Jamf user
+// group via the deletions verb (<user_group><user_deletions>). Atomic.
+func (c *Client) RemoveUserGroupMembers(ctx context.Context, groupID int, userIDs []int) error {
+	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, groupID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := UserGroupMemberMutation{Deletions: &userGroupUsers{Users: baseTypesFromIDs(userIDs)}}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
+// baseTypesFromIDs wraps each id as a BaseType with only ID set, the shape
+// the Classic API's <user_additions>/<user_deletions> verbs expect for each
+// <user> element.
+func baseTypesFromIDs(ids []int) []BaseType {
+	out := make([]BaseType, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, BaseType{ID: id})
+	}
+	return out
 }
 
 // GetUserGroups returns all Jamf user groups.
@@ -448,6 +490,74 @@ func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
 	return c.doRequestWithMethod(ctx, http.MethodDelete, url, nil, nil)
 }
 
+// AddUserSite grants a Jamf user membership in the given site. Not atomic:
+// performs a read of the user's current <sites>, appends siteID if absent,
+// and PUTs the full list back. Idempotent: returns nil without issuing a PUT
+// if the user is already a member — there is no distinct "already exists"
+// HTTP status to key off here (see IsAlreadyExistsError), so the connector
+// layer must not expect that error shape from this method.
+func (c *Client) AddUserSite(ctx context.Context, userID int, siteID int) error {
+	user, err := c.getUserDetails(ctx, userID) // always re-read — never reuse a cached User
+	if err != nil {
+		return err
+	}
+	for _, s := range user.Sites {
+		if s.Site.ID == siteID {
+			return nil // already a member — idempotent success, not an error
+		}
+	}
+	newSites := append(user.Sites, struct {
+		Site BaseType `json:"site"`
+	}{Site: BaseType{ID: siteID}})
+	return c.updateUserSites(ctx, userID, newSites)
+}
+
+// RemoveUserSite revokes a Jamf user's membership in the given site via the
+// same read-modify-write pattern as AddUserSite. If the site is already
+// absent from the user's <sites>, this is a no-op success (no PUT is sent) —
+// same idempotency-absorption caveat as AddUserSite.
+func (c *Client) RemoveUserSite(ctx context.Context, userID int, siteID int) error {
+	user, err := c.getUserDetails(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	newSites := make([]struct {
+		Site BaseType `json:"site"`
+	}, 0, len(user.Sites))
+	found := false
+	for _, s := range user.Sites {
+		if s.Site.ID == siteID {
+			found = true
+			continue
+		}
+		newSites = append(newSites, s)
+	}
+	if !found {
+		return nil // not a member — idempotent success, not an error
+	}
+	return c.updateUserSites(ctx, userID, newSites)
+}
+
+// updateUserSites PUTs the full desired <sites> list for a user. Per Classic
+// API field-level-merge semantics, sending only <sites> leaves the rest of
+// the user record untouched.
+func (c *Client) updateUserSites(ctx context.Context, userID int, sites []struct {
+	Site BaseType `json:"site"`
+}) error {
+	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userID))
+	if err != nil {
+		return err
+	}
+
+	items := make([]userSiteItem, 0, len(sites))
+	for _, s := range sites {
+		items = append(items, userSiteItem{ID: s.Site.ID})
+	}
+	reqBody := UserSitesUpdateBody{Sites: items}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
 // doRequest performs an authenticated GET request to the Jamf API.
 func (c *Client) doRequest(
 	ctx context.Context,
@@ -457,17 +567,49 @@ func (c *Client) doRequest(
 	return c.doRequestWithMethod(ctx, http.MethodGet, url, nil, target)
 }
 
-// doRequestWithMethod performs an authenticated request to the Jamf API for
-// any HTTP method, optionally sending reqBody as an XML request body (the
-// only format the Classic API accepts for POST/PUT). Passing a nil target
-// skips decoding the response body (used for DELETE and other no-content
-// responses).
+// doRequestWithMethod performs an authenticated request to the Jamf Classic
+// API for any HTTP method, optionally sending reqBody as an XML request body
+// (the only format the Classic API accepts for POST/PUT). Passing a nil
+// target skips decoding the response body (used for DELETE and other
+// no-content responses).
 func (c *Client) doRequestWithMethod(
 	ctx context.Context,
 	method string,
 	url *liburl.URL,
 	reqBody interface{},
 	target interface{},
+) error {
+	// The Classic API only accepts XML for POST/PUT request bodies (JSON is
+	// GET-response-only); see
+	// https://developer.jamf.com/jamf-pro/docs/getting-started-2.
+	return c.doRequestWithMethodAndBodyEncoding(ctx, method, url, reqBody, target, uhttp.WithXMLBody)
+}
+
+// doRequestWithJSONMethod performs an authenticated request to the Jamf Pro
+// API (unlike the Classic API, it accepts JSON request bodies) for any HTTP
+// method, optionally sending reqBody as a JSON request body. Passing a nil
+// target skips decoding the response body.
+func (c *Client) doRequestWithJSONMethod(
+	ctx context.Context,
+	method string,
+	url *liburl.URL,
+	reqBody interface{},
+	target interface{},
+) error {
+	return c.doRequestWithMethodAndBodyEncoding(ctx, method, url, reqBody, target, uhttp.WithJSONBody)
+}
+
+// doRequestWithMethodAndBodyEncoding is the shared implementation behind
+// doRequestWithMethod (XML, Classic API) and doRequestWithJSONMethod (JSON,
+// Pro API) — same auth/retry/decode behavior, differing only in how reqBody
+// is encoded onto the wire.
+func (c *Client) doRequestWithMethodAndBodyEncoding(
+	ctx context.Context,
+	method string,
+	url *liburl.URL,
+	reqBody interface{},
+	target interface{},
+	bodyEncoding func(interface{}) uhttp.RequestOption,
 ) error {
 	l := ctxzap.Extract(ctx)
 
@@ -487,10 +629,7 @@ GotoRetry:
 		),
 	}
 	if reqBody != nil {
-		// The Classic API only accepts XML for POST/PUT request bodies (JSON
-		// is GET-response-only); see
-		// https://developer.jamf.com/jamf-pro/docs/getting-started-2.
-		requestOpts = append(requestOpts, uhttp.WithXMLBody(reqBody))
+		requestOpts = append(requestOpts, bodyEncoding(reqBody))
 	}
 
 	request, err := c.wrapper.NewRequest(

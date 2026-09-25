@@ -2,13 +2,17 @@ package jamf
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	liburl "net/url"
 	"strconv"
 )
 
 const (
-	computersInventoryUrlPath = "/api/v1/computers-inventory"
-	mobileDevicesUrlPath      = "/api/v2/mobile-devices"
+	computersInventoryUrlPath      = "/api/v1/computers-inventory"
+	computerInventoryDetailUrlPath = "/api/v1/computers-inventory-detail/%s"
+	mobileDevicesUrlPath           = "/api/v2/mobile-devices"
+	mobileDeviceUrlPath            = "/api/v2/mobile-devices/%s"
 )
 
 // ComputerInventorySections are the inventory sections the connector requests.
@@ -77,4 +81,31 @@ func (c *Client) GetMobileDevices(
 	}
 
 	return &target, nil
+}
+
+// SetComputerAssignedUser sets (Grant) or clears (Revoke, username == "")
+// the assigned-user field on a computer's inventory record via
+// PATCH /api/v1/computers-inventory-detail/{id}, userAndLocation.username.
+// Single-valued/exclusive: setting a new username silently displaces
+// whatever username was previously recorded.
+func (c *Client) SetComputerAssignedUser(ctx context.Context, computerID string, username string) error {
+	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserUpdateLocation{Username: username}}
+	return c.doRequestWithJSONMethod(ctx, http.MethodPatch, url, reqBody, nil)
+}
+
+// SetMobileDeviceAssignedUser is the mobile-device equivalent, via
+// PATCH /api/v2/mobile-devices/{id}, location.username.
+func (c *Client) SetMobileDeviceAssignedUser(ctx context.Context, deviceID string, username string) error {
+	url, err := c.getUrl(fmt.Sprintf(mobileDeviceUrlPath, deviceID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := MobileDeviceAssignedUserUpdate{Location: MobileDeviceAssignedUserUpdateLocation{Username: username}}
+	return c.doRequestWithJSONMethod(ctx, http.MethodPatch, url, reqBody, nil)
 }

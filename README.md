@@ -11,7 +11,24 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 | Sync | Yes |
 | Account Creation (Users, User Accounts) | Yes — one type per connector instance, see `create-account-resource-type` below |
 | Account Deletion (Users, User Accounts) | Yes |
-| Provisioning (Grant/Revoke) | No — Groups, User Groups, Roles, and Sites are synced for visibility only |
+| Provisioning (Grant/Revoke) | Yes — User Groups (static groups only), Sites (`user` principal only), Managed Devices (`assigned`, `user` principal only). Groups and Roles remain sync-only. |
+
+## Required Jamf privileges for provisioning
+
+| Resource | Operation | Privilege |
+|---|---|---|
+| User Group | Grant/Revoke membership (static group) | `Update - Static User Groups` |
+| Site | Grant/Revoke membership (`user` principal) | `Update - Users` |
+| Managed Device (computer) | Grant/Revoke `assigned` user | `Update Computers` |
+| Managed Device (mobile device) | Grant/Revoke `assigned` user | `Update Mobile Devices` |
+
+Smart User Groups cannot be granted/revoked (membership is computed from
+criteria, not assignable) — the connector rejects these before calling the
+Jamf API. Site Grant/Revoke is only provisionable for the `user` principal;
+`userGroup`/`userAccount`/`group` site membership remains sync-only (single-
+valued/exclusive, not a true membership list). Managed Device `assigned` is
+single-valued — granting it to a new user displaces whichever user was
+previously assigned.
 
 ## Jamf Pro console admin account privileges (`userAccount`)
 

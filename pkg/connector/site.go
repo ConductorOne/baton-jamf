@@ -7,6 +7,7 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
@@ -57,6 +58,13 @@ func (g *siteResourceType) List(ctx context.Context, parentId *v2.ResourceId, at
 func (g *siteResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	var rv []*v2.Entitlement
 
+	// WithGrantableTo intentionally names only resourceTypeUser, even though
+	// Grants() below emits grants for user, userGroup, userAccount, and group:
+	// site membership is only genuinely multi-valued for user (<sites> is a
+	// real list); for the other three, "site" is a single-valued/exclusive
+	// attribute, so Grant/Revoke provisioning is scoped to user only. Do not
+	// widen this to match Grants() without also adding exclusive-entitlement
+	// handling for the other three principal types.
 	assigmentOptions := []ent.EntitlementOption{
 		ent.WithGrantableTo(resourceTypeUser),
 		ent.WithDescription(fmt.Sprintf("Member of %s Site in Jamf", resource.DisplayName)),
@@ -142,6 +150,62 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 	}
 
 	return rv, nil, nil
+}
+
+// Grant adds principal (a Jamf user) to the multi-valued <sites> list of the
+// site backing entitlement's resource. The principal-type guard is defense-
+// in-depth: Grants() emits site grants for four principal types, but only
+// user is genuinely multi-valued/grantable — see the WithGrantableTo note in
+// Entitlements above.
+//
+// Neither Grant nor Revoke here has an IsAlreadyExistsError/IsNotFoundError
+// branch — unlike userGroup.go's Grant/Revoke, client.AddUserSite/
+// RemoveUserSite already absorb the idempotent "already a member"/"not a
+// member" cases internally (no distinct HTTP status exists to key off for a
+// read-modify-write endpoint), so they simply return a plain nil error. Do
+// not "fix" this to look like userGroup.go's pattern.
+func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	if principal.Id.ResourceType != resourceTypeUser.Id {
+		return nil, nil, fmt.Errorf("jamf-connector: site membership can only be granted to users, got resource type %q", principal.Id.ResourceType)
+	}
+
+	siteID, err := strconv.Atoi(entitlement.Resource.Id.Resource)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant site member: invalid site id %q: %w", entitlement.Resource.Id.Resource, err)
+	}
+	userID, err := strconv.Atoi(principal.Id.Resource)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant site member: invalid user id %q: %w", principal.Id.Resource, err)
+	}
+
+	if err := g.client.AddUserSite(ctx, userID, siteID); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant site member: %w", err)
+	}
+	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
+}
+
+// Revoke removes gr's principal (a Jamf user) from the <sites> list of the
+// site backing gr's entitlement resource. See Grant for the principal-type
+// guard rationale and the intentional IsAlreadyExistsError/IsNotFoundError
+// asymmetry with userGroup.go.
+func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
+	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
+		return nil, fmt.Errorf("jamf-connector: site membership can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
+	}
+
+	siteID, err := strconv.Atoi(gr.Entitlement.Resource.Id.Resource)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke site member: invalid site id %q: %w", gr.Entitlement.Resource.Id.Resource, err)
+	}
+	userID, err := strconv.Atoi(gr.Principal.Id.Resource)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke site member: invalid user id %q: %w", gr.Principal.Id.Resource, err)
+	}
+
+	if err := g.client.RemoveUserSite(ctx, userID, siteID); err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke site member: %w", err)
+	}
+	return nil, nil
 }
 
 func siteBuilder(client *jamf.Client) *siteResourceType {

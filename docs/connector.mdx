@@ -18,16 +18,19 @@ The Jamf connector syncs the following resources:
 | Users | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> Create, Delete |
 | User Accounts | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> Create, Delete |
 | Groups | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
-| User Groups | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
+| User Groups | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> Grant, Revoke |
 | Roles | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
-| Sites | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
-| Managed Devices | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
+| Sites | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> Grant, Revoke |
+| Managed Devices | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> Grant, Revoke |
 
 {/* AUTO-GENERATED:END - capabilities */}
 
 **Notes:**
 - Jamf has two distinct account types: **Users** (directory users) and **User Accounts** (Jamf Pro console admins). The connector can only create **one** of these types per connector instance — set by the **Account Provisioning Target** configuration field. Deletion works for both types regardless of this setting.
-- Groups, User Groups, Roles, and Sites are synced for visibility (including membership) but are not provisionable — access changes to these resources must be made directly in Jamf Pro.
+- **User Groups**: Grant/Revoke adds or removes a Jamf user from a **static** User Group. Smart User Groups cannot be granted/revoked — their membership is computed from criteria, and the connector rejects any Grant/Revoke attempt against one. Requires the `Update - Static User Groups` privilege.
+- **Sites**: Grant/Revoke is only supported for the `user` principal — a Jamf user's site membership is a true multi-valued list. `userGroup`/`userAccount`/`group` site membership remains sync-only (each of those objects can only belong to one site at a time, so granting a new one would silently displace the old one instead of adding a membership). Requires the `Update - Users` privilege.
+- **Managed Devices**: Grant/Revoke sets or clears a device's `assigned` user (computer or mobile device). This is single-valued — granting the device to a new user displaces whichever user was previously assigned. Requires `Update Computers` (computers) or `Update Mobile Devices` (mobile devices).
+- **Groups** (Jamf Pro admin account groups) and **Roles** remain sync-only in this release.
 - When creating a **User Account**, the `privilege_set` profile field sets its access level (`Administrator`, `Auditor`, `Enrollment Only`, or `Custom`). For `Custom`, at least one of `privileges_jss_objects`, `privileges_jss_settings`, `privileges_jss_actions`, `privileges_recon`, `privileges_casper_admin`, `privileges_casper_remote`, or `privileges_casper_imaging` must be set to a list of Jamf privilege names — Jamf validates these names server-side, not the connector.
 
 <Note>
