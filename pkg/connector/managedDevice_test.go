@@ -2,12 +2,17 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
+	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 )
 
@@ -345,6 +350,137 @@ func TestParseDevicePageToken(t *testing.T) {
 				t.Errorf("parseDevicePageToken(%q) = (%d,%d), want (%d,%d)", tc.token, page, seen, tc.wantPage, tc.wantSeen)
 			}
 		})
+	}
+}
+
+func deviceResourceForTest(t *testing.T, objectID string) *v2.Resource {
+	t.Helper()
+	return &v2.Resource{Id: &v2.ResourceId{ResourceType: resourceTypeManagedDevice.Id, Resource: objectID}}
+}
+
+func deviceEntitlement(t *testing.T, objectID string) *v2.Entitlement {
+	t.Helper()
+	return ent.NewAssignmentEntitlement(deviceResourceForTest(t, objectID), assignedEntitlement, ent.WithGrantableTo(resourceTypeUser))
+}
+
+// jamfDeviceAssignHandler serves GET /JSSResource/users/id/{id} (used to
+// resolve a "user" principal to a Jamf username) and records the PATCH body
+// sent to whichever device-assignment endpoint is hit, so tests can assert
+// the resolved username was sent (or cleared, for Revoke).
+func jamfDeviceAssignHandler(t *testing.T, username string, gotPATCHBody *[]byte) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user": map[string]any{"id": 42, "name": "jappleseed", "username": username},
+			})
+		case http.MethodPatch:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read PATCH body: %v", err)
+			}
+			*gotPATCHBody = body
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}
+}
+
+func TestManagedDeviceGrant_Computer_PatchesUserAndLocation(t *testing.T) {
+	var patchBody []byte
+	client := newTestJamfClient(t, jamfDeviceAssignHandler(t, "jappleseed", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	grants, annos, err := d.Grant(context.Background(), userPrincipal(t, 42), deviceEntitlement(t, "computer:17"))
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant, got %d", len(grants))
+	}
+	if annos != nil {
+		t.Errorf("expected no annotations, got %v", annos)
+	}
+	if want := `{"userAndLocation":{"username":"jappleseed"}}` + "\n"; string(patchBody) != want {
+		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
+	}
+}
+
+func TestManagedDeviceGrant_Mobile_PatchesLocation(t *testing.T) {
+	var patchBody []byte
+	client := newTestJamfClient(t, jamfDeviceAssignHandler(t, "jappleseed", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	grants, _, err := d.Grant(context.Background(), userPrincipal(t, 42), deviceEntitlement(t, "mobile:3"))
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant, got %d", len(grants))
+	}
+	if want := `{"location":{"username":"jappleseed"}}` + "\n"; string(patchBody) != want {
+		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
+	}
+}
+
+// TestManagedDeviceRevoke_ClearsUsername exercises the best-guess
+// clear-value default from architecture-plan.md §4.3 item 1 (unverified
+// against a live tenant): Revoke PATCHes an empty username string.
+func TestManagedDeviceRevoke_ClearsUsername(t *testing.T) {
+	var patchBody []byte
+	client := newTestJamfClient(t, jamfDeviceAssignHandler(t, "jappleseed", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, userPrincipal(t, 42).Id)
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if annos != nil {
+		t.Errorf("expected no annotations, got %v", annos)
+	}
+	if want := `{"userAndLocation":{"username":""}}` + "\n"; string(patchBody) != want {
+		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
+	}
+}
+
+func TestManagedDeviceGrant_NonUserPrincipal_Errors(t *testing.T) {
+	d := managedDeviceBuilder(nil)
+	_, _, err := d.Grant(context.Background(), userGroupPrincipal(t, 7), deviceEntitlement(t, "computer:17"))
+	if err == nil {
+		t.Fatal("expected an error granting device assignment to a non-user principal")
+	}
+}
+
+func TestManagedDeviceRevoke_NonUserPrincipal_Errors(t *testing.T) {
+	d := managedDeviceBuilder(nil)
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, userGroupPrincipal(t, 7).Id)
+	_, err := d.Revoke(context.Background(), gr)
+	if err == nil {
+		t.Fatal("expected an error revoking device assignment from a non-user principal")
+	}
+}
+
+func TestManagedDeviceGrant_InvalidResourceID_Errors(t *testing.T) {
+	var patchBody []byte
+	client := newTestJamfClient(t, jamfDeviceAssignHandler(t, "jappleseed", &patchBody))
+	d := managedDeviceBuilder(client)
+	_, _, err := d.Grant(context.Background(), userPrincipal(t, 42), deviceEntitlement(t, "not-namespaced"))
+	if err == nil {
+		t.Fatal("expected an error for a device resource id without a phase prefix")
+	}
+}
+
+func TestParseDeviceObjectID(t *testing.T) {
+	phase, id, err := parseDeviceObjectID("computer:17")
+	if err != nil || phase != devicePhaseComputer || id != "17" {
+		t.Errorf("parseDeviceObjectID(computer:17) = (%q,%q,%v)", phase, id, err)
+	}
+	if _, _, err := parseDeviceObjectID("bad"); err == nil {
+		t.Error("expected an error for a resource id with no phase separator")
 	}
 }
 
