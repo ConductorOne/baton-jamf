@@ -28,7 +28,10 @@ Jamf API. Site Grant/Revoke is only provisionable for the `user` principal;
 `userGroup`/`userAccount`/`group` site membership remains sync-only (single-
 valued/exclusive, not a true membership list). Managed Device `assigned` is
 single-valued — granting it to a new user displaces whichever user was
-previously assigned.
+previously assigned. Grant currently only works on devices that already have
+an assigned user (the `assigned` entitlement is only emitted for devices that
+report an assignee) — it cannot be used to assign a previously-unassigned
+device to a user.
 
 ## Jamf Pro console admin account privileges (`userAccount`)
 

@@ -83,6 +83,44 @@ func (c *Client) GetMobileDevices(
 	return &target, nil
 }
 
+// GetComputerInventoryDetail fetches a single computer's inventory detail
+// record via GET /api/v1/computers-inventory-detail/{id}. Used by Revoke to
+// discover the CURRENT assigned username (userAndLocation.username) before
+// clearing it, since the device may have been reassigned to a different user
+// since the grant being revoked was last synced.
+func (c *Client) GetComputerInventoryDetail(ctx context.Context, computerID string) (*ComputerInventory, error) {
+	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
+	if err != nil {
+		return nil, err
+	}
+
+	var target ComputerInventory
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
+	}
+
+	return &target, nil
+}
+
+// GetMobileDeviceDetail fetches a single mobile device's detail record via
+// GET /api/v2/mobile-devices/{id}. Unlike the flat `username` field on the
+// list endpoint's MobileDevice type, the detail endpoint nests the current
+// assignee under `location.username` — used by Revoke for the same
+// reassignment check as GetComputerInventoryDetail.
+func (c *Client) GetMobileDeviceDetail(ctx context.Context, deviceID string) (*MobileDeviceDetail, error) {
+	url, err := c.getUrl(fmt.Sprintf(mobileDeviceUrlPath, deviceID))
+	if err != nil {
+		return nil, err
+	}
+
+	var target MobileDeviceDetail
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
+	}
+
+	return &target, nil
+}
+
 // SetComputerAssignedUser sets (Grant) or clears (Revoke, username == "")
 // the assigned-user field on a computer's inventory record via
 // PATCH /api/v1/computers-inventory-detail/{id}, userAndLocation.username.

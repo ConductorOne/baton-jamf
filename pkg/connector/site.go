@@ -11,6 +11,8 @@ import (
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type siteResourceType struct {
@@ -166,16 +168,16 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 // not "fix" this to look like userGroup.go's pattern.
 func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	if principal.Id.ResourceType != resourceTypeUser.Id {
-		return nil, nil, fmt.Errorf("jamf-connector: site membership can only be granted to users, got resource type %q", principal.Id.ResourceType)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: site membership can only be granted to users, got resource type %q", principal.Id.ResourceType)
 	}
 
 	siteID, err := strconv.Atoi(entitlement.Resource.Id.Resource)
 	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: grant site member: invalid site id %q: %w", entitlement.Resource.Id.Resource, err)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant site member: invalid site id %q: %s", entitlement.Resource.Id.Resource, err)
 	}
 	userID, err := strconv.Atoi(principal.Id.Resource)
 	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: grant site member: invalid user id %q: %w", principal.Id.Resource, err)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant site member: invalid user id %q: %s", principal.Id.Resource, err)
 	}
 
 	if err := g.client.AddUserSite(ctx, userID, siteID); err != nil {
@@ -190,16 +192,16 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 // asymmetry with userGroup.go.
 func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
-		return nil, fmt.Errorf("jamf-connector: site membership can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
+		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: site membership can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
 	}
 
 	siteID, err := strconv.Atoi(gr.Entitlement.Resource.Id.Resource)
 	if err != nil {
-		return nil, fmt.Errorf("jamf-connector: revoke site member: invalid site id %q: %w", gr.Entitlement.Resource.Id.Resource, err)
+		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke site member: invalid site id %q: %s", gr.Entitlement.Resource.Id.Resource, err)
 	}
 	userID, err := strconv.Atoi(gr.Principal.Id.Resource)
 	if err != nil {
-		return nil, fmt.Errorf("jamf-connector: revoke site member: invalid user id %q: %w", gr.Principal.Id.Resource, err)
+		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke site member: invalid user id %q: %s", gr.Principal.Id.Resource, err)
 	}
 
 	if err := g.client.RemoveUserSite(ctx, userID, siteID); err != nil {

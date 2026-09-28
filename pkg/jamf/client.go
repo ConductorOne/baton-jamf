@@ -496,6 +496,14 @@ func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
 // if the user is already a member — there is no distinct "already exists"
 // HTTP status to key off here (see IsAlreadyExistsError), so the connector
 // layer must not expect that error shape from this method.
+//
+// Concurrency note: this read-modify-write has no locking/versioning guard.
+// Two concurrent calls for the same userID (e.g. a site grant racing a site
+// revoke, or two grants for different sites) can both read the same starting
+// <sites> list and each PUT back a version missing the other's change,
+// silently dropping one of the updates. Callers that need strict correctness
+// under concurrent provisioning for the same user should serialize calls
+// per-userID.
 func (c *Client) AddUserSite(ctx context.Context, userID int, siteID int) error {
 	user, err := c.getUserDetails(ctx, userID) // always re-read — never reuse a cached User
 	if err != nil {
@@ -506,16 +514,20 @@ func (c *Client) AddUserSite(ctx context.Context, userID int, siteID int) error 
 			return nil // already a member — idempotent success, not an error
 		}
 	}
-	newSites := append(user.Sites, struct {
+	user.Sites = append(user.Sites, struct {
 		Site BaseType `json:"site"`
 	}{Site: BaseType{ID: siteID}})
-	return c.updateUserSites(ctx, userID, newSites)
+	return c.updateUserSites(ctx, userID, user.Sites)
 }
 
 // RemoveUserSite revokes a Jamf user's membership in the given site via the
 // same read-modify-write pattern as AddUserSite. If the site is already
 // absent from the user's <sites>, this is a no-op success (no PUT is sent) —
 // same idempotency-absorption caveat as AddUserSite.
+//
+// Concurrency note: same lack of locking/versioning as AddUserSite — see its
+// doc comment. A concurrent grant/revoke for the same userID can race and
+// silently drop one side's change.
 func (c *Client) RemoveUserSite(ctx context.Context, userID int, siteID int) error {
 	user, err := c.getUserDetails(ctx, userID)
 	if err != nil {

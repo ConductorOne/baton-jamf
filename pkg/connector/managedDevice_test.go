@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -366,17 +367,42 @@ func deviceEntitlement(t *testing.T, objectID string) *v2.Entitlement {
 // jamfDeviceAssignHandler serves GET /JSSResource/users/id/{id} (used to
 // resolve a "user" principal to a Jamf username) and records the PATCH body
 // sent to whichever device-assignment endpoint is hit, so tests can assert
-// the resolved username was sent (or cleared, for Revoke).
+// the resolved username was sent (or cleared, for Revoke). The device's
+// CURRENT assignee (as returned by the computers-inventory-detail /
+// mobile-devices GET that Revoke uses to check for reassignment) is the same
+// as username, so Revoke's current-assignee check always matches.
 func jamfDeviceAssignHandler(t *testing.T, username string, gotPATCHBody *[]byte) http.HandlerFunc {
 	t.Helper()
+	return jamfDeviceAssignHandlerWithCurrent(t, username, username, gotPATCHBody)
+}
+
+// jamfDeviceAssignHandlerWithCurrent is jamfDeviceAssignHandler with
+// independent control over the principal's resolved username (from
+// /JSSResource/users/id/{id}) and the device's CURRENT assignee (from the
+// computers-inventory-detail / mobile-devices detail GET), so tests can
+// exercise Revoke's stale-assignment check where the two differ.
+func jamfDeviceAssignHandlerWithCurrent(t *testing.T, principalUsername, currentUsername string, gotPATCHBody *[]byte) http.HandlerFunc {
+	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/"):
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"user": map[string]any{"id": 42, "name": "jappleseed", "username": username},
+				"user": map[string]any{"id": 42, "name": "jappleseed", "username": principalUsername},
 			})
-		case http.MethodPatch:
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/computers-inventory-detail/"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":              "17",
+				"userAndLocation": map[string]any{"username": currentUsername},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/mobile-devices/"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":       "3",
+				"location": map[string]any{"username": currentUsername},
+			})
+		case r.Method == http.MethodPatch:
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Fatalf("read PATCH body: %v", err)
@@ -384,7 +410,7 @@ func jamfDeviceAssignHandler(t *testing.T, username string, gotPATCHBody *[]byte
 			*gotPATCHBody = body
 			w.WriteHeader(http.StatusOK)
 		default:
-			t.Fatalf("unexpected method %s", r.Method)
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 	}
 }
@@ -444,6 +470,55 @@ func TestManagedDeviceRevoke_ClearsUsername(t *testing.T) {
 	}
 	if want := `{"userAndLocation":{"username":""}}` + "\n"; string(patchBody) != want {
 		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
+	}
+}
+
+// TestManagedDeviceRevoke_ReassignedToDifferentUser_NoPatch covers the
+// blocking review finding: if the device has been reassigned to a different
+// user since this grant was last synced, Revoke must NOT blindly clear the
+// live assignment. It should detect the mismatch, skip the PATCH entirely,
+// and report the grant as already revoked.
+func TestManagedDeviceRevoke_ReassignedToDifferentUser_NoPatch(t *testing.T) {
+	var patchBody []byte
+	// Grant's principal (Jamf user 42) resolves to "jappleseed", but the
+	// device's current live assignee is "someone.else" — reassigned since
+	// the grant being revoked was synced.
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerWithCurrent(t, "jappleseed", "someone.else", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, userPrincipal(t, 42).Id)
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if patchBody != nil {
+		t.Errorf("expected no PATCH to be sent when device is assigned to a different user, got body %q", string(patchBody))
+	}
+	got := annos
+	if ok, _ := got.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Error("expected a GrantAlreadyRevoked annotation when the device was reassigned to a different user")
+	}
+}
+
+// TestManagedDeviceRevoke_AlreadyUnassigned_NoPatch covers the same
+// stale-grant check for the "already unassigned" case: the device currently
+// has no assignee at all, so revoking this specific grant is a no-op.
+func TestManagedDeviceRevoke_AlreadyUnassigned_NoPatch(t *testing.T) {
+	var patchBody []byte
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerWithCurrent(t, "jappleseed", "", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, userPrincipal(t, 42).Id)
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if patchBody != nil {
+		t.Errorf("expected no PATCH to be sent when device is already unassigned, got body %q", string(patchBody))
+	}
+	got := annos
+	if ok, _ := got.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Error("expected a GrantAlreadyRevoked annotation when the device was already unassigned")
 	}
 }
 

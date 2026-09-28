@@ -11,6 +11,8 @@ import (
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type userGroupResourceType struct {
@@ -123,7 +125,7 @@ func (g *userGroupResourceType) isSmartUserGroup(ctx context.Context, groupID in
 func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	groupID, err := strconv.Atoi(entitlement.Resource.Id.Resource)
 	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: grant user group member: invalid group id %q: %w", entitlement.Resource.Id.Resource, err)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant user group member: invalid group id %q: %s", entitlement.Resource.Id.Resource, err)
 	}
 
 	isSmart, err := g.isSmartUserGroup(ctx, groupID)
@@ -131,12 +133,12 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 		return nil, nil, fmt.Errorf("jamf-connector: grant user group member: %w", err)
 	}
 	if isSmart {
-		return nil, nil, fmt.Errorf("jamf-connector: cannot grant membership on smart user group %d — membership is computed from criteria, not assignable", groupID)
+		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: cannot grant membership on smart user group %d — membership is computed from criteria, not assignable", groupID)
 	}
 
 	userID, err := strconv.Atoi(principal.Id.Resource)
 	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: grant user group member: invalid user id %q: %w", principal.Id.Resource, err)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant user group member: invalid user id %q: %s", principal.Id.Resource, err)
 	}
 
 	err = g.client.AddUserGroupMembers(ctx, groupID, []int{userID})
@@ -145,8 +147,24 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 		// static group" onto a 409 (surfaced here as IsAlreadyExistsError) is
 		// unverified against a live tenant — see architecture-plan.md §9 item 1,
 		// api-research.md §6.
+		//
+		// A 409 here isn't necessarily "already a member" — Jamf's Classic API
+		// can also return 409 for other validation failures on the same
+		// endpoint (e.g. an unknown user id in user_additions). Re-fetch the
+		// group and only report GrantAlreadyExists if userID is actually
+		// present in its Users list; otherwise surface the original error so a
+		// real failure isn't misreported as success.
 		if jamf.IsAlreadyExistsError(err) {
-			return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+			group, detailsErr := g.client.GetUserGroupDetails(ctx, groupID)
+			if detailsErr != nil {
+				return nil, nil, fmt.Errorf("jamf-connector: grant user group member: 409 response, and failed to verify membership: %w", detailsErr)
+			}
+			for _, member := range group.Users {
+				if member.ID == userID {
+					return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+				}
+			}
+			return nil, nil, fmt.Errorf("jamf-connector: grant user group member: %w", err)
 		}
 		return nil, nil, fmt.Errorf("jamf-connector: grant user group member: %w", err)
 	}
@@ -159,7 +177,7 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	groupID, err := strconv.Atoi(gr.Entitlement.Resource.Id.Resource)
 	if err != nil {
-		return nil, fmt.Errorf("jamf-connector: revoke user group member: invalid group id %q: %w", gr.Entitlement.Resource.Id.Resource, err)
+		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke user group member: invalid group id %q: %s", gr.Entitlement.Resource.Id.Resource, err)
 	}
 
 	isSmart, err := g.isSmartUserGroup(ctx, groupID)
@@ -167,12 +185,12 @@ func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annot
 		return nil, fmt.Errorf("jamf-connector: revoke user group member: %w", err)
 	}
 	if isSmart {
-		return nil, fmt.Errorf("jamf-connector: cannot revoke membership on smart user group %d", groupID)
+		return nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: cannot revoke membership on smart user group %d", groupID)
 	}
 
 	userID, err := strconv.Atoi(gr.Principal.Id.Resource)
 	if err != nil {
-		return nil, fmt.Errorf("jamf-connector: revoke user group member: invalid user id %q: %w", gr.Principal.Id.Resource, err)
+		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke user group member: invalid user id %q: %s", gr.Principal.Id.Resource, err)
 	}
 
 	err = g.client.RemoveUserGroupMembers(ctx, groupID, []int{userID})
