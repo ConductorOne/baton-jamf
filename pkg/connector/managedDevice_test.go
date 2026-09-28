@@ -522,6 +522,33 @@ func TestManagedDeviceRevoke_AlreadyUnassigned_NoPatch(t *testing.T) {
 	}
 }
 
+// TestManagedDeviceRevoke_MobileDevice_ReassignedToDifferentUser_NoPatch is
+// the mobile-device counterpart of
+// TestManagedDeviceRevoke_ReassignedToDifferentUser_NoPatch, exercising
+// currentAssignedUser's nested `location.username` read for the
+// devicePhaseMobile case.
+func TestManagedDeviceRevoke_MobileDevice_ReassignedToDifferentUser_NoPatch(t *testing.T) {
+	var patchBody []byte
+	// Grant's principal (Jamf user 42) resolves to "jappleseed", but the
+	// device's current live assignee is "someone.else" — reassigned since
+	// the grant being revoked was synced.
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerWithCurrent(t, "jappleseed", "someone.else", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	gr := grant.NewGrant(deviceEntitlement(t, "mobile:3").Resource, assignedEntitlement, userPrincipal(t, 42).Id)
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if patchBody != nil {
+		t.Errorf("expected no PATCH to be sent when device is assigned to a different user, got body %q", string(patchBody))
+	}
+	got := annos
+	if ok, _ := got.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Error("expected a GrantAlreadyRevoked annotation when the device was reassigned to a different user")
+	}
+}
+
 func TestManagedDeviceGrant_NonUserPrincipal_Errors(t *testing.T) {
 	d := managedDeviceBuilder(nil)
 	_, _, err := d.Grant(context.Background(), userGroupPrincipal(t, 7), deviceEntitlement(t, "computer:17"))
