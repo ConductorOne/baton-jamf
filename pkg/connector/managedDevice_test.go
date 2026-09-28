@@ -396,7 +396,7 @@ func jamfDeviceAssignHandlerWithCurrent(t *testing.T, principalUsername, current
 				"id":              "17",
 				"userAndLocation": map[string]any{"username": currentUsername},
 			})
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/mobile-devices/"):
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/detail") && strings.Contains(r.URL.Path, "/mobile-devices/"):
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":       "3",
@@ -546,6 +546,28 @@ func TestManagedDeviceRevoke_MobileDevice_ReassignedToDifferentUser_NoPatch(t *t
 	got := annos
 	if ok, _ := got.Pick(&v2.GrantAlreadyRevoked{}); !ok {
 		t.Error("expected a GrantAlreadyRevoked annotation when the device was reassigned to a different user")
+	}
+}
+
+// TestManagedDeviceRevoke_MobileDevice_ClearsUsername is the mobile-device
+// counterpart of TestManagedDeviceRevoke_ClearsUsername: the grant's
+// principal is still the device's current assignee, so Revoke should PATCH
+// the assignment clear rather than skip it.
+func TestManagedDeviceRevoke_MobileDevice_ClearsUsername(t *testing.T) {
+	var patchBody []byte
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerWithCurrent(t, "jappleseed", "jappleseed", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	gr := grant.NewGrant(deviceEntitlement(t, "mobile:3").Resource, assignedEntitlement, userPrincipal(t, 42).Id)
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if annos != nil {
+		t.Errorf("expected no annotations, got %v", annos)
+	}
+	if want := `{"location":{"username":""}}` + "\n"; string(patchBody) != want {
+		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
 	}
 }
 
