@@ -13,6 +13,7 @@ const (
 	computerInventoryDetailUrlPath = "/api/v1/computers-inventory-detail/%s"
 	mobileDevicesUrlPath           = "/api/v2/mobile-devices"
 	mobileDeviceUrlPath            = "/api/v2/mobile-devices/%s"
+	mobileDeviceDetailUrlPath      = "/api/v2/mobile-devices/%s/detail"
 )
 
 // ComputerInventorySections are the inventory sections the connector requests.
@@ -103,12 +104,19 @@ func (c *Client) GetComputerInventoryDetail(ctx context.Context, computerID stri
 }
 
 // GetMobileDeviceDetail fetches a single mobile device's detail record via
-// GET /api/v2/mobile-devices/{id}. Unlike the flat `username` field on the
-// list endpoint's MobileDevice type, the detail endpoint nests the current
-// assignee under `location.username` — used by Revoke for the same
-// reassignment check as GetComputerInventoryDetail.
+// GET /api/v2/mobile-devices/{id}/detail, used by Revoke for the same
+// reassignment check as GetComputerInventoryDetail. Per Jamf's OpenAPI spec,
+// this endpoint's response (MobileDeviceDetailsGetV2, which extends
+// MobileDeviceDetailsV2) nests the current assignee under `location.username`
+// (LocationV2) - see
+// https://developer.jamf.com/jamf-pro/reference/get_v2-mobile-devices-id-detail.
+// This differs from the plain GET /api/v2/mobile-devices/{id} endpoint
+// (MobileDeviceV2), which returns a flat top-level `username` field instead -
+// see https://developer.jamf.com/jamf-pro/reference/get_v2-mobile-devices-id.
+// That plain endpoint backs the list endpoint's MobileDevice type and
+// SetMobileDeviceAssignedUser's PATCH, neither of which is affected by this.
 func (c *Client) GetMobileDeviceDetail(ctx context.Context, deviceID string) (*MobileDeviceDetail, error) {
-	url, err := c.getUrl(fmt.Sprintf(mobileDeviceUrlPath, deviceID))
+	url, err := c.getUrl(fmt.Sprintf(mobileDeviceDetailUrlPath, deviceID))
 	if err != nil {
 		return nil, err
 	}

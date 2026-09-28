@@ -144,8 +144,11 @@ type MobileDevice struct {
 }
 
 // MobileDeviceDetail is a single mobile-device record from the v2 detail
-// endpoint (GET /api/v2/mobile-devices/{id}). Only the location section
-// needed to resolve the device's current assignee is modeled here.
+// endpoint (GET /api/v2/mobile-devices/{id}/detail), i.e. Jamf's
+// MobileDeviceDetailsGetV2 schema - see
+// https://developer.jamf.com/jamf-pro/reference/get_v2-mobile-devices-id-detail.
+// Only the location section needed to resolve the device's current assignee
+// is modeled here.
 type MobileDeviceDetail struct {
 	ID       string                      `json:"id"`
 	Location *MobileDeviceDetailLocation `json:"location"`
