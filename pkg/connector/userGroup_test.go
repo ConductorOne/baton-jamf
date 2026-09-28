@@ -10,7 +10,6 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
-	"github.com/conductorone/baton-sdk/pkg/annotations"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 )
@@ -39,12 +38,26 @@ func userPrincipal(t *testing.T, userID int) *v2.Resource {
 // (404/409) as well as the happy path.
 func jamfUserGroupHandler(t *testing.T, isSmart bool, putStatus int, putCalled *bool) http.HandlerFunc {
 	t.Helper()
+	return jamfUserGroupHandlerWithMembers(t, isSmart, putStatus, nil, putCalled)
+}
+
+// jamfUserGroupHandlerWithMembers is jamfUserGroupHandler with control over
+// the group's current membership (as returned by the GetUserGroupDetails GET
+// used both by isSmartUserGroup and by Grant's post-409 re-verification), so
+// tests can distinguish a genuine "already a member" 409 from some other
+// validation failure that also happens to 409.
+func jamfUserGroupHandlerWithMembers(t *testing.T, isSmart bool, putStatus int, memberIDs []int, putCalled *bool) http.HandlerFunc {
+	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
+			users := make([]map[string]any, 0, len(memberIDs))
+			for _, id := range memberIDs {
+				users = append(users, map[string]any{"id": id, "name": "jappleseed"})
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"user_group": map[string]any{"id": 5, "name": "Test Group", "is_smart": isSmart},
+				"user_group": map[string]any{"id": 5, "name": "Test Group", "is_smart": isSmart, "users": users},
 			})
 		case http.MethodPut:
 			*putCalled = true
@@ -146,7 +159,7 @@ func TestUserGroupRevoke_NonMember_MapsToGrantAlreadyRevoked(t *testing.T) {
 	if !putCalled {
 		t.Error("expected PUT to be attempted before the 404 short-circuits")
 	}
-	got := annotations.Annotations(annos)
+	got := annos
 	if ok, _ := got.Pick(&v2.GrantAlreadyRevoked{}); !ok {
 		t.Error("expected a GrantAlreadyRevoked annotation for a 404 response")
 	}
@@ -154,10 +167,12 @@ func TestUserGroupRevoke_NonMember_MapsToGrantAlreadyRevoked(t *testing.T) {
 
 // TestUserGroupGrant_AlreadyMember_MapsToGrantAlreadyExists exercises the
 // best-guess idempotency mapping from architecture-plan.md §2.4/§9 item 1:
-// a 409 from the PUT is treated as "already a member", not an error.
+// a 409 from the PUT is treated as "already a member", not an error — but
+// only once re-verified against the group's actual membership (see the
+// 409-disambiguation fix), so the fake group here already lists user 1938.
 func TestUserGroupGrant_AlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 	putCalled := false
-	client := newTestJamfClient(t, jamfUserGroupHandler(t, false, http.StatusConflict, &putCalled))
+	client := newTestJamfClient(t, jamfUserGroupHandlerWithMembers(t, false, http.StatusConflict, []int{1938}, &putCalled))
 	g := userGroupBuilder(client)
 
 	grants, annos, err := g.Grant(context.Background(), userPrincipal(t, 1938), userGroupEntitlement(t, 5))
@@ -167,9 +182,34 @@ func TestUserGroupGrant_AlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 	if grants != nil {
 		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
 	}
-	got := annotations.Annotations(annos)
+	got := annos
 	if ok, _ := got.Pick(&v2.GrantAlreadyExists{}); !ok {
-		t.Error("expected a GrantAlreadyExists annotation for a 409 response")
+		t.Error("expected a GrantAlreadyExists annotation for a 409 response backed by actual membership")
+	}
+}
+
+// TestUserGroupGrant_ConflictButNotMember_ReturnsError covers the suggestion
+// fix: Jamf's Classic API can 409 for reasons other than "already a member"
+// (e.g. an unknown user id in user_additions). If the re-fetched group does
+// NOT actually list the principal as a member, Grant must surface the
+// original error instead of misreporting it as GrantAlreadyExists.
+func TestUserGroupGrant_ConflictButNotMember_ReturnsError(t *testing.T) {
+	putCalled := false
+	// 409 response, but the re-fetched group has no members at all — user
+	// 1938 is not actually in the group, so this wasn't a real
+	// "already exists" conflict.
+	client := newTestJamfClient(t, jamfUserGroupHandlerWithMembers(t, false, http.StatusConflict, nil, &putCalled))
+	g := userGroupBuilder(client)
+
+	grants, annos, err := g.Grant(context.Background(), userPrincipal(t, 1938), userGroupEntitlement(t, 5))
+	if err == nil {
+		t.Fatal("expected the original error to be surfaced when the 409 isn't backed by actual membership")
+	}
+	if grants != nil {
+		t.Errorf("expected no grants returned, got %v", grants)
+	}
+	if annos != nil {
+		t.Errorf("expected no GrantAlreadyExists annotation when membership can't be confirmed, got %v", annos)
 	}
 }
 

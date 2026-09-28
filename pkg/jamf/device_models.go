@@ -143,6 +143,20 @@ type MobileDevice struct {
 	PhoneNumber     string `json:"phoneNumber"`
 }
 
+// MobileDeviceDetail is a single mobile-device record from the v2 detail
+// endpoint (GET /api/v2/mobile-devices/{id}). Only the location section
+// needed to resolve the device's current assignee is modeled here.
+type MobileDeviceDetail struct {
+	ID       string                      `json:"id"`
+	Location *MobileDeviceDetailLocation `json:"location"`
+}
+
+// MobileDeviceDetailLocation holds the `location` section of a mobile-device
+// detail record.
+type MobileDeviceDetailLocation struct {
+	Username string `json:"username"`
+}
+
 // ComputerAssignedUserUpdate is the PATCH body for
 // /api/v1/computers-inventory-detail/{id} that sets (Grant) or clears
 // (Revoke) the assigned user via userAndLocation.username.

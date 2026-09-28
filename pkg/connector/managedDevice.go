@@ -15,6 +15,8 @@ import (
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -186,7 +188,7 @@ func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Res
 // whatever user was previously assigned.
 func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	if principal.Id.ResourceType != resourceTypeUser.Id {
-		return nil, nil, fmt.Errorf("jamf-connector: device assignment can only be granted to users, got resource type %q", principal.Id.ResourceType)
+		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: device assignment can only be granted to users, got resource type %q", principal.Id.ResourceType)
 	}
 
 	username, err := usernameForPrincipal(ctx, d.client, principal)
@@ -201,10 +203,32 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 }
 
 // Revoke clears the assigned user of the device backing gr's entitlement
-// resource.
+// resource — but only if the grant's principal is still the CURRENT
+// assignee. The device may have been reassigned to a different user (or
+// unassigned entirely) since this grant was last synced; blindly PATCHing
+// username="" in that case would silently wipe out the new assignment
+// instead of just removing the stale grant.
 func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
-		return nil, fmt.Errorf("jamf-connector: device assignment can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
+		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: device assignment can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
+	}
+
+	principalUsername, err := usernameForPrincipal(ctx, d.client, gr.Principal)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke device assigned: resolve username: %w", err)
+	}
+
+	currentUsername, err := d.currentAssignedUser(ctx, gr.Entitlement.Resource)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke device assigned: %w", err)
+	}
+
+	if !strings.EqualFold(currentUsername, principalUsername) {
+		// Already reassigned to someone else — or already unassigned — since
+		// this grant was synced. Clearing now would either be a no-op or,
+		// worse, would clear a different user's live assignment, so treat
+		// this specific grant as already gone rather than touching the device.
+		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 	}
 
 	// TODO(verify-in-verify-plan): clearing via an empty username string is a
@@ -232,16 +256,50 @@ func (d *managedDeviceResourceType) setAssignedUser(ctx context.Context, resourc
 	case devicePhaseMobile:
 		return d.client.SetMobileDeviceAssignedUser(ctx, id, username)
 	default:
-		return fmt.Errorf("jamf-connector: unknown managed device phase %q", phase)
+		return status.Errorf(codes.InvalidArgument, "jamf-connector: unknown managed device phase %q", phase)
+	}
+}
+
+// currentAssignedUser fetches the device's CURRENT assigned username directly
+// from Jamf (not from any cached sync state), dispatching to the computer or
+// mobile-device detail endpoint based on the device-type prefix encoded into
+// the resource id. Returns "" if the device is currently unassigned.
+func (d *managedDeviceResourceType) currentAssignedUser(ctx context.Context, resource *v2.Resource) (string, error) {
+	phase, id, err := parseDeviceObjectID(resource.Id.Resource)
+	if err != nil {
+		return "", err
+	}
+
+	switch phase {
+	case devicePhaseComputer:
+		detail, err := d.client.GetComputerInventoryDetail(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		if detail.UserAndLocation == nil {
+			return "", nil
+		}
+		return detail.UserAndLocation.Username, nil
+	case devicePhaseMobile:
+		detail, err := d.client.GetMobileDeviceDetail(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		if detail.Location == nil {
+			return "", nil
+		}
+		return detail.Location.Username, nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "jamf-connector: unknown managed device phase %q", phase)
 	}
 }
 
 // parseDeviceObjectID reverses deviceObjectID, splitting a resource id like
 // "computer:17" back into its phase and native Jamf id.
-func parseDeviceObjectID(objectID string) (phase string, id string, err error) {
+func parseDeviceObjectID(objectID string) (string, string, error) {
 	parts := strings.SplitN(objectID, ":", 2)
 	if len(parts) != 2 {
-		return "", "", fmt.Errorf("jamf-connector: invalid managed device resource id %q", objectID)
+		return "", "", status.Errorf(codes.InvalidArgument, "jamf-connector: invalid managed device resource id %q", objectID)
 	}
 	return parts[0], parts[1], nil
 }
@@ -251,7 +309,7 @@ func parseDeviceObjectID(objectID string) (phase string, id string, err error) {
 func usernameForPrincipal(ctx context.Context, client *jamf.Client, principal *v2.Resource) (string, error) {
 	userID, err := strconv.Atoi(principal.Id.Resource)
 	if err != nil {
-		return "", fmt.Errorf("invalid user id %q: %w", principal.Id.Resource, err)
+		return "", status.Errorf(codes.InvalidArgument, "jamf-connector: invalid user id %q: %s", principal.Id.Resource, err)
 	}
 
 	user, err := client.GetUserDetails(ctx, userID)
@@ -264,7 +322,7 @@ func usernameForPrincipal(ctx context.Context, client *jamf.Client, principal *v
 		username = user.Name
 	}
 	if username == "" {
-		return "", fmt.Errorf("jamf user %d has no username", userID)
+		return "", status.Errorf(codes.FailedPrecondition, "jamf-connector: jamf user %d has no username", userID)
 	}
 	return username, nil
 }
