@@ -339,6 +339,8 @@ func (c *Client) AddUserGroupMembers(ctx context.Context, groupID int, userIDs [
 
 // RemoveUserGroupMembers removes the given user IDs from a static Jamf user
 // group via the deletions verb (<user_group><user_deletions>). Atomic.
+// Returns a gRPC NotFound error if the group doesn't exist (surfaced via
+// IsNotFoundError).
 func (c *Client) RemoveUserGroupMembers(ctx context.Context, groupID int, userIDs []int) error {
 	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, groupID))
 	if err != nil {

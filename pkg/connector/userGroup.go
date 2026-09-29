@@ -123,6 +123,10 @@ func (g *userGroupResourceType) isSmartUserGroup(ctx context.Context, groupID in
 // entitlement's resource. Smart groups are rejected — their membership is
 // computed from criteria, not assignable.
 func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	if principal.Id.ResourceType != resourceTypeUser.Id {
+		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: user group membership can only be granted to users, got resource type %q", principal.Id.ResourceType)
+	}
+
 	groupID, err := strconv.Atoi(entitlement.Resource.Id.Resource)
 	if err != nil {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant user group member: invalid group id %q: %s", entitlement.Resource.Id.Resource, err)
@@ -172,6 +176,10 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 // Revoke removes gr's principal (a Jamf user) from the static user group
 // backing gr's entitlement resource. Smart groups are rejected, same as Grant.
 func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
+	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
+		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: user group membership can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
+	}
+
 	groupID, err := strconv.Atoi(gr.Entitlement.Resource.Id.Resource)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke user group member: invalid group id %q: %s", gr.Entitlement.Resource.Id.Resource, err)
@@ -179,6 +187,14 @@ func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annot
 
 	isSmart, err := g.isSmartUserGroup(ctx, groupID)
 	if err != nil {
+		// GetUserGroupDetails 404s when the group itself has been deleted. A
+		// deleted group trivially has no membership left to revoke, so this
+		// maps to GrantAlreadyRevoked rather than propagating as an error —
+		// same reasoning as the RemoveUserGroupMembers 404 case below, just
+		// detected earlier (via the GET here instead of the PUT).
+		if jamf.IsNotFoundError(err) {
+			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		}
 		return nil, fmt.Errorf("jamf-connector: revoke user group member: %w", err)
 	}
 	if isSmart {
@@ -192,8 +208,11 @@ func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annot
 
 	err = g.client.RemoveUserGroupMembers(ctx, groupID, []int{userID})
 	if err != nil {
-		// Whether Jamf maps "user not in static group" onto a 404 is
-		// unverified against a live tenant; treated here as already-revoked.
+		// Per RemoveUserGroupMembers's doc comment, a 404 here means the
+		// group itself doesn't exist (not "user not a member") — most likely
+		// it was deleted between the isSmartUserGroup GET above and this PUT.
+		// Same reasoning as the isSmartUserGroup 404 case above: a
+		// nonexistent group trivially has no membership left to revoke.
 		if jamf.IsNotFoundError(err) {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}
