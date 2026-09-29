@@ -415,6 +415,113 @@ func jamfDeviceAssignHandlerWithCurrent(t *testing.T, principalUsername, current
 	}
 }
 
+// jamfDeviceAssignHandlerEmail is jamfDeviceAssignHandlerWithCurrent extended
+// with independent control over email on both the principal's resolved Jamf
+// user record and the device's current assignee, for exercising Revoke's
+// email-based matching (Fix 1) and externally-matched principals (Fix 2 —
+// which never hits the /JSSResource/users/ endpoint at all, since there is no
+// numeric Jamf user id to resolve).
+func jamfDeviceAssignHandlerEmail(t *testing.T, principalUsername, principalEmail, currentUsername, currentEmail string, gotPATCHBody *[]byte) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user": map[string]any{"id": 42, "name": "jappleseed", "username": principalUsername, "email": principalEmail},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/computers-inventory-detail/"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":              "17",
+				"userAndLocation": map[string]any{"username": currentUsername, "email": currentEmail},
+			})
+		case r.Method == http.MethodPatch:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read PATCH body: %v", err)
+			}
+			*gotPATCHBody = body
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}
+}
+
+// TestManagedDeviceRevoke_MatchesViaEmail_Patches covers Fix 1: sync's
+// resolveUser can attribute a device's assignee to a synced user via email
+// rather than username, so Revoke's stale-grant check must also match on
+// email — not conclude "already reassigned" (and skip the PATCH) just
+// because the resolved username differs from the device's current username.
+func TestManagedDeviceRevoke_MatchesViaEmail_Patches(t *testing.T) {
+	var patchBody []byte
+	// Principal (Jamf user 42) resolves to username "old.name" but email
+	// "jappleseed@ex.com". The device's current assignee has a DIFFERENT
+	// username ("jappleseed") but the SAME email — mirroring a device whose
+	// assignee was cross-linked to this principal via email during sync.
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "old.name", "jappleseed@ex.com", "jappleseed", "jappleseed@ex.com", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, userPrincipal(t, 42).Id)
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if annos != nil {
+		t.Errorf("expected no annotations (grant should be revoked), got %v", annos)
+	}
+	if patchBody == nil {
+		t.Fatal("expected a PATCH to be sent when the device's current email matches the principal's email")
+	}
+	if want := `{"userAndLocation":{"username":"","email":""}}` + "\n"; string(patchBody) != want {
+		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
+	}
+}
+
+// TestManagedDeviceRevoke_ExternalMatchPrincipal_Patches covers Fix 2: a
+// grant built by deviceGrants for an assignee that isn't a synced Jamf user
+// carries a principal whose ResourceId.Resource is the raw email/username
+// string (not a numeric Jamf user id), annotated with an
+// ExternalResourceMatch. Revoke must recover that raw value from the
+// annotation and compare it directly against the device's current assignee,
+// rather than calling usernameForPrincipal/GetUserDetails — which would fail
+// with InvalidArgument on a non-numeric id.
+func TestManagedDeviceRevoke_ExternalMatchPrincipal_Patches(t *testing.T) {
+	var patchBody []byte
+	// The /JSSResource/users/ principal fields are deliberately implausible
+	// ("unused"/"unused@ex.com"): if Revoke incorrectly fell back to
+	// usernameForPrincipal here, strconv.Atoi("ghost@ex.com") would fail
+	// before that endpoint is ever hit, catching the bug either way.
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "unused", "unused@ex.com", "ghost", "ghost@ex.com", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	principal, err := rs.NewResourceID(resourceTypeUser, "ghost@ex.com")
+	if err != nil {
+		t.Fatalf("NewResourceID: %v", err)
+	}
+	match := v2.ExternalResourceMatch_builder{
+		ResourceType: v2.ResourceType_TRAIT_USER,
+		Key:          matchKeyEmail,
+		Value:        "ghost@ex.com",
+	}.Build()
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, principal, grant.WithAnnotation(match))
+
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if annos != nil {
+		t.Errorf("expected no annotations (grant should be revoked), got %v", annos)
+	}
+	if patchBody == nil {
+		t.Fatal("expected a PATCH to be sent for an externally-matched principal that matches the current assignee")
+	}
+	if want := `{"userAndLocation":{"username":"","email":""}}` + "\n"; string(patchBody) != want {
+		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
+	}
+}
+
 func TestManagedDeviceGrant_Computer_PatchesUserAndLocation(t *testing.T) {
 	var patchBody []byte
 	client := newTestJamfClient(t, jamfDeviceAssignHandler(t, "jappleseed", &patchBody))
@@ -453,8 +560,11 @@ func TestManagedDeviceGrant_Mobile_PatchesLocation(t *testing.T) {
 }
 
 // TestManagedDeviceRevoke_ClearsUsername exercises the clear-value default
-// for Revoke: it PATCHes an empty username string. This default is a best
-// guess — unverified against a live Jamf tenant.
+// for Revoke: it PATCHes an empty username string, and — for computers — an
+// explicit empty email string alongside it, so a stale email can't let a
+// future sync re-derive the cleared assignee (see
+// ComputerAssignedUserUpdateLocation.Email). Both clear semantics are best
+// guesses — unverified against a live Jamf tenant.
 func TestManagedDeviceRevoke_ClearsUsername(t *testing.T) {
 	var patchBody []byte
 	client := newTestJamfClient(t, jamfDeviceAssignHandler(t, "jappleseed", &patchBody))
@@ -468,7 +578,7 @@ func TestManagedDeviceRevoke_ClearsUsername(t *testing.T) {
 	if annos != nil {
 		t.Errorf("expected no annotations, got %v", annos)
 	}
-	if want := `{"userAndLocation":{"username":""}}` + "\n"; string(patchBody) != want {
+	if want := `{"userAndLocation":{"username":"","email":""}}` + "\n"; string(patchBody) != want {
 		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
 	}
 }
