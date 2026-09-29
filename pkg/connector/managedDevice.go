@@ -231,10 +231,9 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 	}
 
-	// TODO(verify-in-verify-plan): clearing via an empty username string is a
-	// best-guess default — the actual clear-value semantics (empty string vs.
-	// omitted field vs. a sentinel) are unverified against a live tenant. See
-	// architecture-plan.md §4.3 item 1, api-research.md §4.5/§6.
+	// Clearing via an empty username string is a best-guess default; the
+	// exact clear semantics are unverified against a live tenant (see the
+	// Username field comments in device_models.go).
 	if err := d.setAssignedUser(ctx, gr.Entitlement.Resource, ""); err != nil {
 		return nil, fmt.Errorf("jamf-connector: revoke device assigned: %w", err)
 	}

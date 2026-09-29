@@ -144,8 +144,9 @@ func TestUserGroupRevoke_StaticGroup_Succeeds(t *testing.T) {
 }
 
 // TestUserGroupRevoke_NonMember_MapsToGrantAlreadyRevoked exercises the
-// best-guess idempotency mapping from architecture-plan.md §2.4/§9 item 1:
-// a 404 from the PUT is treated as "already revoked", not an error.
+// idempotency mapping for Revoke: a 404 from the PUT is treated as "already
+// revoked", not an error. This mapping is a best guess — unverified against
+// a live Jamf tenant.
 func TestUserGroupRevoke_NonMember_MapsToGrantAlreadyRevoked(t *testing.T) {
 	putCalled := false
 	client := newTestJamfClient(t, jamfUserGroupHandler(t, false, http.StatusNotFound, &putCalled))
@@ -166,10 +167,11 @@ func TestUserGroupRevoke_NonMember_MapsToGrantAlreadyRevoked(t *testing.T) {
 }
 
 // TestUserGroupGrant_AlreadyMember_MapsToGrantAlreadyExists exercises the
-// best-guess idempotency mapping from architecture-plan.md §2.4/§9 item 1:
-// a 409 from the PUT is treated as "already a member", not an error — but
-// only once re-verified against the group's actual membership (see the
-// 409-disambiguation fix), so the fake group here already lists user 1938.
+// idempotency mapping for Grant: a 409 from the PUT is treated as "already a
+// member", not an error — but only once re-verified against the group's
+// actual membership (see the 409-disambiguation fix), so the fake group here
+// already lists user 1938. This mapping is a best guess — unverified against
+// a live Jamf tenant.
 func TestUserGroupGrant_AlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 	putCalled := false
 	client := newTestJamfClient(t, jamfUserGroupHandlerWithMembers(t, false, http.StatusConflict, []int{1938}, &putCalled))
