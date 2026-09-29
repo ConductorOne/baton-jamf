@@ -143,17 +143,14 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 
 	err = g.client.AddUserGroupMembers(ctx, groupID, []int{userID})
 	if err != nil {
-		// TODO(verify-in-verify-plan): whether Jamf maps "user already in
-		// static group" onto a 409 (surfaced here as IsAlreadyExistsError) is
-		// unverified against a live tenant — see architecture-plan.md §9 item 1,
-		// api-research.md §6.
-		//
 		// A 409 here isn't necessarily "already a member" — Jamf's Classic API
 		// can also return 409 for other validation failures on the same
-		// endpoint (e.g. an unknown user id in user_additions). Re-fetch the
-		// group and only report GrantAlreadyExists if userID is actually
-		// present in its Users list; otherwise surface the original error so a
-		// real failure isn't misreported as success.
+		// endpoint (e.g. an unknown user id in user_additions), and whether
+		// Jamf maps "already a member" onto 409 at all is unverified against
+		// a live tenant. Re-fetch the group and only report
+		// GrantAlreadyExists if userID is actually present in its Users list;
+		// otherwise surface the original error so a real failure isn't
+		// misreported as success.
 		if jamf.IsAlreadyExistsError(err) {
 			group, detailsErr := g.client.GetUserGroupDetails(ctx, groupID)
 			if detailsErr != nil {
@@ -195,10 +192,8 @@ func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annot
 
 	err = g.client.RemoveUserGroupMembers(ctx, groupID, []int{userID})
 	if err != nil {
-		// TODO(verify-in-verify-plan): whether Jamf maps "user not in static
-		// group" onto a 404 (surfaced here as IsNotFoundError) is unverified
-		// against a live tenant — see architecture-plan.md §9 item 1,
-		// api-research.md §6.
+		// Whether Jamf maps "user not in static group" onto a 404 is
+		// unverified against a live tenant; treated here as already-revoked.
 		if jamf.IsNotFoundError(err) {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}

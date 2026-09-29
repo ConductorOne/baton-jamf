@@ -168,10 +168,11 @@ type ComputerAssignedUserUpdate struct {
 }
 
 type ComputerAssignedUserUpdateLocation struct {
-	// TODO(verify-in-verify-plan): whether an empty string clears username or
-	// is rejected/no-op (vs. requiring the field to be omitted entirely) is
-	// unverified against a live tenant — see architecture-plan.md §4.3 item 1,
-	// api-research.md §4.5/§6.
+	// Empty string is assumed to clear the assignment. This is unverified
+	// against a live Jamf tenant — if Jamf instead requires the field to be
+	// omitted entirely, or rejects/no-ops on an empty string, Revoke will
+	// silently fail to clear the assignment. Confirm against a real tenant
+	// before relying on this in production.
 	Username string `json:"username"`
 }
 
@@ -183,7 +184,6 @@ type MobileDeviceAssignedUserUpdate struct {
 }
 
 type MobileDeviceAssignedUserUpdateLocation struct {
-	// TODO(verify-in-verify-plan): same open question as
-	// ComputerAssignedUserUpdateLocation.Username above.
+	// Same open question as ComputerAssignedUserUpdateLocation.Username above.
 	Username string `json:"username"`
 }

@@ -452,9 +452,9 @@ func TestManagedDeviceGrant_Mobile_PatchesLocation(t *testing.T) {
 	}
 }
 
-// TestManagedDeviceRevoke_ClearsUsername exercises the best-guess
-// clear-value default from architecture-plan.md §4.3 item 1 (unverified
-// against a live tenant): Revoke PATCHes an empty username string.
+// TestManagedDeviceRevoke_ClearsUsername exercises the clear-value default
+// for Revoke: it PATCHes an empty username string. This default is a best
+// guess — unverified against a live Jamf tenant.
 func TestManagedDeviceRevoke_ClearsUsername(t *testing.T) {
 	var patchBody []byte
 	client := newTestJamfClient(t, jamfDeviceAssignHandler(t, "jappleseed", &patchBody))
