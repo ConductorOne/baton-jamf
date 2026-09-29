@@ -492,6 +492,36 @@ func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
 	return c.doRequestWithMethod(ctx, http.MethodDelete, url, nil, nil)
 }
 
+// SetUserAccountPrivilegeSet updates a Jamf admin account's privilege_set via
+// PUT /JSSResource/accounts/userid/{id}. Per Classic API field-level-merge
+// semantics (see doRequestWithMethod), sending only <privilege_set> leaves
+// the rest of the account record (email, full_name, access_level, etc.)
+// untouched. See
+// https://developer.jamf.com/jamf-pro/reference/updateaccountbyid.
+func (c *Client) SetUserAccountPrivilegeSet(ctx context.Context, userID int, privilegeSet string) error {
+	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, userID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := UserAccountPrivilegeSetUpdate{PrivilegeSet: privilegeSet}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
+// SetGroupPrivilegeSet updates a Jamf access-level group's privilege_set via
+// PUT /JSSResource/accounts/groupid/{id}. Same field-level-merge semantics as
+// SetUserAccountPrivilegeSet. See
+// https://developer.jamf.com/jamf-pro/reference/updategroupbyid.
+func (c *Client) SetGroupPrivilegeSet(ctx context.Context, groupID int, privilegeSet string) error {
+	url, err := c.getUrl(fmt.Sprintf(groupUrlPath, groupID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := GroupPrivilegeSetUpdate{PrivilegeSet: privilegeSet}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
 // AddUserSite grants a Jamf user membership in the given site. Not atomic:
 // performs a read of the user's current <sites>, appends siteID if absent,
 // and PUTs the full list back. Returns alreadyMember=true without issuing a
