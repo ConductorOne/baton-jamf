@@ -15,6 +15,8 @@ import (
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -185,21 +187,62 @@ func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Res
 
 // Grant sets principal (a Jamf user) as the assigned user of the device
 // backing entitlement's resource. Single-valued/exclusive: this displaces
-// whatever user was previously assigned.
+// whatever user was previously assigned. Two idempotency cases are handled
+// before any write:
+//   - principal is already the device's current assignee: no-op, reported as
+//     GrantAlreadyExists rather than re-sending an identical PATCH.
+//   - a DIFFERENT user currently holds the assignment: the write proceeds
+//     (that is the point of granting), but the response carries a
+//     GrantReplaced annotation naming the grant that write just displaced, so
+//     ConductorOne can mark it revoked without a separate Revoke RPC.
 func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	if principal.Id.ResourceType != resourceTypeUser.Id {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: device assignment can only be granted to users, got resource type %q", principal.Id.ResourceType)
 	}
 
-	username, err := usernameForPrincipal(ctx, d.client, principal)
+	newUsername, newEmail, err := resolvePrincipalUser(ctx, d.client, principal)
 	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: resolve username: %w", err)
+		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: resolve principal identity: %w", err)
+	}
+	if newUsername == "" {
+		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: jamf user %s has no username", principal.Id.Resource)
 	}
 
-	if err := d.setAssignedUser(ctx, entitlement.Resource, username, false); err != nil {
+	currentUsername, currentEmail, err := d.currentAssignedUser(ctx, entitlement.Resource)
+	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: %w", err)
 	}
-	return []*v2.Grant{grant.NewGrant(entitlement.Resource, assignedEntitlement, principal.Id)}, nil, nil
+
+	newGrant := grant.NewGrant(entitlement.Resource, assignedEntitlement, principal.Id)
+
+	if assigneeMatches(currentUsername, currentEmail, newUsername, newEmail) {
+		// principal is already the live assignee — nothing would be displaced,
+		// and re-sending the same PATCH would only churn Jamf's audit log.
+		return []*v2.Grant{newGrant}, annotations.New(&v2.GrantAlreadyExists{}), nil
+	}
+
+	if err := d.setAssignedUser(ctx, entitlement.Resource, newUsername, false); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: %w", err)
+	}
+
+	var annos annotations.Annotations
+	if currentUsername != "" || currentEmail != "" {
+		replacedGrantID, ok, rerr := d.replacedGrantID(ctx, currentUsername, currentEmail, entitlement)
+		switch {
+		case rerr != nil:
+			// The assignment PATCH above already succeeded; failing to resolve
+			// the outgoing assignee for the GrantReplaced annotation is not
+			// worth failing (and retrying) an otherwise-successful Grant over.
+			// The stale grant is cleaned up on the next sync instead of
+			// atomically.
+			ctxzap.Extract(ctx).Warn("jamf-connector: grant device assigned: failed to resolve previous assignee for GrantReplaced",
+				zap.Error(rerr))
+		case ok:
+			annos = annotations.New(&v2.GrantReplaced{ReplacedGrantId: replacedGrantID})
+		}
+	}
+
+	return []*v2.Grant{newGrant}, annos, nil
 }
 
 // Revoke clears the assigned user of the device backing gr's entitlement
@@ -335,21 +378,6 @@ func parseDeviceObjectID(objectID string) (string, string, error) {
 	return parts[0], parts[1], nil
 }
 
-// usernameForPrincipal resolves a "user" principal's ResourceId to the Jamf
-// username Managed Device assignment expects. Grant only ever needs a
-// username — Jamf's assignment PATCH has no email field — so this requires
-// one even if the Jamf user has an email on file.
-func usernameForPrincipal(ctx context.Context, client *jamf.Client, principal *v2.Resource) (string, error) {
-	username, _, err := resolvePrincipalUser(ctx, client, principal)
-	if err != nil {
-		return "", err
-	}
-	if username == "" {
-		return "", status.Errorf(codes.FailedPrecondition, "jamf-connector: jamf user %s has no username", principal.Id.Resource)
-	}
-	return username, nil
-}
-
 // resolvePrincipalUser resolves a numeric-Jamf-user-id "user" principal's
 // ResourceId to that user's username and email, mirroring the field
 // preference (name/username, then email/emailAddress) getUserIndex uses when
@@ -374,6 +402,37 @@ func resolvePrincipalUser(ctx context.Context, client *jamf.Client, principal *v
 		email = user.EmailAddress
 	}
 	return username, email, nil
+}
+
+// replacedGrantID resolves a device's outgoing assignee (username, email) to
+// the grant id Grants() would have emitted for them, so Grant can report a
+// GrantReplaced annotation naming the exact grant being displaced. It mirrors
+// deviceGrants' own resolution order: a synced Jamf user first (via
+// getUserIndex), falling back to the same ExternalResourceMatch-style raw
+// email/username principal id deviceGrants builds for an unsynced assignee.
+// ok is false only when there is truly nothing to resolve (both empty).
+func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, username, email string, entitlement *v2.Entitlement) (string, bool, error) {
+	idx, err := d.getUserIndex(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if rid, ok := resolveUser(idx, username, email); ok {
+		return grant.NewGrantID(rid, entitlement), true, nil
+	}
+
+	value := strings.TrimSpace(email)
+	if value == "" {
+		value = strings.TrimSpace(username)
+	}
+	if value == "" {
+		return "", false, nil
+	}
+
+	rid, err := rs.NewResourceID(resourceTypeUser, value)
+	if err != nil {
+		return "", false, err
+	}
+	return grant.NewGrantID(rid, entitlement), true, nil
 }
 
 // principalIdentityForRevoke resolves gr's principal to the identity
