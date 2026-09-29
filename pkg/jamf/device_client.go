@@ -132,15 +132,18 @@ func (c *Client) GetMobileDeviceDetail(ctx context.Context, deviceID string) (*M
 // SetComputerAssignedUser sets (Grant) or clears (Revoke, username == "")
 // the assigned-user field on a computer's inventory record via
 // PATCH /api/v1/computers-inventory-detail/{id}, userAndLocation.username.
-// Single-valued/exclusive: setting a new username silently displaces
-// whatever username was previously recorded.
-func (c *Client) SetComputerAssignedUser(ctx context.Context, computerID string, username string) error {
+// email, when non-nil, is also sent — Revoke passes a pointer to "" to clear
+// the stale email alongside username (see ComputerAssignedUserUpdateLocation.
+// Email); Grant passes nil so its PATCH body never touches email. Single-
+// valued/exclusive: setting a new username silently displaces whatever
+// username was previously recorded.
+func (c *Client) SetComputerAssignedUser(ctx context.Context, computerID string, username string, email *string) error {
 	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
 	if err != nil {
 		return err
 	}
 
-	reqBody := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserUpdateLocation{Username: username}}
+	reqBody := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserUpdateLocation{Username: username, Email: email}}
 	return c.doRequestWithJSONMethod(ctx, http.MethodPatch, url, reqBody, nil)
 }
 

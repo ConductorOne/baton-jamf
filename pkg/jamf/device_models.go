@@ -174,6 +174,20 @@ type ComputerAssignedUserUpdateLocation struct {
 	// silently fail to clear the assignment. Confirm against a real tenant
 	// before relying on this in production.
 	Username string `json:"username"`
+
+	// Email is best-effort mitigation for a stale-email reassignment risk:
+	// resolveUser can match a device's assignee onto a synced user via email,
+	// so leaving a cleared computer's email untouched on Revoke could let a
+	// future sync re-derive the old assignee from that leftover value and
+	// effectively undo the revoke, if Jamf's PATCH is a partial merge rather
+	// than a full replace. A *string is used (rather than a plain string) so
+	// this field can be omitted entirely for Grant, which must never touch
+	// email, while Revoke still sends an explicit "" to clear it — a plain
+	// string with `omitempty` could not do the latter, since "" is also the
+	// zero value `omitempty` would use to justify dropping the field. Like
+	// Username above, the empty-string clear semantics here are unverified
+	// against a live Jamf tenant.
+	Email *string `json:"email,omitempty"`
 }
 
 // MobileDeviceAssignedUserUpdate is the PATCH body for
