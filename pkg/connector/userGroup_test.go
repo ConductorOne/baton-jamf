@@ -215,6 +215,54 @@ func TestUserGroupGrant_ConflictButNotMember_ReturnsError(t *testing.T) {
 	}
 }
 
+func TestUserGroupGrant_NonUserPrincipal_RejectedWithoutCallingAPI(t *testing.T) {
+	putCalled := false
+	client := newTestJamfClient(t, jamfUserGroupHandler(t, false, http.StatusCreated, &putCalled))
+	g := userGroupBuilder(client)
+
+	_, _, err := g.Grant(context.Background(), userGroupPrincipal(t, 7), userGroupEntitlement(t, 5))
+	if err == nil {
+		t.Fatal("expected an error granting user group membership to a non-user principal")
+	}
+	if putCalled {
+		t.Error("expected no API call for a non-user principal")
+	}
+}
+
+func TestUserGroupRevoke_NonUserPrincipal_RejectedWithoutCallingAPI(t *testing.T) {
+	putCalled := false
+	client := newTestJamfClient(t, jamfUserGroupHandler(t, false, http.StatusOK, &putCalled))
+	g := userGroupBuilder(client)
+
+	gr := grant.NewGrant(userGroupEntitlement(t, 5).Resource, memberEntitlement, userGroupPrincipal(t, 7).Id)
+	_, err := g.Revoke(context.Background(), gr)
+	if err == nil {
+		t.Fatal("expected an error revoking user group membership from a non-user principal")
+	}
+	if putCalled {
+		t.Error("expected no API call for a non-user principal")
+	}
+}
+
+// TestUserGroupRevoke_DeletedGroup_MapsToGrantAlreadyRevoked exercises the
+// isSmartUserGroup 404 path (Fix 2): the group backing the grant was deleted,
+// so GetUserGroupDetails 404s before RemoveUserGroupMembers is ever called.
+func TestUserGroupRevoke_DeletedGroup_MapsToGrantAlreadyRevoked(t *testing.T) {
+	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	g := userGroupBuilder(client)
+
+	gr := grant.NewGrant(userGroupEntitlement(t, 5).Resource, memberEntitlement, userPrincipal(t, 1938).Id)
+	annos, err := g.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation for a deleted group, got %v", annos)
+	}
+}
+
 func TestUserGroupGrant_InvalidGroupID_Errors(t *testing.T) {
 	g := userGroupBuilder(nil)
 	badEntitlement := ent.NewAssignmentEntitlement(&v2.Resource{Id: &v2.ResourceId{ResourceType: "userGroup", Resource: "not-a-number"}}, memberEntitlement)
