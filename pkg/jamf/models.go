@@ -216,6 +216,24 @@ type UserAccountCreateBody struct {
 	Privileges *Privileges `xml:"privileges,omitempty"`
 }
 
+// UserAccountPrivilegeSetUpdate is the PUT body for
+// /JSSResource/accounts/userid/{id} that updates only privilege_set. Per
+// Classic API field-level-merge semantics (client.go doc comment at
+// doRequestWithMethod), sending only this element leaves the rest of the
+// account record (email, full_name, access_level, etc.) untouched.
+type UserAccountPrivilegeSetUpdate struct {
+	XMLName      xml.Name `xml:"account"`
+	PrivilegeSet string   `xml:"privilege_set"`
+}
+
+// GroupPrivilegeSetUpdate is the PUT body for
+// /JSSResource/accounts/groupid/{id} that updates only privilege_set. Same
+// field-level-merge semantics as UserAccountPrivilegeSetUpdate.
+type GroupPrivilegeSetUpdate struct {
+	XMLName      xml.Name `xml:"group"`
+	PrivilegeSet string   `xml:"privilege_set"`
+}
+
 type UserGroupsResponse struct {
 	UserGroups []UserGroup `json:"user_groups"`
 }
