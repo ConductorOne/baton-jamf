@@ -84,7 +84,11 @@ func TestSiteGrant_UserNotYetMember_IssuesPUT(t *testing.T) {
 	}
 }
 
-func TestSiteGrant_UserAlreadyMember_NoOpNoPUT(t *testing.T) {
+// TestSiteGrant_UserAlreadyMember_MapsToGrantAlreadyExists exercises the
+// idempotency mapping for Grant: when AddUserSite reports the user is
+// already a site member, Grant returns a GrantAlreadyExists annotation
+// instead of a fresh grant, mirroring userGroup.go's Grant pattern.
+func TestSiteGrant_UserAlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesHandler(t, []int{2}, &putBody))
 	s := siteBuilder(client)
@@ -93,11 +97,11 @@ func TestSiteGrant_UserAlreadyMember_NoOpNoPUT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	if len(grants) != 1 {
-		t.Fatalf("want 1 grant, got %d", len(grants))
+	if grants != nil {
+		t.Errorf("expected no grants returned on the already-member path, got %v", grants)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations on the already-member no-op, got %v", annos)
+	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
+		t.Errorf("expected a GrantAlreadyExists annotation for an already-member grant, got %v", annos)
 	}
 	if len(putBody) != 0 {
 		t.Errorf("expected no PUT for an already-member grant, got body: %s", putBody)
@@ -125,7 +129,12 @@ func TestSiteRevoke_UserIsMember_IssuesPUT(t *testing.T) {
 	}
 }
 
-func TestSiteRevoke_UserNotMember_NoOpNoPUT(t *testing.T) {
+// TestSiteRevoke_UserNotMember_MapsToGrantAlreadyRevoked exercises the
+// idempotency mapping for Revoke: when RemoveUserSite reports the user is
+// already absent from the site, Revoke returns a GrantAlreadyRevoked
+// annotation instead of a plain success, mirroring userGroup.go's Revoke
+// pattern.
+func TestSiteRevoke_UserNotMember_MapsToGrantAlreadyRevoked(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesHandler(t, []int{1}, &putBody))
 	s := siteBuilder(client)
@@ -135,11 +144,32 @@ func TestSiteRevoke_UserNotMember_NoOpNoPUT(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations, got %v", annos)
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation for a not-a-member revoke, got %v", annos)
 	}
 	if len(putBody) != 0 {
 		t.Errorf("expected no PUT for a not-a-member revoke, got body: %s", putBody)
+	}
+}
+
+// TestSiteRevoke_UserDeleted_MapsToGrantAlreadyRevoked exercises the
+// idempotency mapping for Revoke when the user backing the grant has since
+// been deleted: the getUserDetails lookup inside RemoveUserSite 404s, which
+// is treated as alreadyAbsent (a deleted user trivially has no site
+// membership left to revoke) rather than a hard error.
+func TestSiteRevoke_UserDeleted_MapsToGrantAlreadyRevoked(t *testing.T) {
+	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	s := siteBuilder(client)
+
+	gr := grant.NewGrant(siteEntitlement(t, 2).Resource, memberEntitlement, userPrincipal(t, 42).Id)
+	annos, err := s.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation for a deleted-user revoke, got %v", annos)
 	}
 }
 

@@ -160,12 +160,9 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 // user is genuinely multi-valued/grantable — see the WithGrantableTo note in
 // Entitlements above.
 //
-// Neither Grant nor Revoke here has an IsAlreadyExistsError/IsNotFoundError
-// branch — unlike userGroup.go's Grant/Revoke, client.AddUserSite/
-// RemoveUserSite already absorb the idempotent "already a member"/"not a
-// member" cases internally (no distinct HTTP status exists to key off for a
-// read-modify-write endpoint), so they simply return a plain nil error. Do
-// not "fix" this to look like userGroup.go's pattern.
+// Aligned with userGroup.go's Grant/Revoke pattern: client.AddUserSite
+// reports via its bool return whether the user was already a site member, so
+// that case is surfaced here as GrantAlreadyExists instead of a fresh grant.
 func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	if principal.Id.ResourceType != resourceTypeUser.Id {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: site membership can only be granted to users, got resource type %q", principal.Id.ResourceType)
@@ -180,16 +177,23 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant site member: invalid user id %q: %s", principal.Id.Resource, err)
 	}
 
-	if err := g.client.AddUserSite(ctx, userID, siteID); err != nil {
+	alreadyMember, err := g.client.AddUserSite(ctx, userID, siteID)
+	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: grant site member: %w", err)
+	}
+	if alreadyMember {
+		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 	}
 	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
 }
 
 // Revoke removes gr's principal (a Jamf user) from the <sites> list of the
 // site backing gr's entitlement resource. See Grant for the principal-type
-// guard rationale and the intentional IsAlreadyExistsError/IsNotFoundError
-// asymmetry with userGroup.go.
+// guard rationale. Aligned with userGroup.go's Revoke pattern: client.
+// RemoveUserSite reports via its bool return whether the user was already
+// absent from the site (including the case where the user has since been
+// deleted), so that case is surfaced here as GrantAlreadyRevoked instead of
+// a plain success.
 func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
 		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: site membership can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
@@ -204,8 +208,12 @@ func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotation
 		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke site member: invalid user id %q: %s", gr.Principal.Id.Resource, err)
 	}
 
-	if err := g.client.RemoveUserSite(ctx, userID, siteID); err != nil {
+	alreadyAbsent, err := g.client.RemoveUserSite(ctx, userID, siteID)
+	if err != nil {
 		return nil, fmt.Errorf("jamf-connector: revoke site member: %w", err)
+	}
+	if alreadyAbsent {
+		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 	}
 	return nil, nil
 }

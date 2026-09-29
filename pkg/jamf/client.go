@@ -492,10 +492,11 @@ func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
 
 // AddUserSite grants a Jamf user membership in the given site. Not atomic:
 // performs a read of the user's current <sites>, appends siteID if absent,
-// and PUTs the full list back. Idempotent: returns nil without issuing a PUT
-// if the user is already a member — there is no distinct "already exists"
-// HTTP status to key off here (see IsAlreadyExistsError), so the connector
-// layer must not expect that error shape from this method.
+// and PUTs the full list back. Returns alreadyMember=true without issuing a
+// PUT if the user is already a member — there is no distinct "already
+// exists" HTTP status to key off here (see IsAlreadyExistsError), so callers
+// must key off the returned bool rather than expecting that error shape from
+// this method.
 //
 // Concurrency note: this read-modify-write has no locking/versioning guard.
 // Two concurrent calls for the same userID (e.g. a site grant racing a site
@@ -504,34 +505,43 @@ func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
 // silently dropping one of the updates. Callers that need strict correctness
 // under concurrent provisioning for the same user should serialize calls
 // per-userID.
-func (c *Client) AddUserSite(ctx context.Context, userID int, siteID int) error {
+func (c *Client) AddUserSite(ctx context.Context, userID int, siteID int) (bool, error) {
 	user, err := c.getUserDetails(ctx, userID) // always re-read — never reuse a cached User
 	if err != nil {
-		return err
+		return false, err
 	}
 	for _, s := range user.Sites {
 		if s.Site.ID == siteID {
-			return nil // already a member — idempotent success, not an error
+			return true, nil // already a member — idempotent success, not an error
 		}
 	}
 	user.Sites = append(user.Sites, struct {
 		Site BaseType `json:"site"`
 	}{Site: BaseType{ID: siteID}})
-	return c.updateUserSites(ctx, userID, user.Sites)
+	if err := c.updateUserSites(ctx, userID, user.Sites); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // RemoveUserSite revokes a Jamf user's membership in the given site via the
-// same read-modify-write pattern as AddUserSite. If the site is already
-// absent from the user's <sites>, this is a no-op success (no PUT is sent) —
-// same idempotency-absorption caveat as AddUserSite.
+// same read-modify-write pattern as AddUserSite. Returns alreadyAbsent=true
+// without issuing a PUT if the site is already absent from the user's
+// <sites> — same idempotency-absorption caveat as AddUserSite. Also treats a
+// NotFound from the initial user lookup (e.g. the user was deleted) as
+// alreadyAbsent=true: a deleted user trivially has no site membership left
+// to revoke, so this is a no-op success rather than a propagated error.
 //
 // Concurrency note: same lack of locking/versioning as AddUserSite — see its
 // doc comment. A concurrent grant/revoke for the same userID can race and
 // silently drop one side's change.
-func (c *Client) RemoveUserSite(ctx context.Context, userID int, siteID int) error {
+func (c *Client) RemoveUserSite(ctx context.Context, userID int, siteID int) (bool, error) {
 	user, err := c.getUserDetails(ctx, userID)
 	if err != nil {
-		return err
+		if IsNotFoundError(err) {
+			return true, nil // user no longer exists — nothing left to revoke
+		}
+		return false, err
 	}
 
 	newSites := make([]struct {
@@ -546,9 +556,12 @@ func (c *Client) RemoveUserSite(ctx context.Context, userID int, siteID int) err
 		newSites = append(newSites, s)
 	}
 	if !found {
-		return nil // not a member — idempotent success, not an error
+		return true, nil // not a member — idempotent success, not an error
 	}
-	return c.updateUserSites(ctx, userID, newSites)
+	if err := c.updateUserSites(ctx, userID, newSites); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // updateUserSites PUTs the full desired <sites> list for a user. Per Classic
