@@ -125,6 +125,9 @@ func jamfGroupHandler(t *testing.T, currentPrivilegeSet string, putCalled *bool,
 	}
 }
 
+// TestRoleGrant_UserAccount_SetsPrivilegeSet also covers Fix 2: granting a
+// different built-in privilege set than the one currently held (Auditor ->
+// Administrator) must report the displaced Auditor grant via GrantReplaced.
 func TestRoleGrant_UserAccount_SetsPrivilegeSet(t *testing.T) {
 	putCalled := false
 	var putBody []byte
@@ -144,8 +147,23 @@ func TestRoleGrant_UserAccount_SetsPrivilegeSet(t *testing.T) {
 	if len(grants) != 1 {
 		t.Fatalf("want 1 grant, got %d", len(grants))
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations on a plain grant, got %v", annos)
+	replaced := &v2.GrantReplaced{}
+	ok, err := annos.Pick(replaced)
+	if err != nil {
+		t.Fatalf("annos.Pick: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected a GrantReplaced annotation displacing the previous Auditor grant, got %v", annos)
+	}
+
+	oldResource, err := roleResource(context.Background(), privilegeSetAuditor, nil)
+	if err != nil {
+		t.Fatalf("roleResource: %v", err)
+	}
+	oldEntitlement := ent.NewPermissionEntitlement(oldResource, memberEntitlement)
+	wantReplacedID := grant.NewGrantID(userAccountPrincipal(t, 42).Id, oldEntitlement)
+	if replaced.GetReplacedGrantId() != wantReplacedID {
+		t.Errorf("GrantReplaced.ReplacedGrantId = %q, want %q", replaced.GetReplacedGrantId(), wantReplacedID)
 	}
 }
 
@@ -168,8 +186,36 @@ func TestRoleGrant_Group_SetsPrivilegeSet(t *testing.T) {
 	if len(grants) != 1 {
 		t.Fatalf("want 1 grant, got %d", len(grants))
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations on a plain grant, got %v", annos)
+	if ok, _ := annos.Pick(&v2.GrantReplaced{}); !ok {
+		t.Errorf("expected a GrantReplaced annotation displacing the previous Auditor grant, got %v", annos)
+	}
+}
+
+// TestRoleGrant_NoGrantReplaced_WhenPreviouslyCustomOrUnassigned covers the
+// graceful-skip cases for Fix 2: a Custom or unset/empty prior privilege_set
+// has no built-in-set grant to report as replaced.
+func TestRoleGrant_NoGrantReplaced_WhenPreviouslyCustomOrUnassigned(t *testing.T) {
+	for _, previous := range []string{privilegeSetCustom, ""} {
+		t.Run(previous, func(t *testing.T) {
+			putCalled := false
+			var putBody []byte
+			client := newTestJamfClient(t, jamfUserAccountHandler(t, previous, &putCalled, &putBody))
+			r := roleBuilder(client)
+
+			grants, annos, err := r.Grant(context.Background(), userAccountPrincipal(t, 42), roleEntitlement(t, privilegeSetAdministrator))
+			if err != nil {
+				t.Fatalf("Grant: %v", err)
+			}
+			if !putCalled {
+				t.Error("expected a PUT to set the new privilege_set")
+			}
+			if len(grants) != 1 {
+				t.Fatalf("want 1 grant, got %d", len(grants))
+			}
+			if annos != nil {
+				t.Errorf("expected no annotations when the previous privilege_set was %q, got %v", previous, annos)
+			}
+		})
 	}
 }
 
@@ -288,6 +334,64 @@ func TestRoleRevoke_AlreadyEnrollmentOnly_MapsToGrantAlreadyRevoked(t *testing.T
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
 		t.Errorf("expected a GrantAlreadyRevoked annotation, got %v", annos)
+	}
+}
+
+// TestRoleRevoke_StalePrivilegeSet_UserAccount_NoWrite guards against the bug
+// fixed here: Revoke must verify the CURRENT privilege_set still matches what
+// THIS grant claims (Administrator) before downgrading. If the account has
+// since moved to a different built-in set (Auditor, e.g. via a newer Grant),
+// this Revoke is stale and must not touch the account.
+func TestRoleRevoke_StalePrivilegeSet_UserAccount_NoWrite(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfUserAccountHandler(t, privilegeSetAuditor, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	gr := grant.NewGrant(roleEntitlement(t, privilegeSetAdministrator).Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
+	annos, err := r.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if putCalled {
+		t.Error("expected no PUT when the account has since moved to a different privilege set")
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation, got %v", annos)
+	}
+}
+
+// TestRoleRevoke_StalePrivilegeSet_Group_NoWrite is the group counterpart of
+// TestRoleRevoke_StalePrivilegeSet_UserAccount_NoWrite.
+func TestRoleRevoke_StalePrivilegeSet_Group_NoWrite(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfGroupHandler(t, privilegeSetAuditor, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	gr := grant.NewGrant(roleEntitlement(t, privilegeSetAdministrator).Resource, memberEntitlement, groupPrincipal(t, 7).Id)
+	annos, err := r.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if putCalled {
+		t.Error("expected no PUT when the group has since moved to a different privilege set")
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation, got %v", annos)
+	}
+}
+
+// TestRoleRevoke_IndividualPrivilegeEntitlement_Rejected covers Fix 1's
+// defense-in-depth guard: Revoke must reject individual-privilege
+// entitlements even though the platform should never dispatch one in
+// practice (Entitlements does not declare WithGrantableTo for them).
+func TestRoleRevoke_IndividualPrivilegeEntitlement_Rejected(t *testing.T) {
+	r := roleBuilder(nil)
+	gr := grant.NewGrant(roleEntitlement(t, "Read User").Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
+	_, err := r.Revoke(context.Background(), gr)
+	if err == nil {
+		t.Fatal("expected an error revoking an individual-privilege entitlement")
 	}
 }
 
