@@ -11,7 +11,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 | Sync | Yes |
 | Account Creation (Users, User Accounts) | Yes — one type per connector instance, see `create-account-resource-type` below |
 | Account Deletion (Users, User Accounts) | Yes |
-| Provisioning (Grant/Revoke) | Yes — User Groups (static groups only), Sites (`user` principal only), Managed Devices (`assigned`, `user` principal only). Groups and Roles remain sync-only. |
+| Provisioning (Grant/Revoke) | Yes — User Groups (static groups only), Sites (`user` principal only), Managed Devices (`assigned`, `user` principal only), Roles (built-in privilege sets only, see below). Groups remain sync-only. |
 
 ## Required Jamf privileges for provisioning
 
@@ -21,6 +21,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 | Site | Grant/Revoke membership (`user` principal) | `Update - Users` |
 | Managed Device (computer) | Grant/Revoke `assigned` user | `Update Computers` |
 | Managed Device (mobile device) | Grant/Revoke `assigned` user | `Update Mobile Devices` |
+| Role | Grant/Revoke `privilege_set` (`userAccount`/`group` principal) | `Update - User accounts and groups` |
 
 Smart User Groups cannot be granted/revoked (membership is computed from
 criteria, not assignable) — the connector rejects these before calling the
@@ -31,7 +32,13 @@ single-valued — granting it to a new user displaces whichever user was
 previously assigned. Grant currently only works on devices that already have
 an assigned user (the `assigned` entitlement is only emitted for devices that
 report an assignee) — it cannot be used to assign a previously-unassigned
-device to a user.
+device to a user. Role Grant/Revoke sets a `userAccount` or `group`'s
+`privilege_set`. Only the three built-in sets (`Administrator`, `Auditor`,
+`Enrollment Only`) are provisionable — individual privileges (meaningful only
+under a `Custom` privilege_set) remain sync-only. This is single-valued —
+granting a set displaces whichever one the principal previously held. Revoke
+always downgrades to `Enrollment Only`, since Jamf's `privilege_set` has no
+neutral "no access" value.
 
 ## Jamf Pro console admin account privileges (`userAccount`)
 
