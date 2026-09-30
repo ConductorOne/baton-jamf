@@ -9,6 +9,12 @@ import (
 )
 
 const (
+	// TODO(follow-up ticket): v1 list/detail are deprecated (x-deprecation-date
+	// 2025-06-30), and v3 is also now deprecated (2026-07-14) — don't migrate to
+	// it. v4 is the current, non-deprecated replacement and has been confirmed a
+	// compatible drop-in swap (same fields, same envelope, only the URL path
+	// changes); Jamf guarantees ~1 year of availability past deprecation, so
+	// removal could land in any release.
 	computersInventoryUrlPath      = "/api/v1/computers-inventory"
 	computerInventoryDetailUrlPath = "/api/v1/computers-inventory-detail/%s"
 	mobileDevicesUrlPath           = "/api/v2/mobile-devices"

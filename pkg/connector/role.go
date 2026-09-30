@@ -289,6 +289,12 @@ func (o *roleResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotation
 			return nil, fmt.Errorf("jamf-connector: revoke role: %w", err)
 		}
 		if current.PrivilegeSet == privilegeSetEnrollmentOnly {
+			// Enrollment Only is the fixed floor Revoke downgrades everything to
+			// (see the doc comment above), so revoking a grant that's itself
+			// Enrollment Only is inherently a no-op — there is nothing lower to
+			// move to. This intentionally returns GrantAlreadyRevoked rather than
+			// writing, even though Entitlements does advertise Enrollment Only as
+			// independently grantable.
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}
 		if current.PrivilegeSet != grantedPrivilegeSet {
@@ -313,6 +319,12 @@ func (o *roleResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotation
 			return nil, fmt.Errorf("jamf-connector: revoke role: %w", err)
 		}
 		if current.PrivilegeSet == privilegeSetEnrollmentOnly {
+			// Enrollment Only is the fixed floor Revoke downgrades everything to
+			// (see the doc comment above), so revoking a grant that's itself
+			// Enrollment Only is inherently a no-op — there is nothing lower to
+			// move to. This intentionally returns GrantAlreadyRevoked rather than
+			// writing, even though Entitlements does advertise Enrollment Only as
+			// independently grantable.
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}
 		if current.PrivilegeSet != grantedPrivilegeSet {
