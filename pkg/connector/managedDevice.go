@@ -10,10 +10,15 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -151,7 +156,7 @@ func (d *managedDeviceResourceType) Entitlements(_ context.Context, resource *v2
 
 	opts := []ent.EntitlementOption{
 		ent.WithGrantableTo(resourceTypeUser),
-		ent.WithDescription(fmt.Sprintf("Assigned user of the %s device", resource.DisplayName)),
+		ent.WithDescription(fmt.Sprintf("Assigned user of the %s device — granting this to a new user overwrites the current device owner", resource.DisplayName)),
 		ent.WithDisplayName(fmt.Sprintf("%s device %s", resource.DisplayName, assignedEntitlement)),
 	}
 
@@ -178,6 +183,287 @@ func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Res
 		return nil, nil, err
 	}
 	return grants, nil, nil
+}
+
+// Grant sets principal (a Jamf user) as the assigned user of the device
+// backing entitlement's resource. Single-valued/exclusive: this displaces
+// whatever user was previously assigned. Two idempotency cases are handled
+// before any write:
+//   - principal is already the device's current assignee: no-op, reported as
+//     GrantAlreadyExists rather than re-sending an identical PATCH.
+//   - a DIFFERENT user currently holds the assignment: the write proceeds
+//     (that is the point of granting), but the response carries a
+//     GrantReplaced annotation naming the grant that write just displaced, so
+//     ConductorOne can mark it revoked without a separate Revoke RPC.
+func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	if principal.Id.ResourceType != resourceTypeUser.Id {
+		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: device assignment can only be granted to users, got resource type %q", principal.Id.ResourceType)
+	}
+
+	newUsername, newEmail, err := resolvePrincipalUser(ctx, d.client, principal)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: resolve principal identity: %w", err)
+	}
+	if newUsername == "" {
+		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: jamf user %s has no username", principal.Id.Resource)
+	}
+
+	currentUsername, currentEmail, err := d.currentAssignedUser(ctx, entitlement.Resource)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: %w", err)
+	}
+
+	newGrant := grant.NewGrant(entitlement.Resource, assignedEntitlement, principal.Id)
+
+	if assigneeMatches(currentUsername, currentEmail, newUsername, newEmail) {
+		// principal is already the live assignee — nothing would be displaced,
+		// and re-sending the same PATCH would only churn Jamf's audit log.
+		return []*v2.Grant{newGrant}, annotations.New(&v2.GrantAlreadyExists{}), nil
+	}
+
+	if err := d.setAssignedUser(ctx, entitlement.Resource, newUsername, false); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: %w", err)
+	}
+
+	var annos annotations.Annotations
+	if currentUsername != "" || currentEmail != "" {
+		replacedGrantID, ok, rerr := d.replacedGrantID(ctx, currentUsername, currentEmail, entitlement)
+		switch {
+		case rerr != nil:
+			// The assignment PATCH above already succeeded; failing to resolve
+			// the outgoing assignee for the GrantReplaced annotation is not
+			// worth failing (and retrying) an otherwise-successful Grant over.
+			// The stale grant is cleaned up on the next sync instead of
+			// atomically.
+			ctxzap.Extract(ctx).Warn("jamf-connector: grant device assigned: failed to resolve previous assignee for GrantReplaced",
+				zap.Error(rerr))
+		case ok:
+			annos = annotations.New(&v2.GrantReplaced{ReplacedGrantId: replacedGrantID})
+		}
+	}
+
+	return []*v2.Grant{newGrant}, annos, nil
+}
+
+// Revoke clears the assigned user of the device backing gr's entitlement
+// resource — but only if the grant's principal is still the CURRENT
+// assignee. The device may have been reassigned to a different user (or
+// unassigned entirely) since this grant was last synced; blindly PATCHing
+// username="" in that case would silently wipe out the new assignment
+// instead of just removing the stale grant.
+func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
+	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
+		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: device assignment can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
+	}
+
+	principalUsername, principalEmail, err := principalIdentityForRevoke(ctx, d.client, gr)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke device assigned: resolve principal identity: %w", err)
+	}
+
+	currentUsername, currentEmail, err := d.currentAssignedUser(ctx, gr.Entitlement.Resource)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke device assigned: %w", err)
+	}
+
+	if !assigneeMatches(currentUsername, currentEmail, principalUsername, principalEmail) {
+		// Already reassigned to someone else — or already unassigned — since
+		// this grant was synced. Clearing now would either be a no-op or,
+		// worse, would clear a different user's live assignment, so treat
+		// this specific grant as already gone rather than touching the device.
+		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+	}
+
+	// Clearing via an empty username string is a best-guess default; the
+	// exact clear semantics are unverified against a live tenant (see the
+	// Username field comments in device_models.go). For computers, the stale
+	// email is cleared alongside username (see
+	// ComputerAssignedUserUpdateLocation.Email) so a future sync's
+	// resolveUser can't re-derive this assignee from a leftover email and
+	// effectively undo the revoke; mobile devices carry no email field to
+	// clear, so setAssignedUser's clearEmail argument is a no-op there.
+	if err := d.setAssignedUser(ctx, gr.Entitlement.Resource, "", true); err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke device assigned: %w", err)
+	}
+	return nil, nil
+}
+
+// setAssignedUser dispatches to the computer or mobile-device client call
+// based on the device-type prefix deviceObjectID encoded into the resource
+// id at List() time. clearEmail requests that a computer's stale email also
+// be cleared (Revoke only — see the Revoke doc comment); mobile devices have
+// no such field, so clearEmail is a no-op on that path.
+func (d *managedDeviceResourceType) setAssignedUser(ctx context.Context, resource *v2.Resource, username string, clearEmail bool) error {
+	phase, id, err := parseDeviceObjectID(resource.Id.Resource)
+	if err != nil {
+		return err
+	}
+
+	switch phase {
+	case devicePhaseComputer:
+		var email *string
+		if clearEmail {
+			empty := ""
+			email = &empty
+		}
+		return d.client.SetComputerAssignedUser(ctx, id, username, email)
+	case devicePhaseMobile:
+		return d.client.SetMobileDeviceAssignedUser(ctx, id, username)
+	default:
+		return status.Errorf(codes.InvalidArgument, "jamf-connector: unknown managed device phase %q", phase)
+	}
+}
+
+// currentAssignedUser fetches the device's CURRENT assigned username and
+// email directly from Jamf (not from any cached sync state), dispatching to
+// the computer or mobile-device detail endpoint based on the device-type
+// prefix encoded into the resource id. Returns "" for either when the device
+// is currently unassigned; email is always "" for mobile devices, since the
+// mobile-device detail endpoint this uses exposes no email field.
+func (d *managedDeviceResourceType) currentAssignedUser(ctx context.Context, resource *v2.Resource) (string, string, error) {
+	phase, id, err := parseDeviceObjectID(resource.Id.Resource)
+	if err != nil {
+		return "", "", err
+	}
+
+	switch phase {
+	case devicePhaseComputer:
+		detail, err := d.client.GetComputerInventoryDetail(ctx, id)
+		if err != nil {
+			return "", "", err
+		}
+		if detail.UserAndLocation == nil {
+			return "", "", nil
+		}
+		return detail.UserAndLocation.Username, detail.UserAndLocation.EmailAddr(), nil
+	case devicePhaseMobile:
+		detail, err := d.client.GetMobileDeviceDetail(ctx, id)
+		if err != nil {
+			return "", "", err
+		}
+		if detail.Location == nil {
+			return "", "", nil
+		}
+		return detail.Location.Username, "", nil
+	default:
+		return "", "", status.Errorf(codes.InvalidArgument, "jamf-connector: unknown managed device phase %q", phase)
+	}
+}
+
+// assigneeMatches reports whether the principal identity resolved from a
+// grant is still the device's current assignee, matching on username OR
+// email — mirroring resolveUser's username-or-email resolution during sync,
+// so Revoke doesn't wrongly treat a grant as stale just because sync
+// attributed it to the principal via email rather than username (or vice
+// versa; see deviceGrants). A comparison only counts when both sides are
+// non-empty, so an unset field on one side never accidentally matches an
+// unset field on the other.
+func assigneeMatches(currentUsername, currentEmail, principalUsername, principalEmail string) bool {
+	if currentUsername != "" && principalUsername != "" && strings.EqualFold(currentUsername, principalUsername) {
+		return true
+	}
+	if currentEmail != "" && principalEmail != "" && strings.EqualFold(currentEmail, principalEmail) {
+		return true
+	}
+	return false
+}
+
+// parseDeviceObjectID reverses deviceObjectID, splitting a resource id like
+// "computer:17" back into its phase and native Jamf id.
+func parseDeviceObjectID(objectID string) (string, string, error) {
+	parts := strings.SplitN(objectID, ":", 2)
+	if len(parts) != 2 {
+		return "", "", status.Errorf(codes.InvalidArgument, "jamf-connector: invalid managed device resource id %q", objectID)
+	}
+	return parts[0], parts[1], nil
+}
+
+// resolvePrincipalUser resolves a numeric-Jamf-user-id "user" principal's
+// ResourceId to that user's username and email, mirroring the field
+// preference (name/username, then email/emailAddress) getUserIndex uses when
+// building the username/email -> ResourceId lookup during sync.
+func resolvePrincipalUser(ctx context.Context, client *jamf.Client, principal *v2.Resource) (string, string, error) {
+	userID, err := strconv.Atoi(principal.Id.Resource)
+	if err != nil {
+		return "", "", status.Errorf(codes.InvalidArgument, "jamf-connector: invalid user id %q: %s", principal.Id.Resource, err)
+	}
+
+	user, err := client.GetUserDetails(ctx, userID)
+	if err != nil {
+		return "", "", err
+	}
+
+	username := user.Username
+	if username == "" {
+		username = user.Name
+	}
+	email := user.Email
+	if email == "" {
+		email = user.EmailAddress
+	}
+	return username, email, nil
+}
+
+// replacedGrantID resolves a device's outgoing assignee (username, email) to
+// the grant id Grants() would have emitted for them, so Grant can report a
+// GrantReplaced annotation naming the exact grant being displaced. It mirrors
+// deviceGrants' own resolution order: a synced Jamf user first (via
+// getUserIndex), falling back to the same ExternalResourceMatch-style raw
+// email/username principal id deviceGrants builds for an unsynced assignee.
+// ok is false only when there is truly nothing to resolve (both empty).
+func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, username, email string, entitlement *v2.Entitlement) (string, bool, error) {
+	idx, err := d.getUserIndex(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if rid, ok := resolveUser(idx, username, email); ok {
+		return grant.NewGrantID(rid, entitlement), true, nil
+	}
+
+	value := strings.TrimSpace(email)
+	if value == "" {
+		value = strings.TrimSpace(username)
+	}
+	if value == "" {
+		return "", false, nil
+	}
+
+	rid, err := rs.NewResourceID(resourceTypeUser, value)
+	if err != nil {
+		return "", false, err
+	}
+	return grant.NewGrantID(rid, entitlement), true, nil
+}
+
+// principalIdentityForRevoke resolves gr's principal to the identity
+// (username, email) Revoke compares against the device's current assignee.
+// deviceGrants builds two shapes of principal (see its doc comment):
+//   - a synced Jamf user, whose ResourceId.Resource is a numeric Jamf user id
+//     — resolved here via GetUserDetails/resolvePrincipalUser.
+//   - an unsynced assignee, whose ResourceId.Resource is the raw email or
+//     username string used to build an ExternalResourceMatch-annotated
+//     grant. gr.Principal.Id.Resource is not a numeric Jamf user id in this
+//     case, so GetUserDetails would fail; the raw value is read back from the
+//     annotation instead.
+func principalIdentityForRevoke(ctx context.Context, client *jamf.Client, gr *v2.Grant) (string, string, error) {
+	match := &v2.ExternalResourceMatch{}
+	grantAnnos := annotations.Annotations(gr.GetAnnotations())
+	ok, err := grantAnnos.Pick(match)
+	if err != nil {
+		return "", "", fmt.Errorf("jamf-connector: read external resource match annotation: %w", err)
+	}
+	if ok {
+		switch match.GetKey() {
+		case matchKeyEmail:
+			return "", match.GetValue(), nil
+		case matchKeyUsername:
+			return match.GetValue(), "", nil
+		default:
+			return "", "", status.Errorf(codes.Internal, "jamf-connector: unknown external resource match key %q", match.GetKey())
+		}
+	}
+
+	return resolvePrincipalUser(ctx, client, gr.Principal)
 }
 
 func managedDeviceBuilder(client *jamf.Client) *managedDeviceResourceType {

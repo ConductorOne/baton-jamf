@@ -142,3 +142,62 @@ type MobileDevice struct {
 	WifiMacAddress  string `json:"wifiMacAddress"`
 	PhoneNumber     string `json:"phoneNumber"`
 }
+
+// MobileDeviceDetail is a single mobile-device record from the v2 detail
+// endpoint (GET /api/v2/mobile-devices/{id}/detail), i.e. Jamf's
+// MobileDeviceDetailsGetV2 schema - see
+// https://developer.jamf.com/jamf-pro/reference/get_v2-mobile-devices-id-detail.
+// Only the location section needed to resolve the device's current assignee
+// is modeled here.
+type MobileDeviceDetail struct {
+	ID       string                      `json:"id"`
+	Location *MobileDeviceDetailLocation `json:"location"`
+}
+
+// MobileDeviceDetailLocation holds the `location` section of a mobile-device
+// detail record.
+type MobileDeviceDetailLocation struct {
+	Username string `json:"username"`
+}
+
+// ComputerAssignedUserUpdate is the PATCH body for
+// /api/v1/computers-inventory-detail/{id} that sets (Grant) or clears
+// (Revoke) the assigned user via userAndLocation.username.
+type ComputerAssignedUserUpdate struct {
+	UserAndLocation ComputerAssignedUserUpdateLocation `json:"userAndLocation"`
+}
+
+type ComputerAssignedUserUpdateLocation struct {
+	// Empty string is assumed to clear the assignment. This is unverified
+	// against a live Jamf tenant — if Jamf instead requires the field to be
+	// omitted entirely, or rejects/no-ops on an empty string, Revoke will
+	// silently fail to clear the assignment. Confirm against a real tenant
+	// before relying on this in production.
+	Username string `json:"username"`
+
+	// Email is best-effort mitigation for a stale-email reassignment risk:
+	// resolveUser can match a device's assignee onto a synced user via email,
+	// so leaving a cleared computer's email untouched on Revoke could let a
+	// future sync re-derive the old assignee from that leftover value and
+	// effectively undo the revoke, if Jamf's PATCH is a partial merge rather
+	// than a full replace. A *string is used (rather than a plain string) so
+	// this field can be omitted entirely for Grant, which must never touch
+	// email, while Revoke still sends an explicit "" to clear it — a plain
+	// string with `omitempty` could not do the latter, since "" is also the
+	// zero value `omitempty` would use to justify dropping the field. Like
+	// Username above, the empty-string clear semantics here are unverified
+	// against a live Jamf tenant.
+	Email *string `json:"email,omitempty"`
+}
+
+// MobileDeviceAssignedUserUpdate is the PATCH body for
+// /api/v2/mobile-devices/{id} that sets (Grant) or clears (Revoke) the
+// assigned user via location.username.
+type MobileDeviceAssignedUserUpdate struct {
+	Location MobileDeviceAssignedUserUpdateLocation `json:"location"`
+}
+
+type MobileDeviceAssignedUserUpdateLocation struct {
+	// Same open question as ComputerAssignedUserUpdateLocation.Username above.
+	Username string `json:"username"`
+}

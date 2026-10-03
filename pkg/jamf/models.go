@@ -6,8 +6,8 @@ import (
 )
 
 type BaseType struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
+	ID   int    `json:"id" xml:"id"`
+	Name string `json:"name" xml:"name,omitempty"`
 }
 
 // User - end user in Jamf.
@@ -216,6 +216,24 @@ type UserAccountCreateBody struct {
 	Privileges *Privileges `xml:"privileges,omitempty"`
 }
 
+// UserAccountPrivilegeSetUpdate is the PUT body for
+// /JSSResource/accounts/userid/{id} that updates only privilege_set. Per
+// Classic API field-level-merge semantics (client.go doc comment at
+// doRequestWithMethod), sending only this element leaves the rest of the
+// account record (email, full_name, access_level, etc.) untouched.
+type UserAccountPrivilegeSetUpdate struct {
+	XMLName      xml.Name `xml:"account"`
+	PrivilegeSet string   `xml:"privilege_set"`
+}
+
+// GroupPrivilegeSetUpdate is the PUT body for
+// /JSSResource/accounts/groupid/{id} that updates only privilege_set. Same
+// field-level-merge semantics as UserAccountPrivilegeSetUpdate.
+type GroupPrivilegeSetUpdate struct {
+	XMLName      xml.Name `xml:"group"`
+	PrivilegeSet string   `xml:"privilege_set"`
+}
+
 type UserGroupsResponse struct {
 	UserGroups []UserGroup `json:"user_groups"`
 }
@@ -238,4 +256,31 @@ type SitesResponse struct {
 
 type PrivilegesResponse struct {
 	Privileges []string `json:"privileges"`
+}
+
+// UserGroupMemberMutation is the PUT body for /usergroups/id/{id} that adds
+// or removes individual users from a static group via Jamf's PATCH-like
+// additions/deletions verb. Exactly one of Additions/Deletions is set per
+// call — Grant uses Additions, Revoke uses Deletions.
+type UserGroupMemberMutation struct {
+	XMLName   xml.Name        `xml:"user_group"`
+	Additions *userGroupUsers `xml:"user_additions,omitempty"`
+	Deletions *userGroupUsers `xml:"user_deletions,omitempty"`
+}
+
+type userGroupUsers struct {
+	Users []BaseType `xml:"user"`
+}
+
+// UserSitesUpdateBody is the PUT body for /users/id/{id} carrying only the
+// <sites> block — per Classic API field-level-merge semantics (client.go
+// doc comment at doRequestWithMethod), sending only this element leaves the
+// rest of the user record (email, full_name, etc.) untouched.
+type UserSitesUpdateBody struct {
+	XMLName xml.Name       `xml:"user"`
+	Sites   []userSiteItem `xml:"sites>site"`
+}
+
+type userSiteItem struct {
+	ID int `xml:"id"`
 }

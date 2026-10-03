@@ -1,9 +1,17 @@
 package connector
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
+	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
+	"github.com/conductorone/baton-sdk/pkg/types/grant"
 )
 
 // TestMatchesIndividualPrivilege_CustomOnly guards against PR #28 review
@@ -36,5 +44,362 @@ func TestMatchesIndividualPrivilege_CustomOnly(t *testing.T) {
 				t.Errorf("matchesIndividualPrivilege(%q, %+v, %q) = %v, want %v", tt.privilegeSet, tt.privileges, tt.privilege, got, tt.want)
 			}
 		})
+	}
+}
+
+func roleEntitlement(t *testing.T, privilegeSet string) *v2.Entitlement {
+	t.Helper()
+	resource, err := roleResource(context.Background(), privilegeSet, nil)
+	if err != nil {
+		t.Fatalf("roleResource: %v", err)
+	}
+	return ent.NewPermissionEntitlement(resource, memberEntitlement, ent.WithGrantableTo(resourceTypeUserAccount, resourceTypeGroup))
+}
+
+func userAccountPrincipal(t *testing.T, id int) *v2.Resource {
+	t.Helper()
+	r, err := userAccountResource(&jamf.UserAccount{BaseType: jamf.BaseType{ID: id, Name: "jappleseed"}}, nil)
+	if err != nil {
+		t.Fatalf("userAccountResource: %v", err)
+	}
+	return r
+}
+
+func groupPrincipal(t *testing.T, id int) *v2.Resource {
+	t.Helper()
+	r, err := groupResource(&jamf.Group{BaseType: jamf.BaseType{ID: id, Name: "Test Group"}}, nil)
+	if err != nil {
+		t.Fatalf("groupResource: %v", err)
+	}
+	return r
+}
+
+// jamfUserAccountHandler serves GET /JSSResource/accounts/userid/{id} with
+// the given current privilege_set, and records the PUT body of any PUT to
+// the same path so tests can assert Grant/Revoke's write (or its absence).
+func jamfUserAccountHandler(t *testing.T, currentPrivilegeSet string, putCalled *bool, gotPUTBody *[]byte) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"account": map[string]any{"id": 42, "name": "jappleseed", "privilege_set": currentPrivilegeSet},
+			})
+		case http.MethodPut:
+			*putCalled = true
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read PUT body: %v", err)
+			}
+			*gotPUTBody = body
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}
+}
+
+// jamfGroupHandler is jamfUserAccountHandler's counterpart for
+// /JSSResource/accounts/groupid/{id}.
+func jamfGroupHandler(t *testing.T, currentPrivilegeSet string, putCalled *bool, gotPUTBody *[]byte) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"group": map[string]any{"id": 7, "name": "Test Group", "privilege_set": currentPrivilegeSet},
+			})
+		case http.MethodPut:
+			*putCalled = true
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read PUT body: %v", err)
+			}
+			*gotPUTBody = body
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}
+}
+
+// TestRoleGrant_UserAccount_SetsPrivilegeSet also covers Fix 2: granting a
+// different built-in privilege set than the one currently held (Auditor ->
+// Administrator) must report the displaced Auditor grant via GrantReplaced.
+func TestRoleGrant_UserAccount_SetsPrivilegeSet(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfUserAccountHandler(t, privilegeSetAuditor, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	grants, annos, err := r.Grant(context.Background(), userAccountPrincipal(t, 42), roleEntitlement(t, privilegeSetAdministrator))
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if !putCalled {
+		t.Error("expected a PUT to set the new privilege_set")
+	}
+	if !strings.Contains(string(putBody), "<privilege_set>Administrator</privilege_set>") {
+		t.Errorf("expected PUT body to set privilege_set to Administrator, got: %s", putBody)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant, got %d", len(grants))
+	}
+	replaced := &v2.GrantReplaced{}
+	ok, err := annos.Pick(replaced)
+	if err != nil {
+		t.Fatalf("annos.Pick: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected a GrantReplaced annotation displacing the previous Auditor grant, got %v", annos)
+	}
+
+	oldResource, err := roleResource(context.Background(), privilegeSetAuditor, nil)
+	if err != nil {
+		t.Fatalf("roleResource: %v", err)
+	}
+	oldEntitlement := ent.NewPermissionEntitlement(oldResource, memberEntitlement)
+	wantReplacedID := grant.NewGrantID(userAccountPrincipal(t, 42).Id, oldEntitlement)
+	if replaced.GetReplacedGrantId() != wantReplacedID {
+		t.Errorf("GrantReplaced.ReplacedGrantId = %q, want %q", replaced.GetReplacedGrantId(), wantReplacedID)
+	}
+}
+
+func TestRoleGrant_Group_SetsPrivilegeSet(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfGroupHandler(t, privilegeSetAuditor, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	grants, annos, err := r.Grant(context.Background(), groupPrincipal(t, 7), roleEntitlement(t, privilegeSetAdministrator))
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if !putCalled {
+		t.Error("expected a PUT to set the new privilege_set")
+	}
+	if !strings.Contains(string(putBody), "<privilege_set>Administrator</privilege_set>") {
+		t.Errorf("expected PUT body to set privilege_set to Administrator, got: %s", putBody)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant, got %d", len(grants))
+	}
+	if ok, _ := annos.Pick(&v2.GrantReplaced{}); !ok {
+		t.Errorf("expected a GrantReplaced annotation displacing the previous Auditor grant, got %v", annos)
+	}
+}
+
+// TestRoleGrant_NoGrantReplaced_WhenPreviouslyCustomOrUnassigned covers the
+// graceful-skip cases for Fix 2: a Custom or unset/empty prior privilege_set
+// has no built-in-set grant to report as replaced.
+func TestRoleGrant_NoGrantReplaced_WhenPreviouslyCustomOrUnassigned(t *testing.T) {
+	for _, previous := range []string{privilegeSetCustom, ""} {
+		t.Run(previous, func(t *testing.T) {
+			putCalled := false
+			var putBody []byte
+			client := newTestJamfClient(t, jamfUserAccountHandler(t, previous, &putCalled, &putBody))
+			r := roleBuilder(client)
+
+			grants, annos, err := r.Grant(context.Background(), userAccountPrincipal(t, 42), roleEntitlement(t, privilegeSetAdministrator))
+			if err != nil {
+				t.Fatalf("Grant: %v", err)
+			}
+			if !putCalled {
+				t.Error("expected a PUT to set the new privilege_set")
+			}
+			if len(grants) != 1 {
+				t.Fatalf("want 1 grant, got %d", len(grants))
+			}
+			if annos != nil {
+				t.Errorf("expected no annotations when the previous privilege_set was %q, got %v", previous, annos)
+			}
+		})
+	}
+}
+
+// TestRoleGrant_AlreadyHasPrivilegeSet_MapsToGrantAlreadyExists exercises the
+// idempotency check: Grant reads the principal's current privilege_set
+// before writing, and short-circuits to GrantAlreadyExists instead of
+// re-sending an identical PUT.
+func TestRoleGrant_AlreadyHasPrivilegeSet_MapsToGrantAlreadyExists(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfUserAccountHandler(t, privilegeSetAdministrator, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	grants, annos, err := r.Grant(context.Background(), userAccountPrincipal(t, 42), roleEntitlement(t, privilegeSetAdministrator))
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if putCalled {
+		t.Error("expected no PUT when the principal already holds this privilege set")
+	}
+	if len(grants) != 1 {
+		t.Fatalf("expected the matching grant to still be returned, got %v", grants)
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
+		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)
+	}
+}
+
+// TestRoleGrant_IndividualPrivilege_RejectedWithoutCallingAPI covers the
+// confirmed-scope guard: individual privileges (meaningful only under a
+// Custom privilege_set) are out of scope for Grant/Revoke.
+func TestRoleGrant_IndividualPrivilege_RejectedWithoutCallingAPI(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfUserAccountHandler(t, privilegeSetAuditor, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	_, _, err := r.Grant(context.Background(), userAccountPrincipal(t, 42), roleEntitlement(t, "Read User"))
+	if err == nil {
+		t.Fatal("expected an error granting an individual-privilege role")
+	}
+	if putCalled {
+		t.Error("expected no API call for a rejected individual-privilege grant")
+	}
+}
+
+func TestRoleGrant_NonUserAccountOrGroupPrincipal_Rejected(t *testing.T) {
+	r := roleBuilder(nil)
+	_, _, err := r.Grant(context.Background(), userPrincipal(t, 42), roleEntitlement(t, privilegeSetAdministrator))
+	if err == nil {
+		t.Fatal("expected an error granting a role to a non-userAccount/group principal")
+	}
+}
+
+func TestRoleRevoke_UserAccount_SetsEnrollmentOnly(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfUserAccountHandler(t, privilegeSetAdministrator, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	gr := grant.NewGrant(roleEntitlement(t, privilegeSetAdministrator).Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
+	annos, err := r.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if !putCalled {
+		t.Error("expected a PUT to downgrade to Enrollment Only")
+	}
+	if !strings.Contains(string(putBody), "<privilege_set>Enrollment Only</privilege_set>") {
+		t.Errorf("expected PUT body to set privilege_set to Enrollment Only, got: %s", putBody)
+	}
+	if annos != nil {
+		t.Errorf("expected no annotations on a plain revoke, got %v", annos)
+	}
+}
+
+func TestRoleRevoke_Group_SetsEnrollmentOnly(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfGroupHandler(t, privilegeSetAdministrator, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	gr := grant.NewGrant(roleEntitlement(t, privilegeSetAdministrator).Resource, memberEntitlement, groupPrincipal(t, 7).Id)
+	annos, err := r.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if !putCalled {
+		t.Error("expected a PUT to downgrade to Enrollment Only")
+	}
+	if !strings.Contains(string(putBody), "<privilege_set>Enrollment Only</privilege_set>") {
+		t.Errorf("expected PUT body to set privilege_set to Enrollment Only, got: %s", putBody)
+	}
+	if annos != nil {
+		t.Errorf("expected no annotations on a plain revoke, got %v", annos)
+	}
+}
+
+// TestRoleRevoke_AlreadyEnrollmentOnly_MapsToGrantAlreadyRevoked exercises
+// the idempotency check: Revoke reads the principal's current privilege_set
+// before writing, and short-circuits to GrantAlreadyRevoked instead of
+// re-sending an identical PUT.
+func TestRoleRevoke_AlreadyEnrollmentOnly_MapsToGrantAlreadyRevoked(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfUserAccountHandler(t, privilegeSetEnrollmentOnly, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	gr := grant.NewGrant(roleEntitlement(t, privilegeSetAdministrator).Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
+	annos, err := r.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if putCalled {
+		t.Error("expected no PUT when the principal is already Enrollment Only")
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation, got %v", annos)
+	}
+}
+
+// TestRoleRevoke_StalePrivilegeSet_UserAccount_NoWrite guards against the bug
+// fixed here: Revoke must verify the CURRENT privilege_set still matches what
+// THIS grant claims (Administrator) before downgrading. If the account has
+// since moved to a different built-in set (Auditor, e.g. via a newer Grant),
+// this Revoke is stale and must not touch the account.
+func TestRoleRevoke_StalePrivilegeSet_UserAccount_NoWrite(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfUserAccountHandler(t, privilegeSetAuditor, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	gr := grant.NewGrant(roleEntitlement(t, privilegeSetAdministrator).Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
+	annos, err := r.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if putCalled {
+		t.Error("expected no PUT when the account has since moved to a different privilege set")
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation, got %v", annos)
+	}
+}
+
+// TestRoleRevoke_StalePrivilegeSet_Group_NoWrite is the group counterpart of
+// TestRoleRevoke_StalePrivilegeSet_UserAccount_NoWrite.
+func TestRoleRevoke_StalePrivilegeSet_Group_NoWrite(t *testing.T) {
+	putCalled := false
+	var putBody []byte
+	client := newTestJamfClient(t, jamfGroupHandler(t, privilegeSetAuditor, &putCalled, &putBody))
+	r := roleBuilder(client)
+
+	gr := grant.NewGrant(roleEntitlement(t, privilegeSetAdministrator).Resource, memberEntitlement, groupPrincipal(t, 7).Id)
+	annos, err := r.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if putCalled {
+		t.Error("expected no PUT when the group has since moved to a different privilege set")
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation, got %v", annos)
+	}
+}
+
+// TestRoleRevoke_IndividualPrivilegeEntitlement_Rejected covers Fix 1's
+// defense-in-depth guard: Revoke must reject individual-privilege
+// entitlements even though the platform should never dispatch one in
+// practice (Entitlements does not declare WithGrantableTo for them).
+func TestRoleRevoke_IndividualPrivilegeEntitlement_Rejected(t *testing.T) {
+	r := roleBuilder(nil)
+	gr := grant.NewGrant(roleEntitlement(t, "Read User").Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
+	_, err := r.Revoke(context.Background(), gr)
+	if err == nil {
+		t.Fatal("expected an error revoking an individual-privilege entitlement")
+	}
+}
+
+func TestRoleRevoke_NonUserAccountOrGroupPrincipal_Rejected(t *testing.T) {
+	r := roleBuilder(nil)
+	gr := grant.NewGrant(roleEntitlement(t, privilegeSetAdministrator).Resource, memberEntitlement, userPrincipal(t, 42).Id)
+	_, err := r.Revoke(context.Background(), gr)
+	if err == nil {
+		t.Fatal("expected an error revoking a role from a non-userAccount/group principal")
 	}
 }

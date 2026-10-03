@@ -2,13 +2,24 @@ package jamf
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	liburl "net/url"
 	"strconv"
 )
 
 const (
-	computersInventoryUrlPath = "/api/v1/computers-inventory"
-	mobileDevicesUrlPath      = "/api/v2/mobile-devices"
+	// TODO(follow-up ticket): v1 list/detail are deprecated (x-deprecation-date
+	// 2025-06-30), and v3 is also now deprecated (2026-07-14) — don't migrate to
+	// it. v4 is the current, non-deprecated replacement and has been confirmed a
+	// compatible drop-in swap (same fields, same envelope, only the URL path
+	// changes); Jamf guarantees ~1 year of availability past deprecation, so
+	// removal could land in any release.
+	computersInventoryUrlPath      = "/api/v1/computers-inventory"
+	computerInventoryDetailUrlPath = "/api/v1/computers-inventory-detail/%s"
+	mobileDevicesUrlPath           = "/api/v2/mobile-devices"
+	mobileDeviceUrlPath            = "/api/v2/mobile-devices/%s"
+	mobileDeviceDetailUrlPath      = "/api/v2/mobile-devices/%s/detail"
 )
 
 // ComputerInventorySections are the inventory sections the connector requests.
@@ -77,4 +88,79 @@ func (c *Client) GetMobileDevices(
 	}
 
 	return &target, nil
+}
+
+// GetComputerInventoryDetail fetches a single computer's inventory detail
+// record via GET /api/v1/computers-inventory-detail/{id}. Used by Revoke to
+// discover the CURRENT assigned username (userAndLocation.username) before
+// clearing it, since the device may have been reassigned to a different user
+// since the grant being revoked was last synced.
+func (c *Client) GetComputerInventoryDetail(ctx context.Context, computerID string) (*ComputerInventory, error) {
+	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
+	if err != nil {
+		return nil, err
+	}
+
+	var target ComputerInventory
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
+	}
+
+	return &target, nil
+}
+
+// GetMobileDeviceDetail fetches a single mobile device's detail record via
+// GET /api/v2/mobile-devices/{id}/detail, used by Revoke for the same
+// reassignment check as GetComputerInventoryDetail. Per Jamf's OpenAPI spec,
+// this endpoint's response (MobileDeviceDetailsGetV2, which extends
+// MobileDeviceDetailsV2) nests the current assignee under `location.username`
+// (LocationV2) - see
+// https://developer.jamf.com/jamf-pro/reference/get_v2-mobile-devices-id-detail.
+// This differs from the plain GET /api/v2/mobile-devices/{id} endpoint
+// (MobileDeviceV2), which returns a flat top-level `username` field instead -
+// see https://developer.jamf.com/jamf-pro/reference/get_v2-mobile-devices-id.
+// That plain endpoint backs the list endpoint's MobileDevice type and
+// SetMobileDeviceAssignedUser's PATCH, neither of which is affected by this.
+func (c *Client) GetMobileDeviceDetail(ctx context.Context, deviceID string) (*MobileDeviceDetail, error) {
+	url, err := c.getUrl(fmt.Sprintf(mobileDeviceDetailUrlPath, deviceID))
+	if err != nil {
+		return nil, err
+	}
+
+	var target MobileDeviceDetail
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
+	}
+
+	return &target, nil
+}
+
+// SetComputerAssignedUser sets (Grant) or clears (Revoke, username == "")
+// the assigned-user field on a computer's inventory record via
+// PATCH /api/v1/computers-inventory-detail/{id}, userAndLocation.username.
+// email, when non-nil, is also sent — Revoke passes a pointer to "" to clear
+// the stale email alongside username (see ComputerAssignedUserUpdateLocation.
+// Email); Grant passes nil so its PATCH body never touches email. Single-
+// valued/exclusive: setting a new username silently displaces whatever
+// username was previously recorded.
+func (c *Client) SetComputerAssignedUser(ctx context.Context, computerID string, username string, email *string) error {
+	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserUpdateLocation{Username: username, Email: email}}
+	return c.doRequestWithJSONMethod(ctx, http.MethodPatch, url, reqBody, nil)
+}
+
+// SetMobileDeviceAssignedUser is the mobile-device equivalent, via
+// PATCH /api/v2/mobile-devices/{id}, location.username.
+func (c *Client) SetMobileDeviceAssignedUser(ctx context.Context, deviceID string, username string) error {
+	url, err := c.getUrl(fmt.Sprintf(mobileDeviceUrlPath, deviceID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := MobileDeviceAssignedUserUpdate{Location: MobileDeviceAssignedUserUpdateLocation{Username: username}}
+	return c.doRequestWithJSONMethod(ctx, http.MethodPatch, url, reqBody, nil)
 }
