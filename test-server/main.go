@@ -93,7 +93,10 @@ const (
 	privilegeSetCustom        = "Custom"
 	enabledValue              = "Enabled"
 
-	privilegeReadAdvancedComputerSearches = "Read Advanced Computer Searches"
+	privilegeReadAdvancedComputerSearches   = "Read Advanced Computer Searches"
+	privilegeUpdateAdvancedComputerSearches = "Update Advanced Computer Searches"
+	privilegeReadUser                       = "Read User"
+	privilegeUpdateUser                     = "Update User"
 
 	// privilegeReadLicenseInformation is the one privilege Jamf always keeps
 	// on every Custom privilege set and never lets a client remove (see
@@ -109,9 +112,9 @@ const (
 // post-write verification path.
 var knownPrivilegeNames = []string{
 	privilegeReadAdvancedComputerSearches,
-	"Update Advanced Computer Searches",
-	"Read User",
-	"Update User",
+	privilegeUpdateAdvancedComputerSearches,
+	privilegeReadUser,
+	privilegeUpdateUser,
 }
 
 // copiedFullPrivilegeList simulates the real API's privilege-escalation trap:
@@ -121,7 +124,7 @@ var knownPrivilegeNames = []string{
 // real expansion of any specific built-in set, just something large and
 // non-empty that a correct connector write must never trigger.
 var copiedFullPrivilegeList = jamf.Privileges{
-	JSSObjects: []string{"Read User", "Update User", privilegeReadAdvancedComputerSearches, "Update Advanced Computer Searches", privilegeReadLicenseInformation},
+	JSSObjects: []string{privilegeReadUser, privilegeUpdateUser, privilegeReadAdvancedComputerSearches, privilegeUpdateAdvancedComputerSearches, privilegeReadLicenseInformation},
 }
 
 // Enums declared on the Classic API "account" schema — see
@@ -268,9 +271,9 @@ func (s *server) seedData() {
 
 	s.privileges = []string{
 		privilegeReadAdvancedComputerSearches,
-		"Update Advanced Computer Searches",
-		"Read User",
-		"Update User",
+		privilegeUpdateAdvancedComputerSearches,
+		privilegeReadUser,
+		privilegeUpdateUser,
 	}
 }
 
