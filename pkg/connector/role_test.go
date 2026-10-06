@@ -782,6 +782,9 @@ func TestRoleRevoke_ReadLicenseInformation_Rejected(t *testing.T) {
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("expected FailedPrecondition, got %v", err)
 	}
+	if !strings.Contains(err.Error(), privilegeReadLicenseInformation) || !strings.Contains(err.Error(), "jappleseed") {
+		t.Errorf("expected error to name both the privilege and the principal, got %v", err)
+	}
 	if len(putBodies) != 0 {
 		t.Error("expected no PUT revoking Read License Information")
 	}

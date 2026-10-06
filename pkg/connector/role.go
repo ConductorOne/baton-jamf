@@ -544,7 +544,7 @@ func (o *roleResourceType) revokeIndividualPrivilege(ctx context.Context, ops ro
 	}
 
 	if target == privilegeReadLicenseInformation {
-		return nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: Jamf requires this privilege on every Custom privilege set")
+		return nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: cannot revoke privilege %q from %q: Jamf requires it on every Custom privilege set", target, ops.name())
 	}
 
 	updated := removePrivilege(currentPrivileges, target)
