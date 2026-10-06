@@ -51,7 +51,9 @@ type managedDeviceResourceType struct {
 
 	// userIndex maps lowercased username / email keys to the ResourceId of the
 	// synced Jamf user resource, so devices can cross-link their assigned owner.
-	// It is built lazily once per sync and cached.
+	// It is built lazily on first use and cached for the life of the process;
+	// List invalidates it at the start of each sync (see its first-page check)
+	// so a long-running process never serves a stale user list across syncs.
 	//
 	// deviceOwners maps a device resource id to the assignee identity recorded
 	// while listing devices, so Entitlements/Grants can emit the device->user
@@ -66,6 +68,13 @@ func (d *managedDeviceResourceType) ResourceType(_ context.Context) *v2.Resource
 }
 
 func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
+	if attrs.PageToken.Token == "" {
+		// No incoming pagination cursor means this is the first page of a new
+		// sync; drop the cached user index so getUserIndex rebuilds it instead
+		// of serving a list left over from a prior sync.
+		d.resetUserIndex()
+	}
+
 	bag := &pagination.Bag{}
 	if err := bag.Unmarshal(attrs.PageToken.Token); err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: failed to parse device page token: %w", err)
@@ -236,8 +245,9 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 			// the outgoing assignee for the GrantReplaced annotation is not
 			// worth failing (and retrying) an otherwise-successful Grant over.
 			// The stale grant is cleaned up on the next sync instead of
-			// atomically.
-			ctxzap.Extract(ctx).Warn("jamf-connector: grant device assigned: failed to resolve previous assignee for GrantReplaced",
+			// atomically. Not actionable by the client, so this is Debug
+			// rather than Warn.
+			ctxzap.Extract(ctx).Debug("jamf-connector: grant device assigned: failed to resolve previous assignee for GrantReplaced",
 				zap.Error(rerr))
 		case ok:
 			annos = annotations.New(&v2.GrantReplaced{ReplacedGrantId: replacedGrantID})
@@ -422,12 +432,27 @@ func resolvePrincipalUser(ctx context.Context, client *jamf.Client, principal *v
 
 // replacedGrantID resolves a device's outgoing assignee (username, email) to
 // the grant id Grants() would have emitted for them, so Grant can report a
-// GrantReplaced annotation naming the exact grant being displaced. It mirrors
-// deviceGrants' own resolution order: a synced Jamf user first (via
-// getUserIndex), falling back to the same ExternalResourceMatch-style raw
-// email/username principal id deviceGrants builds for an unsynced assignee.
-// ok is false only when there is truly nothing to resolve (both empty).
+// GrantReplaced annotation naming the exact grant being displaced. A
+// non-empty username is tried directly against GetUserByName first — a
+// single lookup, rather than paying for the full getUserIndex user scan on
+// every reassignment — and only falls back to getUserIndex (mirroring
+// deviceGrants' own resolution order: a synced Jamf user first, then the same
+// ExternalResourceMatch-style raw email/username principal id deviceGrants
+// builds for an unsynced assignee) when the direct lookup can't be used:
+// empty username, a not-found username, or any other lookup error. ok is
+// false only when there is truly nothing to resolve (both empty).
 func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, username, email string, entitlement *v2.Entitlement) (string, bool, error) {
+	if username != "" {
+		if user, err := d.client.GetUserByName(ctx, username); err == nil && user.ID > 0 {
+			rid := &v2.ResourceId{}
+			rid.SetResourceType(resourceTypeUser.Id)
+			rid.SetResource(strconv.Itoa(user.ID))
+			return grant.NewGrantID(rid, entitlement), true, nil
+		}
+		// Not found, or any other error (do not fail the Grant over a
+		// GrantReplaced detail): fall back to the index below.
+	}
+
 	idx, err := d.getUserIndex(ctx)
 	if err != nil {
 		return "", false, err
@@ -548,6 +573,15 @@ func (d *managedDeviceResourceType) getUserIndex(ctx context.Context) (map[strin
 
 	d.userIndex = idx
 	return d.userIndex, nil
+}
+
+// resetUserIndex drops the cached user index so the next getUserIndex call
+// rebuilds it. Called at the start of a managed-device sync (List's first
+// page).
+func (d *managedDeviceResourceType) resetUserIndex() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.userIndex = nil
 }
 
 // computerResource maps a Jamf computer-inventory record onto a ManagedDevice

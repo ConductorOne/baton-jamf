@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
@@ -694,6 +696,18 @@ func jamfDeviceGrantDisplaceHandler(t *testing.T, sc deviceGrantDisplaceScenario
 	oldUserID, oldUsername, oldEmail := sc.oldUserID, sc.oldUsername, sc.oldEmail
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/name/"):
+			// replacedGrantID's direct GetUserByName lookup for the outgoing
+			// assignee. oldUserID == 0 models an unsynced assignee: 404, so
+			// replacedGrantID falls back to the index below.
+			if oldUserID == 0 {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user": map[string]any{"id": oldUserID, "name": oldUsername, "username": oldUsername, "email": oldEmail},
+			})
 		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
 			w.Header().Set("Content-Type", "application/json")
 			var users []map[string]any
@@ -1125,5 +1139,230 @@ func TestOSTypeFromName(t *testing.T) {
 		if ok != tc.ok || got != tc.want {
 			t.Errorf("osTypeFromName(%q) = (%v,%v), want (%v,%v)", name, got, ok, tc.want, tc.ok)
 		}
+	}
+}
+
+// replacedGrantIDHandler serves the two endpoints replacedGrantID's
+// resolution paths depend on: GET /JSSResource/users/name/{username} (the
+// direct outgoing-assignee lookup) and GET /JSSResource/users plus GET
+// /JSSResource/users/id/{id} (getUserIndex's full user-scan fallback).
+// listCalls counts requests to the bare list endpoint, so tests can assert
+// whether the full scan was paid for.
+func replacedGrantIDHandler(t *testing.T, byNameStatus int, byNameID int, byNameUsername string, indexUsers []map[string]any, listCalls *int) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/name/"):
+			if byNameStatus != http.StatusOK {
+				w.WriteHeader(byNameStatus)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user": map[string]any{"id": byNameID, "name": byNameUsername, "username": byNameUsername},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
+			*listCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"users": indexUsers})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/id/"):
+			idStr := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+			id, _ := strconv.Atoi(idStr)
+			for _, u := range indexUsers {
+				if u["id"] == id {
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]any{"user": u})
+					return
+				}
+			}
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}
+}
+
+// wantReplacedGrantID builds the grant id replacedGrantID should return for a
+// synced user with the given numeric id.
+func wantReplacedGrantID(t *testing.T, userID string, en *v2.Entitlement) string {
+	t.Helper()
+	rid := &v2.ResourceId{}
+	rid.SetResourceType(resourceTypeUser.Id)
+	rid.SetResource(userID)
+	return grant.NewGrantID(rid, en)
+}
+
+// TestReplacedGrantID_DirectLookupHit_SkipsIndex covers the direct-lookup
+// fast path: a non-empty username resolved by GetUserByName must short-circuit
+// before ever touching the full user index/scan.
+func TestReplacedGrantID_DirectLookupHit_SkipsIndex(t *testing.T) {
+	var listCalls int
+	client := newTestJamfClient(t, replacedGrantIDHandler(t, http.StatusOK, 7, "old.user", nil, &listCalls))
+	d := managedDeviceBuilder(client)
+
+	en := deviceEntitlement(t, "computer:17")
+	rid, ok, err := d.replacedGrantID(context.Background(), "old.user", "old.user@ex.com", en)
+	if err != nil {
+		t.Fatalf("replacedGrantID: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if want := wantReplacedGrantID(t, "7", en); rid != want {
+		t.Errorf("replacedGrantID = %q, want %q", rid, want)
+	}
+	if listCalls != 0 {
+		t.Errorf("expected the direct lookup to avoid the full user index scan, got %d calls to the users list endpoint", listCalls)
+	}
+}
+
+// TestReplacedGrantID_DirectLookupNotFound_FallsBackToIndex covers a direct
+// lookup 404 (the outgoing assignee isn't a synced Jamf user): replacedGrantID
+// must fall back to the full index rather than treating the 404 as fatal.
+func TestReplacedGrantID_DirectLookupNotFound_FallsBackToIndex(t *testing.T) {
+	var listCalls int
+	indexUsers := []map[string]any{{"id": 7, "name": "old.user"}}
+	client := newTestJamfClient(t, replacedGrantIDHandler(t, http.StatusNotFound, 0, "", indexUsers, &listCalls))
+	d := managedDeviceBuilder(client)
+
+	en := deviceEntitlement(t, "computer:17")
+	rid, ok, err := d.replacedGrantID(context.Background(), "old.user", "", en)
+	if err != nil {
+		t.Fatalf("replacedGrantID: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if want := wantReplacedGrantID(t, "7", en); rid != want {
+		t.Errorf("replacedGrantID = %q, want %q", rid, want)
+	}
+	if listCalls != 1 {
+		t.Errorf("expected a 404 from the direct lookup to fall back to the full index, got %d calls to the users list endpoint", listCalls)
+	}
+}
+
+// TestReplacedGrantID_EmptyUsername_GoesStraightToIndex covers an empty
+// username (e.g. a device whose assignee was only ever attributed via
+// email): replacedGrantID must never call GetUserByName with an empty name
+// and should resolve straight through the index.
+func TestReplacedGrantID_EmptyUsername_GoesStraightToIndex(t *testing.T) {
+	var listCalls int
+	indexUsers := []map[string]any{{"id": 7, "name": "old.user", "email": "old.user@ex.com"}}
+	client := newTestJamfClient(t, replacedGrantIDHandler(t, http.StatusOK, 0, "", indexUsers, &listCalls))
+	d := managedDeviceBuilder(client)
+
+	en := deviceEntitlement(t, "computer:17")
+	rid, ok, err := d.replacedGrantID(context.Background(), "", "old.user@ex.com", en)
+	if err != nil {
+		t.Fatalf("replacedGrantID: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if want := wantReplacedGrantID(t, "7", en); rid != want {
+		t.Errorf("replacedGrantID = %q, want %q", rid, want)
+	}
+	if listCalls != 1 {
+		t.Errorf("want 1 call to the users list endpoint, got %d", listCalls)
+	}
+}
+
+// TestReplacedGrantID_DirectLookupOtherError_FallsBackToIndex covers a
+// non-404 error from the direct lookup (e.g. a transient 5xx): it must not
+// fail the Grant, falling back to the full index exactly like a 404 would.
+func TestReplacedGrantID_DirectLookupOtherError_FallsBackToIndex(t *testing.T) {
+	var listCalls int
+	indexUsers := []map[string]any{{"id": 7, "name": "old.user"}}
+	client := newTestJamfClient(t, replacedGrantIDHandler(t, http.StatusInternalServerError, 0, "", indexUsers, &listCalls))
+	d := managedDeviceBuilder(client)
+
+	en := deviceEntitlement(t, "computer:17")
+	rid, ok, err := d.replacedGrantID(context.Background(), "old.user", "", en)
+	if err != nil {
+		t.Fatalf("replacedGrantID: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if want := wantReplacedGrantID(t, "7", en); rid != want {
+		t.Errorf("replacedGrantID = %q, want %q", rid, want)
+	}
+	if listCalls != 1 {
+		t.Errorf("expected a non-404 lookup error to fall back to the full index, got %d calls to the users list endpoint", listCalls)
+	}
+}
+
+// emptyDevicePagesHandler serves empty computers-inventory and mobile-devices
+// pages (ending the sync after one page of each phase), plus the Classic API
+// users list endpoint used by getUserIndex, counting calls to the latter.
+func emptyDevicePagesHandler(listCalls *int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v4/computers-inventory":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}, "totalCount": 0})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/mobile-devices":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}, "totalCount": 0})
+		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
+			*listCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"users": []any{}})
+		}
+	}
+}
+
+// TestManagedDeviceList_InvalidatesUserIndex_OnNewSyncOnly covers the
+// userIndex invalidation requirement: List must drop the cached index at the
+// start of a new sync (its first page, carrying no incoming pagination
+// cursor) so a long-running process never serves a stale user list across
+// syncs, but must leave the cache alone between pages of the SAME sync.
+func TestManagedDeviceList_InvalidatesUserIndex_OnNewSyncOnly(t *testing.T) {
+	var listCalls int
+	client := newTestJamfClient(t, emptyDevicePagesHandler(&listCalls))
+	d := managedDeviceBuilder(client)
+	ctx := context.Background()
+	// getUserIndex's GET benefits from the HTTP client's response cache on
+	// sync paths (see jamf.WithFreshReads' doc comment); bypass it here so
+	// listCalls observes whether getUserIndex actually re-issued the request
+	// rather than the in-process cache being masked by the HTTP-level one.
+	indexCtx := jamf.WithFreshReads(ctx)
+
+	// Sync 1, page 1 (no incoming cursor): builds the index for the first time.
+	_, results, err := d.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Token: ""}})
+	if err != nil {
+		t.Fatalf("List (sync 1, page 1): %v", err)
+	}
+	if _, err := d.getUserIndex(indexCtx); err != nil {
+		t.Fatalf("getUserIndex: %v", err)
+	}
+	if listCalls != 1 {
+		t.Fatalf("want 1 call to the users list endpoint after the first index build, got %d", listCalls)
+	}
+	if results.NextPageToken == "" {
+		t.Fatal("expected a non-empty continuation token into the mobile-device phase")
+	}
+
+	// Sync 1, page 2 (carries sync 1's cursor): same sync, so the cached
+	// index must survive untouched.
+	if _, _, err := d.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Token: results.NextPageToken}}); err != nil {
+		t.Fatalf("List (sync 1, page 2): %v", err)
+	}
+	if _, err := d.getUserIndex(indexCtx); err != nil {
+		t.Fatalf("getUserIndex: %v", err)
+	}
+	if listCalls != 1 {
+		t.Errorf("want the cached index to survive across pages of the same sync, got %d calls to the users list endpoint", listCalls)
+	}
+
+	// Sync 2, page 1 (no incoming cursor again): a new sync must rebuild it.
+	if _, _, err := d.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Token: ""}}); err != nil {
+		t.Fatalf("List (sync 2, page 1): %v", err)
+	}
+	if _, err := d.getUserIndex(indexCtx); err != nil {
+		t.Fatalf("getUserIndex: %v", err)
+	}
+	if listCalls != 2 {
+		t.Errorf("want a new sync's first page to rebuild the index, got %d calls to the users list endpoint", listCalls)
 	}
 }
