@@ -1062,6 +1062,32 @@ func TestManagedDeviceRevoke_NonUserPrincipal_Errors(t *testing.T) {
 	}
 }
 
+// TestManagedDeviceRevoke_PrincipalDeleted_MapsToGrantAlreadyRevoked covers a
+// principal (Jamf user) that has been deleted since this grant was synced:
+// the GetUserDetails lookup inside principalIdentityForRevoke 404s. Jamf has
+// already cleared the device's assignee when the user was deleted, so this
+// must be treated as already revoked rather than propagating the 404 as a
+// hard error (and, in particular, without ever sending a PATCH).
+func TestManagedDeviceRevoke_PrincipalDeleted_MapsToGrantAlreadyRevoked(t *testing.T) {
+	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+	})
+	d := managedDeviceBuilder(client)
+
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, userPrincipal(t, 42).Id)
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation, got %v", annos)
+	}
+}
+
 func TestManagedDeviceGrant_InvalidResourceID_Errors(t *testing.T) {
 	var patchBody []byte
 	client := newTestJamfClient(t, jamfDeviceAssignHandler(t, "jappleseed", &patchBody))

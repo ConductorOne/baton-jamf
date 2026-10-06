@@ -262,6 +262,12 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 
 	principalUsername, principalEmail, err := principalIdentityForRevoke(ctx, d.client, gr)
 	if err != nil {
+		if jamf.IsNotFoundError(err) {
+			// The principal (a Jamf user) has been deleted since this grant was
+			// synced. Jamf already clears a device's assignee when the assigned
+			// user is deleted, so there is nothing left to revoke.
+			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		}
 		return nil, fmt.Errorf("jamf-connector: revoke device assigned: resolve principal identity: %w", err)
 	}
 
