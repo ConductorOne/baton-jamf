@@ -92,7 +92,7 @@ func (c *Client) GetMobileDevices(
 }
 
 // GetComputerInventoryDetail fetches a single computer's inventory detail
-// record via GET /api/v1/computers-inventory-detail/{id}. Used by Grant and
+// record via GET /api/v4/computers-inventory-detail/{id}. Used by Grant and
 // Revoke to discover the CURRENT assigned username (userAndLocation.username)
 // — Revoke before clearing it, since the device may have been reassigned to
 // a different user since the grant being revoked was last synced; Grant to

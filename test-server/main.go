@@ -46,10 +46,10 @@
 // caught baton-jamf's CreateAccount originally sending JSON bodies.
 //
 // managedDevice (computers / mobile devices) is opt-in in the connector and
-// is NOT mocked here — it targets separate v1 inventory endpoints outside
+// is NOT mocked here — it targets separate inventory endpoints outside
 // the scope of this test server. Do not select it against this mock. This
 // remains true after CXH-2344 (Grant/Revoke of the `assigned` entitlement):
-// the PATCH endpoints it needs (/api/v1/computers-inventory-detail/{id},
+// the PATCH endpoints it needs (/api/v4/computers-inventory-detail/{id},
 // /api/v2/mobile-devices/{id}) build on the same unmocked inventory surface,
 // so Managed Device Grant/Revoke has unit-test coverage only
 // (pkg/connector/managedDevice_test.go), not baton-test-against-this-mock

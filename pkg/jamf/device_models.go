@@ -6,7 +6,7 @@ package jamf
 // more fields that are intentionally omitted.
 
 // ComputersInventoryResponse is the paginated envelope returned by
-// GET /api/v1/computers-inventory.
+// GET /api/v4/computers-inventory.
 type ComputersInventoryResponse struct {
 	TotalCount int                 `json:"totalCount"`
 	Results    []ComputerInventory `json:"results"`
