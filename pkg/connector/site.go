@@ -24,7 +24,7 @@ func (g *siteResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 	return g.resourceType
 }
 
-// Create a new connector resource for a Jamf site.
+// siteResource creates a new connector resource for a Jamf site.
 func siteResource(site *jamf.Site, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
 	ret, err := rs.NewResource(
 		site.Name,
@@ -67,13 +67,13 @@ func (g *siteResourceType) Entitlements(_ context.Context, resource *v2.Resource
 	// attribute, so Grant/Revoke provisioning is scoped to user only. Do not
 	// widen this to match Grants() without also adding exclusive-entitlement
 	// handling for the other three principal types.
-	assigmentOptions := []ent.EntitlementOption{
+	assignmentOptions := []ent.EntitlementOption{
 		ent.WithGrantableTo(resourceTypeUser),
 		ent.WithDescription(fmt.Sprintf("Member of %s Site in Jamf", resource.DisplayName)),
 		ent.WithDisplayName(fmt.Sprintf("%s Site %s", resource.DisplayName, memberEntitlement)),
 	}
 
-	en := ent.NewAssignmentEntitlement(resource, memberEntitlement, assigmentOptions...)
+	en := ent.NewAssignmentEntitlement(resource, memberEntitlement, assignmentOptions...)
 	rv = append(rv, en)
 
 	return rv, nil, nil
@@ -157,12 +157,7 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 // userHasSite reports whether siteID appears in sites, a user's current
 // <sites> list.
 func userHasSite(sites jamf.UserSites, siteID int) bool {
-	for _, s := range sites {
-		if s.ID == siteID {
-			return true
-		}
-	}
-	return false
+	return containsID([]jamf.BaseType(sites), siteID, func(s jamf.BaseType) int { return s.ID })
 }
 
 // Grant adds principal (a Jamf user) to the multi-valued <sites> list of the
@@ -171,27 +166,26 @@ func userHasSite(sites jamf.UserSites, siteID int) bool {
 // user is genuinely multi-valued/grantable — see the WithGrantableTo note in
 // Entitlements above.
 //
-// Aligned with userGroup.go's Grant/Revoke pattern: client.AddUserSite
-// reports via its bool return whether the user was already a site member, so
-// that case is surfaced here as GrantAlreadyExists instead of a fresh grant.
-// A 409 from the write isn't necessarily "already a member" — Jamf's Classic
-// API also 409s for other validation failures on this endpoint (e.g. an
-// unknown site id) — so that case is disambiguated with a fresh re-read
-// rather than assumed to be success.
+// client.AddUserSite reports via its bool return whether the user was
+// already a site member, so that case is surfaced here as GrantAlreadyExists
+// instead of a fresh grant. A 409 from the write isn't necessarily "already a
+// member" — Jamf's Classic API also 409s for other validation failures on
+// this endpoint (e.g. an unknown site id) — so that case is disambiguated
+// with a fresh re-read rather than assumed to be success.
 func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if principal.Id.ResourceType != resourceTypeUser.Id {
-		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: site membership can only be granted to users, got resource type %q", principal.Id.ResourceType)
+	if err := requirePrincipalType(principal.Id.ResourceType, resourceTypeUser, "site membership", "granted to users"); err != nil {
+		return nil, nil, err
 	}
 
-	siteID, err := strconv.Atoi(entitlement.Resource.Id.Resource)
+	siteID, err := parseResourceID("jamf-connector: grant site member: invalid site id", entitlement.Resource.Id.Resource)
 	if err != nil {
-		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant site member: invalid site id %q: %s", entitlement.Resource.Id.Resource, err)
+		return nil, nil, err
 	}
-	userID, err := strconv.Atoi(principal.Id.Resource)
+	userID, err := parseResourceID("jamf-connector: grant site member: invalid user id", principal.Id.Resource)
 	if err != nil {
-		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant site member: invalid user id %q: %s", principal.Id.Resource, err)
+		return nil, nil, err
 	}
 
 	alreadyMember, err := g.client.AddUserSite(ctx, userID, siteID)
@@ -216,28 +210,28 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 
 // Revoke removes gr's principal (a Jamf user) from the <sites> list of the
 // site backing gr's entitlement resource. See Grant for the principal-type
-// guard rationale. Aligned with userGroup.go's Revoke pattern: client.
-// RemoveUserSite reports via its bool return whether the user was already
-// absent from the site (including the case where the user has since been
-// deleted), so that case is surfaced here as GrantAlreadyRevoked instead of
-// a plain success. A 409 from the write is disambiguated the same way as
+// guard rationale. client.RemoveUserSite reports via its bool return whether
+// the user was already absent from the site (including the case where the
+// user has since been deleted), so that case is surfaced here as
+// GrantAlreadyRevoked instead of a plain success. A 409 from the write is
+// disambiguated the same way as
 // Grant: the pre-write read already confirmed the user had the site, so a
 // 409 here means something else went wrong — re-read fresh and only report
 // GrantAlreadyRevoked if the site is actually gone.
 func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
-		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: site membership can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
+	if err := requirePrincipalType(gr.Principal.Id.ResourceType, resourceTypeUser, "site membership", "revoked for users"); err != nil {
+		return nil, err
 	}
 
-	siteID, err := strconv.Atoi(gr.Entitlement.Resource.Id.Resource)
+	siteID, err := parseResourceID("jamf-connector: revoke site member: invalid site id", gr.Entitlement.Resource.Id.Resource)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke site member: invalid site id %q: %s", gr.Entitlement.Resource.Id.Resource, err)
+		return nil, err
 	}
-	userID, err := strconv.Atoi(gr.Principal.Id.Resource)
+	userID, err := parseResourceID("jamf-connector: revoke site member: invalid user id", gr.Principal.Id.Resource)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke site member: invalid user id %q: %s", gr.Principal.Id.Resource, err)
+		return nil, err
 	}
 
 	alreadyAbsent, err := g.client.RemoveUserSite(ctx, userID, siteID)

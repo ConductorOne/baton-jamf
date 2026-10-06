@@ -207,8 +207,8 @@ func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Res
 func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if principal.Id.ResourceType != resourceTypeUser.Id {
-		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: device assignment can only be granted to users, got resource type %q", principal.Id.ResourceType)
+	if err := requirePrincipalType(principal.Id.ResourceType, resourceTypeUser, "device assignment", "granted to users"); err != nil {
+		return nil, nil, err
 	}
 
 	newUser, err := resolvePrincipalUser(ctx, d.client, principal)
@@ -221,6 +221,9 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 
 	currentUsername, currentEmail, err := d.currentAssignedUser(ctx, entitlement.Resource)
 	if err != nil {
+		if jamf.IsNotFoundError(err) {
+			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant device assigned: device %q not found", entitlement.Resource.Id.Resource)
+		}
 		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: %w", err)
 	}
 
@@ -229,7 +232,7 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 	if assigneeMatches(currentUsername, currentEmail, newUser.Username, newUser.Email) {
 		// principal is already the live assignee — nothing would be displaced,
 		// and re-sending the same PATCH would only churn Jamf's audit log.
-		return []*v2.Grant{newGrant}, annotations.New(&v2.GrantAlreadyExists{}), nil
+		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 	}
 
 	if err := d.setAssignedUser(ctx, entitlement.Resource, newUser); err != nil {
@@ -266,8 +269,8 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
-		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: device assignment can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
+	if err := requirePrincipalType(gr.Principal.Id.ResourceType, resourceTypeUser, "device assignment", "revoked for users"); err != nil {
+		return nil, err
 	}
 
 	principalUsername, principalEmail, err := principalIdentityForRevoke(ctx, d.client, gr)
@@ -283,6 +286,10 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 
 	currentUsername, currentEmail, err := d.currentAssignedUser(ctx, gr.Entitlement.Resource)
 	if err != nil {
+		if jamf.IsNotFoundError(err) {
+			// The device itself has been deleted — nothing left to revoke.
+			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		}
 		return nil, fmt.Errorf("jamf-connector: revoke device assigned: %w", err)
 	}
 
@@ -368,21 +375,22 @@ func (d *managedDeviceResourceType) currentAssignedUser(ctx context.Context, res
 }
 
 // assigneeMatches reports whether the principal identity resolved from a
-// grant is still the device's current assignee, matching on username OR
-// email — mirroring resolveUser's username-or-email resolution during sync,
-// so Revoke doesn't wrongly treat a grant as stale just because sync
-// attributed it to the principal via email rather than username (or vice
-// versa; see deviceGrants). A comparison only counts when both sides are
-// non-empty, so an unset field on one side never accidentally matches an
-// unset field on the other.
+// grant is still the device's current assignee. When the current username
+// is non-empty, only usernames are compared (Jamf never auto-populates a
+// computer's email when its username changes, so a stale email could
+// otherwise coincidentally match, or make Revoke clear a different live
+// assignee's data); only when the username is empty does this fall back to
+// email. Either comparison only counts when both sides are non-empty.
 func assigneeMatches(currentUsername, currentEmail, principalUsername, principalEmail string) bool {
-	if currentUsername != "" && principalUsername != "" && strings.EqualFold(currentUsername, principalUsername) {
-		return true
+	currentUsername = strings.TrimSpace(currentUsername)
+	principalUsername = strings.TrimSpace(principalUsername)
+	if currentUsername != "" {
+		return principalUsername != "" && strings.EqualFold(currentUsername, principalUsername)
 	}
-	if currentEmail != "" && principalEmail != "" && strings.EqualFold(currentEmail, principalEmail) {
-		return true
-	}
-	return false
+
+	currentEmail = strings.TrimSpace(currentEmail)
+	principalEmail = strings.TrimSpace(principalEmail)
+	return currentEmail != "" && principalEmail != "" && strings.EqualFold(currentEmail, principalEmail)
 }
 
 // parseDeviceObjectID reverses deviceObjectID, splitting a resource id like
@@ -403,9 +411,9 @@ func parseDeviceObjectID(objectID string) (string, string, error) {
 // during sync. Revoke-side matching only reads back .Username/.Email from
 // the result (see principalIdentityForRevoke); the rest is Grant-only.
 func resolvePrincipalUser(ctx context.Context, client *jamf.Client, principal *v2.Resource) (jamf.ComputerAssignedUserFields, error) {
-	userID, err := strconv.Atoi(principal.Id.Resource)
+	userID, err := parseResourceID("jamf-connector: invalid user id", principal.Id.Resource)
 	if err != nil {
-		return jamf.ComputerAssignedUserFields{}, status.Errorf(codes.InvalidArgument, "jamf-connector: invalid user id %q: %s", principal.Id.Resource, err)
+		return jamf.ComputerAssignedUserFields{}, err
 	}
 
 	user, err := client.GetUserDetails(ctx, userID)
@@ -705,8 +713,8 @@ func newDevicePageToken(page, seen int) string {
 }
 
 // parseDevicePageToken decodes a token produced by newDevicePageToken. It also
-// accepts a bare page number ("0") for forward-compatibility with any token that
-// predates the cumulative-count format, treating seen as unknown (0).
+// accepts a bare page number ("0") for backward-compatibility with any token
+// that predates the cumulative-count format, treating seen as unknown (0).
 func parseDevicePageToken(token string) (int, int) {
 	if token == "" {
 		return 0, 0

@@ -29,7 +29,7 @@ func (g *groupResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 	return g.resourceType
 }
 
-// Create a new connector resource for a Jamf group.
+// groupResource creates a new connector resource for a Jamf group.
 func groupResource(group *jamf.Group, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
 	profile := map[string]interface{}{
 		"group_id":   group.ID,
@@ -72,16 +72,14 @@ func (g *groupResourceType) List(ctx context.Context, parentId *v2.ResourceId, a
 func (g *groupResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	var rv []*v2.Entitlement
 
-	assigmentOptions := []ent.EntitlementOption{
+	assignmentOptions := []ent.EntitlementOption{
 		ent.WithGrantableTo(resourceTypeUserAccount),
 		ent.WithDescription(fmt.Sprintf("Member of %s Group", resource.DisplayName)),
 		ent.WithDisplayName(fmt.Sprintf("%s Group %s", resource.DisplayName, memberEntitlement)),
 	}
 
-	en := ent.NewAssignmentEntitlement(resource, memberEntitlement, assigmentOptions...)
+	en := ent.NewAssignmentEntitlement(resource, memberEntitlement, assignmentOptions...)
 	rv = append(rv, en)
-
-	// TODO - access level entitlements & grants
 
 	return rv, nil, nil
 }
@@ -135,10 +133,11 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 // Grant adds principal (a Jamf admin account) to the static admin account
 // group backing entitlement's resource.
 //
-// This deliberately skips the retry loop Grants (above) uses to work around
-// Jamf's intermittent empty-members read: here an empty read is instead
-// treated as ambiguous and the write is aborted outright (see below), since
-// retrying first would only delay reaching the same safe decision. ctx is
+// An empty members read is treated as ambiguous and the write is aborted
+// outright (see below) rather than assumed to mean the group is genuinely
+// empty: an empty read for a populated group could not be reproduced during
+// testing, but it cannot be ruled out, and writing back an empty list would
+// silently wipe the group's real membership if it ever occurs. ctx is
 // wrapped with jamf.WithFreshReads at the top of this method, so every GET
 // below — including the post-write verification read — bypasses the HTTP
 // cache and observes the PUT it just issued, instead of replaying a cached
@@ -151,17 +150,17 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if principal.Id.ResourceType != resourceTypeUserAccount.Id {
-		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: group membership can only be granted to user accounts, got resource type %q", principal.Id.ResourceType)
+	if err := requirePrincipalType(principal.Id.ResourceType, resourceTypeUserAccount, "group membership", "granted to user accounts"); err != nil {
+		return nil, nil, err
 	}
 
-	groupID, err := strconv.Atoi(entitlement.Resource.Id.Resource)
+	groupID, err := parseResourceID("jamf-connector: grant group member: invalid group id", entitlement.Resource.Id.Resource)
 	if err != nil {
-		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant group member: invalid group id %q: %s", entitlement.Resource.Id.Resource, err)
+		return nil, nil, err
 	}
-	userID, err := strconv.Atoi(principal.Id.Resource)
+	userID, err := parseResourceID("jamf-connector: grant group member: invalid user account id", principal.Id.Resource)
 	if err != nil {
-		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant group member: invalid user account id %q: %s", principal.Id.Resource, err)
+		return nil, nil, err
 	}
 
 	current, err := g.client.GetGroupDetails(ctx, groupID)
@@ -180,10 +179,8 @@ func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, e
 				"it is not possible to tell whether the group is really empty or Jamf returned an incomplete response", current.Name)
 	}
 
-	for _, member := range current.Members {
-		if member.ID == userID {
-			return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
-		}
+	if containsID(current.Members, userID, func(m jamf.BaseType) int { return m.ID }) {
+		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 	}
 
 	// Membership only grants anything to a Group Access account — a Full or
@@ -231,17 +228,17 @@ func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, e
 func (g *groupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if gr.Principal.Id.ResourceType != resourceTypeUserAccount.Id {
-		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: group membership can only be revoked for user accounts, got resource type %q", gr.Principal.Id.ResourceType)
+	if err := requirePrincipalType(gr.Principal.Id.ResourceType, resourceTypeUserAccount, "group membership", "revoked for user accounts"); err != nil {
+		return nil, err
 	}
 
-	groupID, err := strconv.Atoi(gr.Entitlement.Resource.Id.Resource)
+	groupID, err := parseResourceID("jamf-connector: revoke group member: invalid group id", gr.Entitlement.Resource.Id.Resource)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke group member: invalid group id %q: %s", gr.Entitlement.Resource.Id.Resource, err)
+		return nil, err
 	}
-	userID, err := strconv.Atoi(gr.Principal.Id.Resource)
+	userID, err := parseResourceID("jamf-connector: revoke group member: invalid user account id", gr.Principal.Id.Resource)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke group member: invalid user account id %q: %s", gr.Principal.Id.Resource, err)
+		return nil, err
 	}
 
 	current, err := g.client.GetGroupDetails(ctx, groupID)
@@ -256,9 +253,9 @@ func (g *groupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotatio
 
 	if len(current.Members) == 0 {
 		// Same ambiguity as Grant: an empty read could be a genuinely empty
-		// group, or Jamf's known intermittent empty-members response. Either
-		// way, the principal is not demonstrably a member, so there is
-		// nothing to safely revoke — never write on this read.
+		// group, or an unreproduced empty-members response. Either way, the
+		// principal is not demonstrably a member, so there is nothing to
+		// safely revoke — never write on this read.
 		ctxzap.Extract(ctx).Debug("jamf-connector: group returned no members on Revoke; treating as already revoked",
 			zap.Int("group_id", groupID))
 		return annotations.New(&v2.GrantAlreadyRevoked{}), nil

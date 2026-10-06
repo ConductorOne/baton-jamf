@@ -39,7 +39,7 @@ func requireLogin(accountInfo *v2.AccountInfo) (string, error) {
 	return name, nil
 }
 
-// Create a new connector resource for a Jamf user.
+// userResource creates a new connector resource for a Jamf user.
 func userResource(user *jamf.User, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
 	firstName, lastName := rs.SplitFullName(user.FullName)
 	profile := map[string]interface{}{
@@ -172,14 +172,13 @@ func (o *provisionableUserType) CreateAccount(
 	fullName, _ := profileMap[profileFieldFullName].(string)
 	email, _ := profileMap[profileFieldEmail].(string)
 
-	// Step 1: attempt creation.
 	err = o.client.CreateUser(ctx, name, fullName, email)
 	alreadyExists := err != nil && jamf.IsAlreadyExistsError(err)
 	if err != nil && !alreadyExists {
 		return nil, nil, nil, fmt.Errorf("jamf-connector: create account %s: %w", name, err)
 	}
 
-	// Step 2: fetch the user, whether just created or already existing.
+	// Fetch the user, whether just created or already existing.
 	fetched, err := o.client.GetUserByName(ctx, name)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("jamf-connector: create account %s: fetch failed: %w", name, err)
@@ -190,7 +189,6 @@ func (o *provisionableUserType) CreateAccount(
 		return nil, nil, nil, err
 	}
 
-	// Step 3: return the correct result type.
 	if alreadyExists {
 		return &v2.CreateAccountResponse_AlreadyExistsResult{Resource: resource}, nil, nil, nil
 	}

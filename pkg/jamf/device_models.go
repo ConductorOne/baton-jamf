@@ -12,9 +12,8 @@ type ComputersInventoryResponse struct {
 	Results    []ComputerInventory `json:"results"`
 }
 
-// ComputerInventory is a single computer record. The nested sections are only
-// populated when the matching `section` query parameter is requested, so every
-// section is a pointer that may be nil.
+// ComputerInventory is a single computer record. Each section is a pointer
+// since it may be absent from a given response.
 type ComputerInventory struct {
 	ID              string                   `json:"id"`
 	UDID            string                   `json:"udid"`
@@ -61,8 +60,9 @@ type ComputerOperatingSystem struct {
 	Build   string `json:"build"`
 }
 
-// ComputerUserAndLocation holds the USER_AND_LOCATION section. Jamf has used
-// both `email` and `emailAddress` across API versions, so both are captured.
+// ComputerUserAndLocation holds the USER_AND_LOCATION section. v4 only
+// returns `email`; EmailAddress has no v4 key but is kept for EmailAddr's
+// fallback.
 type ComputerUserAndLocation struct {
 	Username     string `json:"username"`
 	Realname     string `json:"realname"`
@@ -144,11 +144,8 @@ type MobileDevice struct {
 }
 
 // MobileDeviceDetail is a single mobile-device record from the v2 detail
-// endpoint (GET /api/v2/mobile-devices/{id}/detail), i.e. Jamf's
-// MobileDeviceDetailsGetV2 schema - see
-// https://developer.jamf.com/jamf-pro/reference/get_v2-mobile-devices-id-detail.
-// Only the location section needed to resolve the device's current assignee
-// is modeled here.
+// endpoint. Only the location section needed to resolve the device's
+// current assignee is modeled here.
 type MobileDeviceDetail struct {
 	ID       string                      `json:"id"`
 	Location *MobileDeviceDetailLocation `json:"location"`
@@ -169,13 +166,12 @@ type ComputerAssignedUserUpdate struct {
 
 // ComputerAssignedUserFields is the assignee-identity subset of a computer's
 // userAndLocation that Grant/Revoke write: username, realname, email,
-// position and phone. Confirmed against a live tenant: "" clears a field,
-// an omitted key is a no-op, and the keys are independent — so all five are
-// always sent as plain strings (no `omitempty`). Grant populates every field
-// from the new assignee's Jamf user record (overwriting whatever the
-// previous assignee left behind, since Jamf never auto-populates these for
-// computers), and Revoke sends the zero value of this struct to clear all
-// five.
+// position and phone. "" clears a field, an omitted key is a no-op, and the
+// keys are independent, so all five are always sent as plain strings (no
+// `omitempty`). Grant populates every field from the new assignee's Jamf
+// user record, overwriting whatever the previous assignee left behind since
+// Jamf never auto-populates these for computers; Revoke sends the zero
+// value of this struct to clear all five.
 type ComputerAssignedUserFields struct {
 	Username string `json:"username"`
 	Realname string `json:"realname"`
@@ -193,11 +189,11 @@ type MobileDeviceAssignedUserUpdate struct {
 
 // MobileDeviceAssignedUserUpdateLocation carries only username: setting it
 // makes Jamf auto-populate realname/email/position/phone from the directory
-// user (confirmed against a live tenant), and a nonexistent username is
-// accepted by auto-creating a directory user, so the connector never has
-// (or needs) those fields to send here. "" clears the username and every
-// auto-populated field together; null/{} are silent no-ops, so Revoke must
-// always send an explicit "" rather than omitting the field.
+// user, and a nonexistent username is accepted by auto-creating a directory
+// user, so the connector never has (or needs) those fields to send here. ""
+// clears the username and every auto-populated field together; null/{} are
+// silent no-ops, so Revoke must always send an explicit "" rather than
+// omitting the field.
 type MobileDeviceAssignedUserUpdateLocation struct {
 	Username string `json:"username"`
 }

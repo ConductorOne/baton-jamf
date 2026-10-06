@@ -50,7 +50,7 @@ func userSitesHandler(t *testing.T, currentSiteIDs []int, gotPUTBody *[]byte) ht
 				t.Fatalf("read PUT body: %v", err)
 			}
 			*gotPUTBody = body
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusCreated)
 		default:
 			t.Fatalf("unexpected method %s", r.Method)
 		}
@@ -74,9 +74,8 @@ func TestAddUserSite_NotYetMember_IssuesPUTReturnsFalse(t *testing.T) {
 }
 
 // TestAddUserSite_AlreadyMember_ReturnsTrueNoPUT covers the bool-return
-// idempotency signal AddUserSite now surfaces (previously absorbed silently
-// as a plain nil error), which site.go's Grant keys off to report
-// GrantAlreadyExists instead of a fresh grant.
+// idempotency signal AddUserSite surfaces, which site.go's Grant keys off to
+// report GrantAlreadyExists instead of a fresh grant.
 func TestAddUserSite_AlreadyMember_ReturnsTrueNoPUT(t *testing.T) {
 	var putBody []byte
 	client := newTestClient(t, userSitesHandler(t, []int{2}, &putBody))
@@ -110,9 +109,8 @@ func TestRemoveUserSite_IsMember_IssuesPUTReturnsFalse(t *testing.T) {
 }
 
 // TestRemoveUserSite_AlreadyAbsent_ReturnsTrueNoPUT covers the bool-return
-// idempotency signal RemoveUserSite now surfaces (previously absorbed
-// silently as a plain nil error), which site.go's Revoke keys off to report
-// GrantAlreadyRevoked instead of a plain success.
+// idempotency signal RemoveUserSite surfaces, which site.go's Revoke keys
+// off to report GrantAlreadyRevoked instead of a plain success.
 func TestRemoveUserSite_AlreadyAbsent_ReturnsTrueNoPUT(t *testing.T) {
 	var putBody []byte
 	client := newTestClient(t, userSitesHandler(t, []int{1}, &putBody))
@@ -268,11 +266,6 @@ func TestUpdateGroupPrivileges_ExplicitEmptyPrivileges(t *testing.T) {
 	}
 }
 
-// TestRemoveUserSite_UserDeleted_ReturnsTrueNoError covers the fix for the
-// getUserDetails-404 case: if the user backing the revoke has since been
-// deleted, the initial GET 404s, and RemoveUserSite must treat that as
-// alreadyAbsent=true (a deleted user trivially has no site membership left
-// to revoke) rather than propagating a hard error.
 // TestUpdateGroupMembers_NonEmpty_MinimalBody covers group.go's Grant/Revoke
 // write path: the PUT body must carry only <name> and <members> — no
 // access_level, privilege_set, or site — since resending those risks
@@ -403,6 +396,11 @@ func TestDoRequest_WithFreshReads_BypassesCache(t *testing.T) {
 	}
 }
 
+// TestRemoveUserSite_UserDeleted_ReturnsTrueNoError covers the
+// getUserDetails-404 case: if the user backing the revoke has since been
+// deleted, the initial GET 404s, and RemoveUserSite must treat that as
+// alreadyAbsent=true (a deleted user trivially has no site membership left
+// to revoke) rather than propagating a hard error.
 func TestRemoveUserSite_UserDeleted_ReturnsTrueNoError(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

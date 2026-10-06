@@ -407,13 +407,23 @@ func jamfDeviceAssignHandlerWithCurrent(t *testing.T, principalUsername, current
 				"id":       "3",
 				"location": map[string]any{"username": currentUsername},
 			})
-		case r.Method == http.MethodPatch:
+		case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/api/v4/computers-inventory-detail/"):
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				t.Fatalf("read PATCH body: %v", err)
 			}
 			*gotPATCHBody = body
-			w.WriteHeader(http.StatusOK)
+			// v4 PATCH answers 204 with no body (v1, which v4 replaces,
+			// answered 200 with the updated record).
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/api/v2/mobile-devices/"):
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read PATCH body: %v", err)
+			}
+			*gotPATCHBody = body
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "3"})
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -447,25 +457,24 @@ func jamfDeviceAssignHandlerEmail(t *testing.T, principalUsername, principalEmai
 				t.Fatalf("read PATCH body: %v", err)
 			}
 			*gotPATCHBody = body
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 	}
 }
 
-// TestManagedDeviceRevoke_MatchesViaEmail_Patches covers Fix 1: sync's
-// resolveUser can attribute a device's assignee to a synced user via email
-// rather than username, so Revoke's stale-grant check must also match on
-// email — not conclude "already reassigned" (and skip the PATCH) just
-// because the resolved username differs from the device's current username.
-func TestManagedDeviceRevoke_MatchesViaEmail_Patches(t *testing.T) {
+// TestManagedDeviceRevoke_UsernameDiffersButEmailMatches_NoPatch covers the
+// username-priority rule: the device's current username is non-empty ("bob")
+// and differs from the principal's resolved username ("old.name"), even
+// though a stale email happens to equal the principal's email. Email must be
+// ignored whenever a current username is present — Jamf never auto-populates
+// a computer's email when its username changes, so matching on a
+// coincidental/stale email here would let Revoke clear a different, live
+// assignee's data.
+func TestManagedDeviceRevoke_UsernameDiffersButEmailMatches_NoPatch(t *testing.T) {
 	var patchBody []byte
-	// Principal (Jamf user 42) resolves to username "old.name" but email
-	// "jappleseed@ex.com". The device's current assignee has a DIFFERENT
-	// username ("jappleseed") but the SAME email — mirroring a device whose
-	// assignee was cross-linked to this principal via email during sync.
-	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "old.name", "jappleseed@ex.com", "jappleseed", "jappleseed@ex.com", &patchBody))
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "old.name", "jappleseed@ex.com", "bob", "jappleseed@ex.com", &patchBody))
 	d := managedDeviceBuilder(client)
 
 	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, userPrincipal(t, 42).Id)
@@ -473,14 +482,11 @@ func TestManagedDeviceRevoke_MatchesViaEmail_Patches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations (grant should be revoked), got %v", annos)
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation when the current username differs, got %v", annos)
 	}
-	if patchBody == nil {
-		t.Fatal("expected a PATCH to be sent when the device's current email matches the principal's email")
-	}
-	if want := `{"userAndLocation":{"username":"","realname":"","email":"","position":"","phone":""}}` + "\n"; string(patchBody) != want {
-		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
+	if patchBody != nil {
+		t.Errorf("expected no PATCH to be sent when the device's current username differs from the principal's, got body %q", string(patchBody))
 	}
 }
 
@@ -491,14 +497,17 @@ func TestManagedDeviceRevoke_MatchesViaEmail_Patches(t *testing.T) {
 // ExternalResourceMatch. Revoke must recover that raw value from the
 // annotation and compare it directly against the device's current assignee,
 // rather than calling resolvePrincipalUser/GetUserDetails — which would fail
-// with InvalidArgument on a non-numeric id.
+// with InvalidArgument on a non-numeric id. The device's current username is
+// empty here (requirement (b)): the principal only carries an email (the
+// annotation's key is "email"), so matching falls back to comparing emails,
+// which only happens when the current username is empty.
 func TestManagedDeviceRevoke_ExternalMatchPrincipal_Patches(t *testing.T) {
 	var patchBody []byte
 	// The /JSSResource/users/ principal fields are deliberately implausible
 	// ("unused"/"unused@ex.com"): if Revoke incorrectly fell back to
 	// resolvePrincipalUser here, strconv.Atoi("ghost@ex.com") would fail
 	// before that endpoint is ever hit, catching the bug either way.
-	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "unused", "unused@ex.com", "ghost", "ghost@ex.com", &patchBody))
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "unused", "unused@ex.com", "", "ghost@ex.com", &patchBody))
 	d := managedDeviceBuilder(client)
 
 	principal, err := rs.NewResourceID(resourceTypeUser, "ghost@ex.com")
@@ -647,6 +656,117 @@ func TestManagedDeviceGrant_Mobile_NoUsername_FailedPrecondition(t *testing.T) {
 	}
 }
 
+// TestManagedDeviceGrant_UsernameDiffersButEmailMatches_ProceedsToPatch
+// covers requirement (a) on the Grant side: the device's current username
+// ("bob") differs from the principal's resolved username ("alice"), even
+// though a stale/coincidental email on the device equals the principal's
+// email. Grant must proceed to PATCH the new assignment instead of
+// short-circuiting to GrantAlreadyExists on the stale email match.
+func TestManagedDeviceGrant_UsernameDiffersButEmailMatches_ProceedsToPatch(t *testing.T) {
+	var patchBody []byte
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "alice", "alice@ex.com", "bob", "alice@ex.com", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	grants, annos, err := d.Grant(context.Background(), userPrincipal(t, 42), deviceEntitlement(t, "computer:17"))
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant, got %d", len(grants))
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); ok {
+		t.Error("expected the write to proceed, not GrantAlreadyExists, when the current username differs")
+	}
+	if patchBody == nil {
+		t.Fatal("expected a PATCH to be sent when the device's current username differs from the principal's")
+	}
+	if want := `{"userAndLocation":{"username":"alice","realname":"","email":"alice@ex.com","position":"","phone":""}}` + "\n"; string(patchBody) != want {
+		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
+	}
+}
+
+// TestManagedDeviceGrant_EmptyUsernameMatchesViaEmail_AlreadyExists covers
+// requirement (b): when the device's current username is empty, Grant falls
+// back to matching on email, so granting to the principal whose resolved
+// email matches the device's current email must short-circuit to
+// GrantAlreadyExists without issuing a PATCH.
+func TestManagedDeviceGrant_EmptyUsernameMatchesViaEmail_AlreadyExists(t *testing.T) {
+	var patchBody []byte
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "alice", "alice@ex.com", "", "alice@ex.com", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	grants, annos, err := d.Grant(context.Background(), userPrincipal(t, 42), deviceEntitlement(t, "computer:17"))
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if grants != nil {
+		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
+		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)
+	}
+	if patchBody != nil {
+		t.Errorf("expected no PATCH when the device's empty username falls back to matching the principal's email, got body %q", string(patchBody))
+	}
+}
+
+// TestManagedDeviceGrant_DeviceNotFound_ReturnsNotFound covers the Grant side
+// of consistent 404 handling: a missing device must surface as codes.NotFound,
+// not a raw wrapped error.
+func TestManagedDeviceGrant_DeviceNotFound_ReturnsNotFound(t *testing.T) {
+	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user": map[string]any{"id": 42, "name": "jappleseed", "username": "jappleseed"},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/api/v4/computers-inventory-detail/"):
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+	d := managedDeviceBuilder(client)
+
+	_, _, err := d.Grant(context.Background(), userPrincipal(t, 42), deviceEntitlement(t, "computer:17"))
+	if err == nil {
+		t.Fatal("expected an error granting assignment on a missing device")
+	}
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("Grant err = %v, want NotFound", err)
+	}
+}
+
+// TestManagedDeviceRevoke_DeviceNotFound_MapsToGrantAlreadyRevoked covers the
+// Revoke side of consistent 404 handling: a missing device must be reported
+// as GrantAlreadyRevoked, like group/userGroup/role already do.
+func TestManagedDeviceRevoke_DeviceNotFound_MapsToGrantAlreadyRevoked(t *testing.T) {
+	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user": map[string]any{"id": 42, "name": "jappleseed", "username": "jappleseed"},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/api/v4/computers-inventory-detail/"):
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+	d := managedDeviceBuilder(client)
+
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, userPrincipal(t, 42).Id)
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+		t.Errorf("expected a GrantAlreadyRevoked annotation for a missing device, got %v", annos)
+	}
+}
+
 // TestManagedDeviceGrant_SameAssignee_ReturnsGrantAlreadyExists covers
 // granting a device to the user who already holds the assignment: nothing is
 // displaced, so Grant must short-circuit to GrantAlreadyExists instead of
@@ -660,8 +780,8 @@ func TestManagedDeviceGrant_SameAssignee_ReturnsGrantAlreadyExists(t *testing.T)
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	if len(grants) != 1 {
-		t.Fatalf("want 1 grant, got %d", len(grants))
+	if grants != nil {
+		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
 	}
 	if patchBody != nil {
 		t.Errorf("expected no PATCH to be sent when principal is already the current assignee, got body %q", string(patchBody))
@@ -737,7 +857,7 @@ func jamfDeviceGrantDisplaceHandler(t *testing.T, sc deviceGrantDisplaceScenario
 				t.Fatalf("read PATCH body: %v", err)
 			}
 			*gotPATCHBody = body
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -831,9 +951,8 @@ func TestManagedDeviceGrant_DisplacesUnsyncedUser_ReturnsGrantReplacedExternalMa
 
 // TestManagedDeviceRevoke_ClearsUsername exercises the clear-value default
 // for Revoke: it PATCHes all five userAndLocation keys (username, realname,
-// email, position, phone) as empty strings, confirmed against a live Jamf
-// tenant to clear each field — an omitted key is a no-op there, so every key
-// must be sent explicitly.
+// email, position, phone) as empty strings to clear each field — an omitted
+// key is a no-op, so every key must be sent explicitly.
 func TestManagedDeviceRevoke_ClearsUsername(t *testing.T) {
 	var patchBody []byte
 	client := newTestJamfClient(t, jamfDeviceAssignHandler(t, "jappleseed", &patchBody))
@@ -1364,5 +1483,34 @@ func TestManagedDeviceList_InvalidatesUserIndex_OnNewSyncOnly(t *testing.T) {
 	}
 	if listCalls != 2 {
 		t.Errorf("want a new sync's first page to rebuild the index, got %d calls to the users list endpoint", listCalls)
+	}
+}
+
+// TestManagedDeviceEntitlements_NeverAssigned_EmitsNothing covers a device
+// that has never reported an assignee (no prior sync recorded one): both
+// Entitlements and Grants must emit nothing, keeping unassigned assets clean
+// rather than advertising a grantable-but-never-granted entitlement.
+func TestManagedDeviceEntitlements_NeverAssigned_EmitsNothing(t *testing.T) {
+	client := newTestJamfClient(t, failOnCallHandler(t))
+	d := managedDeviceBuilder(client)
+
+	resource, err := computerResource(&jamf.ComputerInventory{ID: "99"}, nil)
+	if err != nil {
+		t.Fatalf("computerResource: %v", err)
+	}
+
+	entitlements, _, err := d.Entitlements(context.Background(), resource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Entitlements: %v", err)
+	}
+	if len(entitlements) != 0 {
+		t.Errorf("want no entitlements for a never-assigned device, got %d", len(entitlements))
+	}
+	grants, _, err := d.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 0 {
+		t.Errorf("want no grants for a never-assigned device, got %d", len(grants))
 	}
 }

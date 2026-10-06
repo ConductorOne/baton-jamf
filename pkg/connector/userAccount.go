@@ -19,8 +19,7 @@ type userAccountResourceType struct {
 	client       *jamf.Client
 }
 
-// Valid values Jamf accepts for an admin account's privilege_set. See
-// https://developer.jamf.com/jamf-pro/reference/createaccountbyid.
+// Valid values Jamf accepts for an admin account's privilege_set.
 const (
 	privilegeSetAdministrator  = "Administrator"
 	privilegeSetAuditor        = "Auditor"
@@ -42,8 +41,7 @@ func isKnownPrivilegeSet(privilegeSet string) bool {
 // The following profile fields only apply when privilege_set is "Custom" —
 // they populate the Classic API's <privileges> block, which is what gives a
 // Custom privilege_set its meaning (Jamf otherwise creates the account with
-// no privileges at all). See
-// https://developer.jamf.com/jamf-pro/reference/createaccountbyid.
+// no privileges at all).
 const (
 	profileFieldPrivilegesJSSObjects    = "privileges_jss_objects"
 	profileFieldPrivilegesJSSSettings   = "privileges_jss_settings"
@@ -92,8 +90,8 @@ func resolvePrivileges(profileMap map[string]interface{}, privilegeSet string) (
 		return provided, nil
 	case !provided.IsEmpty():
 		// Privileges fields are only meaningful for a Custom privilege_set — reject rather
-		// than silently discarding them, which would leave the operator with an account
-		// that has none of the access they asked for and no indication why.
+		// than silently discarding them, which would leave the caller with an account
+		// that has none of the access it asked for and no indication why.
 		return nil, fmt.Errorf(
 			"jamf-connector: privileges were set but privilege_set is %q, not %q — Privileges fields only apply to %q accounts",
 			privilegeSet, privilegeSetCustom, privilegeSetCustom,
@@ -123,7 +121,7 @@ func (o *userAccountResourceType) ResourceType(_ context.Context) *v2.ResourceTy
 	return o.resourceType
 }
 
-// Create a new connector resource for a Jamf user account.
+// userAccountResource creates a new connector resource for a Jamf user account.
 func userAccountResource(account *jamf.UserAccount, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
 	firstName, lastName := rs.SplitFullName(account.Name)
 	profile := map[string]interface{}{
@@ -182,8 +180,6 @@ func (o *userAccountResourceType) List(ctx context.Context, parentId *v2.Resourc
 
 func (o *userAccountResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	return nil, nil, nil
-
-	// TODO - access level entitlements & grants
 }
 
 func (o *userAccountResourceType) Grants(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
@@ -308,7 +304,6 @@ func (o *provisionableUserAccountType) CreateAccount(
 		return nil, nil, nil, err
 	}
 
-	// Step 1: attempt creation.
 	err = o.client.CreateUserAccount(ctx, jamf.UserAccountCreateBody{
 		Name:         name,
 		Password:     password,
@@ -324,7 +319,7 @@ func (o *provisionableUserAccountType) CreateAccount(
 		return nil, nil, nil, fmt.Errorf("jamf-connector: create account %s: %w", name, err)
 	}
 
-	// Step 2: fetch the account, whether just created or already existing.
+	// Fetch the account, whether just created or already existing.
 	fetched, err := o.client.GetUserAccountByName(ctx, name)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("jamf-connector: create account %s: fetch failed: %w", name, err)
@@ -335,7 +330,6 @@ func (o *provisionableUserAccountType) CreateAccount(
 		return nil, nil, nil, err
 	}
 
-	// Step 3: return the correct result type.
 	if alreadyExists {
 		return &v2.CreateAccountResponse_AlreadyExistsResult{Resource: resource}, nil, nil, nil
 	}

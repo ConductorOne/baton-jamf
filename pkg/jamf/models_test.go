@@ -139,11 +139,11 @@ func TestUserSitesUpdateBody_EmptySitesSendsEmptyWrapper(t *testing.T) {
 	}
 }
 
-// TestUserSites_UnmarshalJSON_AcceptsFlatAndWrappedShapes covers the fix for
-// CXH-2344: a live Jamf Pro 11.32.1 tenant returns a user's <sites> list as a
-// flat JSON list (each entry's id/name at the top level), but the Classic
-// API's documented shape wraps each entry under a "site" key. UserSites must
-// decode real ids from either shape, plus the empty-list and null cases.
+// TestUserSites_UnmarshalJSON_AcceptsFlatAndWrappedShapes covers a live Jamf
+// Pro tenant returning a user's <sites> list as a flat JSON list (each
+// entry's id/name at the top level), while the Classic API's documented
+// shape wraps each entry under a "site" key. UserSites must decode real ids
+// from either shape, plus the empty-list and null cases.
 func TestUserSites_UnmarshalJSON_AcceptsFlatAndWrappedShapes(t *testing.T) {
 	tests := []struct {
 		name string

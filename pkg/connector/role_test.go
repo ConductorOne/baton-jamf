@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -17,10 +18,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestMatchesIndividualPrivilege_CustomOnly guards against PR #28 review
-// feedback: widening Privileges.Contains to all 7 categories must not grant
-// individual-privilege roles to built-in-privilege-set accounts, even if
-// their Privileges data happens to be populated.
+// TestMatchesIndividualPrivilege_CustomOnly guards against widening
+// Privileges.Contains to all 7 categories granting individual-privilege
+// roles to built-in-privilege-set accounts, even if their Privileges data
+// happens to be populated.
 func TestMatchesIndividualPrivilege_CustomOnly(t *testing.T) {
 	populated := &jamf.Privileges{JSSObjects: []string{"Read User"}}
 
@@ -283,8 +284,8 @@ func TestRoleGrant_AlreadyHasPrivilegeSet_MapsToGrantAlreadyExists(t *testing.T)
 	if len(putBodies) != 0 {
 		t.Error("expected no PUT when the principal already holds this privilege set")
 	}
-	if len(grants) != 1 {
-		t.Fatalf("expected the matching grant to still be returned, got %v", grants)
+	if grants != nil {
+		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
 		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)
@@ -438,8 +439,8 @@ func TestRoleGrant_IndividualPrivilege_AlreadyHeld_MapsToGrantAlreadyExists(t *t
 	if len(putBodies) != 0 {
 		t.Error("expected no PUT when the privilege is already held")
 	}
-	if len(grants) != 1 {
-		t.Fatalf("want 1 grant, got %d", len(grants))
+	if grants != nil {
+		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
 		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)
@@ -846,5 +847,115 @@ func TestRoleEntitlements_AllGrantableToBothPrincipalTypes(t *testing.T) {
 				t.Errorf("expected %q to be grantable to both userAccount and group, got %v", roleID, grantableTo)
 			}
 		})
+	}
+}
+
+// roleAccountsListHandler serves the full GetAccounts flow Grants() drives:
+// GET /JSSResource/accounts (the base list) followed by a detail GET per
+// account/group id. Used to test role.go's sync Grants(), as distinct from
+// the Grant/Revoke provisioning tests above.
+func roleAccountsListHandler(t *testing.T, accounts []jamf.UserAccount, groups []jamf.Group) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/JSSResource/accounts":
+			baseUsers := make([]jamf.User, 0, len(accounts))
+			for _, a := range accounts {
+				baseUsers = append(baseUsers, jamf.User{BaseType: a.BaseType})
+			}
+			baseGroups := make([]jamf.Group, 0, len(groups))
+			for _, g := range groups {
+				baseGroups = append(baseGroups, jamf.Group{BaseType: g.BaseType})
+			}
+			_ = json.NewEncoder(w).Encode(jamf.AccountsResponse{Accounts: jamf.BaseAccount{Users: baseUsers, Groups: baseGroups}})
+		case strings.Contains(r.URL.Path, "/accounts/userid/"):
+			id := accountIDFromPath(t, r.URL.Path)
+			for _, a := range accounts {
+				if a.ID == id {
+					_ = json.NewEncoder(w).Encode(jamf.UserAccountResponse{UserAccount: a})
+					return
+				}
+			}
+			t.Fatalf("unexpected account id %d", id)
+		case strings.Contains(r.URL.Path, "/accounts/groupid/"):
+			id := accountIDFromPath(t, r.URL.Path)
+			for _, g := range groups {
+				if g.ID == id {
+					_ = json.NewEncoder(w).Encode(jamf.GroupResponse{Group: g})
+					return
+				}
+			}
+			t.Fatalf("unexpected group id %d", id)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}
+}
+
+func accountIDFromPath(t *testing.T, path string) int {
+	t.Helper()
+	parts := strings.Split(path, "/")
+	id, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		t.Fatalf("parse id from path %q: %v", path, err)
+	}
+	return id
+}
+
+// TestRoleGrants_PrivilegeSet_BuiltFromAccountsAndGroups covers the sync
+// Grants() path for a built-in privilege set: it must emit a grant for every
+// account/group whose stored privilege_set matches the role, regardless of
+// access_level.
+func TestRoleGrants_PrivilegeSet_BuiltFromAccountsAndGroups(t *testing.T) {
+	client := newTestJamfClient(t, roleAccountsListHandler(t,
+		[]jamf.UserAccount{
+			{BaseType: jamf.BaseType{ID: 101, Name: "admin1"}, PrivilegeSet: privilegeSetAdministrator, AccessLevel: "Full Access"},
+			{BaseType: jamf.BaseType{ID: 102, Name: "admin2"}, PrivilegeSet: privilegeSetAuditor, AccessLevel: "Full Access"},
+		},
+		[]jamf.Group{
+			{BaseType: jamf.BaseType{ID: 201, Name: "group-admins"}, PrivilegeSet: privilegeSetAdministrator},
+		},
+	))
+	o := roleBuilder(client)
+
+	en := roleEntitlement(t, privilegeSetAdministrator)
+	grants, _, err := o.Grants(context.Background(), en.Resource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 2 {
+		t.Fatalf("want 2 grants (account 101 and group 201), got %d", len(grants))
+	}
+}
+
+// TestRoleGrants_GroupAccessAccountWithStalePrivilegeSet_EmitsFalseGrant_KnownGap
+// documents a known gap rather than desired behavior: Grants() has no
+// access_level check at all, unlike Grant/Revoke's explicit Group Access
+// guard. An account that was
+// switched to Group Access still carries whatever privilege_set it had
+// before the switch, and Grants() reports that stale value as a real role
+// grant even though the account's actual rights now come entirely from its
+// groups. There is currently no way to revoke this false grant through the
+// connector.
+func TestRoleGrants_GroupAccessAccountWithStalePrivilegeSet_EmitsFalseGrant_KnownGap(t *testing.T) {
+	client := newTestJamfClient(t, roleAccountsListHandler(t,
+		[]jamf.UserAccount{
+			{BaseType: jamf.BaseType{ID: 104, Name: "admin4"}, PrivilegeSet: privilegeSetAdministrator, AccessLevel: accessLevelGroupAccess},
+		},
+		nil,
+	))
+	o := roleBuilder(client)
+
+	en := roleEntitlement(t, privilegeSetAdministrator)
+	grants, _, err := o.Grants(context.Background(), en.Resource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("current (known-gap) behavior emits a grant for the Group Access account's stale privilege_set; want 1, got %d", len(grants))
+	}
+	if got := grants[0].GetPrincipal().GetId().GetResource(); got != "104" {
+		t.Errorf("grant principal = %q, want %q", got, "104")
 	}
 }

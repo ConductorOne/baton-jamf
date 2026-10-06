@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strconv"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -37,7 +36,7 @@ var privilegeSets = []string{privilegeSetAdministrator, privilegeSetAuditor, pri
 // individual-privilege path.
 const privilegeReadLicenseInformation = "Read License Information"
 
-// Create a new connector resource for a Jamf role.
+// roleResource creates a new connector resource for a Jamf role.
 func roleResource(ctx context.Context, role string, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
 	profile := map[string]interface{}{
 		"role_name": role,
@@ -233,15 +232,15 @@ func (g *groupRoleOps) name() string { return g.groupName }
 func (o *roleResourceType) roleOpsFor(resourceID *v2.ResourceId) (roleOps, error) {
 	switch resourceID.ResourceType {
 	case resourceTypeUserAccount.Id:
-		id, err := strconv.Atoi(resourceID.Resource)
+		id, err := parseResourceID("jamf-connector: invalid user account id", resourceID.Resource)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: invalid user account id %q: %s", resourceID.Resource, err)
+			return nil, err
 		}
 		return &userAccountRoleOps{client: o.client, id: id}, nil
 	case resourceTypeGroup.Id:
-		id, err := strconv.Atoi(resourceID.Resource)
+		id, err := parseResourceID("jamf-connector: invalid group id", resourceID.Resource)
 		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: invalid group id %q: %s", resourceID.Resource, err)
+			return nil, err
 		}
 		return &groupRoleOps{client: o.client, id: id}, nil
 	default:
@@ -299,7 +298,7 @@ func (o *roleResourceType) grantPrivilegeSet(
 		// Already holds this exact privilege set — nothing would be
 		// displaced, and re-sending the same PUT would only churn Jamf's
 		// audit log.
-		return []*v2.Grant{newGrant}, annotations.New(&v2.GrantAlreadyExists{}), nil
+		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 	}
 
 	if currentPrivilegeSet == privilegeSetCustom {
@@ -350,7 +349,7 @@ func (o *roleResourceType) grantIndividualPrivilege(
 	}
 
 	if currentPrivileges.Contains(target) {
-		return []*v2.Grant{newGrant}, annotations.New(&v2.GrantAlreadyExists{}), nil
+		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 	}
 
 	updated := addPrivilege(currentPrivileges, target)

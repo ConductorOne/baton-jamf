@@ -12,6 +12,7 @@ import (
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -436,5 +437,49 @@ func TestUserGroupGrant_SecondCall_SeesServerSideIsSmartChange(t *testing.T) {
 	}
 	if putCalled != 1 {
 		t.Errorf("expected no additional PUT once the group is smart, got %d total", putCalled)
+	}
+}
+
+// TestUserGroupGrants_SingleRead_BuildsPrincipalIDsFromMembers covers the
+// sync Grants() path: it must emit a grant per member built directly from
+// the group's own GetUserGroupDetails response, with a single GET and no
+// member-by-member re-fetch.
+func TestUserGroupGrants_SingleRead_BuildsPrincipalIDsFromMembers(t *testing.T) {
+	var getCalls int
+	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		getCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"user_group": map[string]any{"id": 5, "name": "Test Group", "is_smart": false, "users": []map[string]any{
+				{"id": 10, "name": "jsmith"},
+				{"id": 11, "name": "jdoe"},
+			}},
+		})
+	})
+	g := userGroupBuilder(client)
+
+	resource, err := userGroupResource(&jamf.UserGroup{BaseType: jamf.BaseType{ID: 5, Name: "Test Group"}}, nil)
+	if err != nil {
+		t.Fatalf("userGroupResource: %v", err)
+	}
+
+	grants, _, err := g.Grants(context.Background(), resource, rs.SyncOpAttrs{})
+	if err != nil {
+		t.Fatalf("Grants: %v", err)
+	}
+	if len(grants) != 2 {
+		t.Fatalf("want 2 grants, got %d", len(grants))
+	}
+	for i, wantID := range []string{"10", "11"} {
+		p := grants[i].GetPrincipal().GetId()
+		if p.GetResourceType() != resourceTypeUser.Id || p.GetResource() != wantID {
+			t.Errorf("grant %d principal = %s:%s, want %s:%s", i, p.GetResourceType(), p.GetResource(), resourceTypeUser.Id, wantID)
+		}
+	}
+	if getCalls != 1 {
+		t.Errorf("want exactly 1 GET, got %d", getCalls)
 	}
 }

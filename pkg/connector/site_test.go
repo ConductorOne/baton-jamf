@@ -42,7 +42,7 @@ func userGroupPrincipal(t *testing.T, groupID int) *v2.Resource {
 // same path so tests can assert the read-modify-write result.
 func jamfUserSitesHandler(t *testing.T, currentSiteIDs []int, gotPUTBody *[]byte) http.HandlerFunc {
 	t.Helper()
-	return jamfUserSitesStatefulHandler(t, currentSiteIDs, currentSiteIDs, http.StatusOK, gotPUTBody)
+	return jamfUserSitesStatefulHandler(t, currentSiteIDs, currentSiteIDs, http.StatusCreated, gotPUTBody)
 }
 
 // jamfUserSitesStatefulHandler serves GET /JSSResource/users/id/{id},

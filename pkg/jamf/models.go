@@ -84,9 +84,7 @@ type UserAccount struct {
 
 // Privileges models the Classic API's <privileges> block, which gives a
 // Custom privilege_set its actual meaning. Each category is a list of
-// privilege names. See
-// https://developer.jamf.com/jamf-pro/reference/createaccountbyid and
-// https://developer.jamf.com/jamf-pro/reference/findaccountsbyid.
+// privilege names.
 type Privileges struct {
 	JSSObjects    []string `json:"jss_objects" xml:"jss_objects>privilege,omitempty"`
 	JSSSettings   []string `json:"jss_settings" xml:"jss_settings>privilege,omitempty"`
@@ -130,10 +128,9 @@ func (p *Privileges) Contains(privilege string) bool {
 // encoding/xml's built-in "omitempty" does not apply to a nil/empty slice
 // nested behind a ">"-chained struct tag (e.g. "jss_objects>privilege") — it
 // always emits the empty wrapper element regardless. This method replaces
-// that reflection-based encoding for the write path so an unset category is
-// actually omitted from the XML sent to Jamf, rather than sent as
-// "<jss_settings></jss_settings>". The struct field xml tags remain in place
-// for decoding (test-server's XML unmarshal still uses them).
+// that encoding on the write path so an unset category is omitted rather
+// than sent as "<jss_settings></jss_settings>"; the struct's xml tags remain
+// for decoding (test-server still uses them).
 func (p Privileges) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 	if err := e.EncodeToken(start); err != nil {
 		return err
@@ -260,23 +257,20 @@ type UserAccountCreateBody struct {
 
 // AccountPrivilegesUpdateBody is the minimal XML PUT body for
 // /JSSResource/accounts/userid/{id} used by Role Grant/Revoke to change an
-// account's privilege_set/privileges without touching anything else.
-// Confirmed-safe field-level merge (see package-level VERIFIED API BEHAVIOUR
-// notes in role.go): omitted elements are left untouched by Jamf, so there
-// is no need to round-trip full_name/email/enabled/access_level the way an
-// unconfirmed-merge endpoint would require. Password and Site are
-// deliberately absent — Password because Jamf never returns it on GET so it
-// can't be preserved, and Site because Jamf rejects a zero site ID with 409
-// and there is no legitimate non-zero value worth risking here.
+// account's privilege_set/privileges without touching anything else. Jamf's
+// field-level merge means there is no need to round-trip
+// full_name/email/enabled/access_level. Password and Site are deliberately
+// absent — Password because Jamf never returns it on GET so it can't be
+// preserved, and Site because Jamf rejects a zero site ID with 409 and there
+// is no legitimate non-zero value worth risking here.
 //
 // Privileges is a pointer so an explicit, possibly-empty
 // <privileges></privileges> can be forced: a nil pointer omits the element
 // entirely (leaving Jamf's stored privileges untouched), while a non-nil
 // pointer — even one wrapping an all-empty Privileges — still emits the
-// wrapper element. The latter is required whenever privilege_set is written
-// as Custom: sending Custom without an explicit block (even an empty one)
-// makes Jamf copy the account's previous set's entire expanded privilege
-// list rather than leaving it empty.
+// wrapper element. This is required whenever privilege_set is written as
+// Custom: sending Custom without an explicit block copies the account's
+// previous set's entire expanded privilege list into it.
 type AccountPrivilegesUpdateBody struct {
 	XMLName      xml.Name    `xml:"account"`
 	Name         string      `xml:"name"`
@@ -285,8 +279,8 @@ type AccountPrivilegesUpdateBody struct {
 }
 
 // GroupPrivilegesUpdateBody is AccountPrivilegesUpdateBody's counterpart for
-// PUT /JSSResource/accounts/groupid/{id} — same minimal-body, confirmed-merge
-// rationale. Deliberately has no Members field: Role Grant/Revoke must never
+// PUT /JSSResource/accounts/groupid/{id} — same minimal-body rationale.
+// Deliberately has no Members field: Role Grant/Revoke must never
 // send <members> for a group, since that element is exactly what
 // group.go's Grant/Revoke (a different entitlement entirely) uses to manage
 // membership, and omitting it here preserves whatever membership the group
