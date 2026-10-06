@@ -161,6 +161,8 @@ func (o *provisionableUserType) CreateAccount(
 	accountInfo *v2.AccountInfo,
 	_ *v2.LocalCredentialOptions,
 ) (connectorbuilder.CreateAccountResponse, []*v2.PlaintextData, annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
 	name, err := requireLogin(accountInfo)
 	if err != nil {
 		return nil, nil, nil, err
@@ -199,6 +201,8 @@ func (o *provisionableUserType) CreateAccount(
 // deprovisioning works for both account types regardless of which one is
 // configured for creation.
 func (o *userResourceType) Delete(ctx context.Context, resourceID *v2.ResourceId, _ *v2.ResourceId) (annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
 	id, err := strconv.Atoi(resourceID.Resource)
 	if err != nil {
 		return nil, fmt.Errorf("jamf-connector: delete user: invalid resource id %q: %w", resourceID.Resource, err)

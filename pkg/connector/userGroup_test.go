@@ -12,6 +12,8 @@ import (
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func userGroupEntitlement(t *testing.T, groupID int) *v2.Entitlement {
@@ -269,5 +271,63 @@ func TestUserGroupGrant_InvalidGroupID_Errors(t *testing.T) {
 	_, _, err := g.Grant(context.Background(), userPrincipal(t, 1938), badEntitlement)
 	if err == nil {
 		t.Fatal("expected an error for a non-numeric group id")
+	}
+}
+
+// jamfUserGroupFlippingHandler serves GET /JSSResource/usergroups/id/{id},
+// reporting is_smart=false on the first real server hit and is_smart=true on
+// every hit after that — so a test can tell a cache-served GET (still sees
+// the first, stale response) apart from one that actually reached the
+// server again.
+func jamfUserGroupFlippingHandler(t *testing.T, putCalled *int) http.HandlerFunc {
+	t.Helper()
+	hits := 0
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			hits++
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"user_group": map[string]any{"id": 5, "name": "Test Group", "is_smart": hits > 1, "users": []map[string]any{}},
+			})
+		case http.MethodPut:
+			*putCalled++
+			w.WriteHeader(http.StatusCreated)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}
+}
+
+// TestUserGroupGrant_SecondCall_SeesServerSideIsSmartChange proves Grant's
+// isSmartUserGroup check reads live server state on every independent call
+// rather than a cached GET, now that ctx is wrapped with jamf.WithFreshReads:
+// the group starts non-smart (first Grant succeeds and PUTs), then the mock
+// server reports it as smart from the second GET onward — a second,
+// independent Grant call must observe that and reject. Before the fix, the
+// second call's GET would have been served from the HTTP cache with the
+// first (stale, non-smart) response, and Grant would have incorrectly
+// succeeded again.
+func TestUserGroupGrant_SecondCall_SeesServerSideIsSmartChange(t *testing.T) {
+	var putCalled int
+	client := newTestJamfClient(t, jamfUserGroupFlippingHandler(t, &putCalled))
+	g := userGroupBuilder(client)
+
+	if _, _, err := g.Grant(context.Background(), userPrincipal(t, 42), userGroupEntitlement(t, 5)); err != nil {
+		t.Fatalf("first Grant: %v", err)
+	}
+	if putCalled != 1 {
+		t.Fatalf("want 1 PUT after the first Grant, got %d", putCalled)
+	}
+
+	_, _, err := g.Grant(context.Background(), userPrincipal(t, 43), userGroupEntitlement(t, 5))
+	if err == nil {
+		t.Fatal("expected the second Grant to reject once the group is smart server-side")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition, got %v", err)
+	}
+	if putCalled != 1 {
+		t.Errorf("expected no additional PUT once the group is smart, got %d total", putCalled)
 	}
 }

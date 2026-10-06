@@ -164,6 +164,8 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 // reports via its bool return whether the user was already a site member, so
 // that case is surfaced here as GrantAlreadyExists instead of a fresh grant.
 func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
 	if principal.Id.ResourceType != resourceTypeUser.Id {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: site membership can only be granted to users, got resource type %q", principal.Id.ResourceType)
 	}
@@ -195,6 +197,8 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 // deleted), so that case is surfaced here as GrantAlreadyRevoked instead of
 // a plain success.
 func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
 	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
 		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: site membership can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
 	}

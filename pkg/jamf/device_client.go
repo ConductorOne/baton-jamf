@@ -91,10 +91,12 @@ func (c *Client) GetMobileDevices(
 }
 
 // GetComputerInventoryDetail fetches a single computer's inventory detail
-// record via GET /api/v1/computers-inventory-detail/{id}. Used by Revoke to
-// discover the CURRENT assigned username (userAndLocation.username) before
-// clearing it, since the device may have been reassigned to a different user
-// since the grant being revoked was last synced.
+// record via GET /api/v1/computers-inventory-detail/{id}. Used by Grant and
+// Revoke to discover the CURRENT assigned username (userAndLocation.username)
+// — Revoke before clearing it, since the device may have been reassigned to
+// a different user since the grant being revoked was last synced; Grant to
+// detect and report (via GrantReplaced) whatever assignee it is about to
+// displace.
 func (c *Client) GetComputerInventoryDetail(ctx context.Context, computerID string) (*ComputerInventory, error) {
 	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
 	if err != nil {
@@ -110,8 +112,9 @@ func (c *Client) GetComputerInventoryDetail(ctx context.Context, computerID stri
 }
 
 // GetMobileDeviceDetail fetches a single mobile device's detail record via
-// GET /api/v2/mobile-devices/{id}/detail, used by Revoke for the same
-// reassignment check as GetComputerInventoryDetail. Per Jamf's OpenAPI spec,
+// GET /api/v2/mobile-devices/{id}/detail, used by Grant and Revoke for the
+// same reassignment/displaced-assignee check as GetComputerInventoryDetail.
+// Per Jamf's OpenAPI spec,
 // this endpoint's response (MobileDeviceDetailsGetV2, which extends
 // MobileDeviceDetailsV2) nests the current assignee under `location.username`
 // (LocationV2) - see

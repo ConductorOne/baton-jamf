@@ -110,6 +110,13 @@ const (
 	// enabledValue is the Jamf Classic API's string representation of an
 	// enabled account (as opposed to "Disabled").
 	enabledValue = "Enabled"
+
+	// accessLevelGroupAccess is the Jamf Classic API access_level value
+	// meaning an account's rights come entirely from the groups it belongs
+	// to — its own privilege_set is not evaluated. See role.go's Grant/Revoke
+	// guard and group.go's Grant guard, both of which reject provisioning
+	// that would be misleading for an account in this state.
+	accessLevelGroupAccess = "Group Access"
 )
 
 func (o *userAccountResourceType) ResourceType(_ context.Context) *v2.ResourceType {
@@ -272,6 +279,8 @@ func (o *provisionableUserAccountType) CreateAccount(
 	accountInfo *v2.AccountInfo,
 	credentialOptions *v2.LocalCredentialOptions,
 ) (connectorbuilder.CreateAccountResponse, []*v2.PlaintextData, annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
 	name, err := requireLogin(accountInfo)
 	if err != nil {
 		return nil, nil, nil, err
@@ -344,6 +353,8 @@ func (o *provisionableUserAccountType) CreateAccount(
 // create-account-resource-type — deprovisioning works for both account types
 // regardless of which one is configured for creation.
 func (o *userAccountResourceType) Delete(ctx context.Context, resourceID *v2.ResourceId, _ *v2.ResourceId) (annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
 	id, err := strconv.Atoi(resourceID.Resource)
 	if err != nil {
 		return nil, fmt.Errorf("jamf-connector: delete userAccount: invalid resource id %q: %w", resourceID.Resource, err)

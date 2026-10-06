@@ -48,6 +48,29 @@ type Client struct {
 	password string
 }
 
+// freshReadsContextKey marks a context as requiring GET requests to bypass
+// the HTTP client's response cache (default TTL: one hour — see uhttp's
+// gocache.go cacheTTLDefault). Sync reads benefit from that cache and are
+// unaffected; provisioning paths wrap their ctx with WithFreshReads because a
+// stale GET there can produce a wrong idempotency decision or a PUT built
+// from stale data.
+type freshReadsContextKey struct{}
+
+// WithFreshReads returns a context that causes GET requests issued through
+// this client to bypass the response cache. Provisioning entry points
+// (Grant, Revoke, CreateAccount, Delete) wrap their ctx with this at the top
+// of the method; sync code paths (List, Entitlements, Grants) must not, so
+// they keep benefiting from the cache.
+func WithFreshReads(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freshReadsContextKey{}, true)
+}
+
+// wantsFreshReads reports whether ctx was wrapped with WithFreshReads.
+func wantsFreshReads(ctx context.Context) bool {
+	v, _ := ctx.Value(freshReadsContextKey{}).(bool)
+	return v
+}
+
 func NewClient(
 	wrapper *uhttp.BaseHttpClient,
 	userName string,
@@ -492,33 +515,75 @@ func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
 	return c.doRequestWithMethod(ctx, http.MethodDelete, url, nil, nil)
 }
 
-// SetUserAccountPrivilegeSet updates a Jamf admin account's privilege_set via
-// PUT /JSSResource/accounts/userid/{id}. Per Classic API field-level-merge
-// semantics (see doRequestWithMethod), sending only <privilege_set> leaves
-// the rest of the account record (email, full_name, access_level, etc.)
-// untouched. See
+// UpdateAccountPrivileges updates a Jamf admin account's privilege_set
+// and/or individual privileges via a minimal PUT to
+// /JSSResource/accounts/userid/{id} carrying only <name> and, when
+// privilegeSet is non-empty, <privilege_set> (see
+// AccountPrivilegesUpdateBody's doc comment for why this doesn't need to
+// round-trip full_name/email/enabled/access_level/site the way an
+// unconfirmed-merge endpoint would). privileges is nil to omit the
+// <privileges> element entirely (leaving Jamf's stored privileges
+// untouched), or a pointer to an explicit — even all-empty — Privileges to
+// force the element: every write of privilegeSet == "Custom" must pass a
+// non-nil privileges, since Jamf copies the account's previous set's entire
+// expanded privilege list when Custom is set with the element omitted. See
 // https://developer.jamf.com/jamf-pro/reference/updateaccountbyid.
-func (c *Client) SetUserAccountPrivilegeSet(ctx context.Context, userID int, privilegeSet string) error {
-	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, userID))
+func (c *Client) UpdateAccountPrivileges(ctx context.Context, accountID int, name, privilegeSet string, privileges *Privileges) error {
+	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, accountID))
 	if err != nil {
 		return err
 	}
 
-	reqBody := UserAccountPrivilegeSetUpdate{PrivilegeSet: privilegeSet}
+	reqBody := AccountPrivilegesUpdateBody{
+		Name:         name,
+		PrivilegeSet: privilegeSet,
+		Privileges:   privileges,
+	}
 	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
 }
 
-// SetGroupPrivilegeSet updates a Jamf access-level group's privilege_set via
-// PUT /JSSResource/accounts/groupid/{id}. Same field-level-merge semantics as
-// SetUserAccountPrivilegeSet. See
+// UpdateGroupPrivileges is UpdateAccountPrivileges's counterpart for
+// /JSSResource/accounts/groupid/{id} — same minimal-body rationale, and
+// deliberately never sends <members>: Role Grant/Revoke must never touch a
+// group's membership (that's group.go's Grant/Revoke, a separate
+// entitlement), and omitting the element preserves whatever membership the
+// group currently has. See
 // https://developer.jamf.com/jamf-pro/reference/updategroupbyid.
-func (c *Client) SetGroupPrivilegeSet(ctx context.Context, groupID int, privilegeSet string) error {
+func (c *Client) UpdateGroupPrivileges(ctx context.Context, groupID int, name, privilegeSet string, privileges *Privileges) error {
 	url, err := c.getUrl(fmt.Sprintf(groupUrlPath, groupID))
 	if err != nil {
 		return err
 	}
 
-	reqBody := GroupPrivilegeSetUpdate{PrivilegeSet: privilegeSet}
+	reqBody := GroupPrivilegesUpdateBody{
+		Name:         name,
+		PrivilegeSet: privilegeSet,
+		Privileges:   privileges,
+	}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
+// UpdateGroupMembers updates a Jamf access-level group's membership via a
+// minimal PUT to /JSSResource/accounts/groupid/{id}, carrying only <name>
+// and <members> (see GroupMembersUpdateBody's doc comment for why this
+// doesn't need to round-trip access_level/privilege_set/site the way
+// SetGroupPrivilegeSet's full-object PUT does). members is the complete
+// desired membership list — this always sends an explicit <members>
+// element, replacing whatever Jamf currently has, so callers that want to
+// clear the last member just pass an empty slice rather than needing a
+// separate code path. Returns a gRPC NotFound error (surfaced via
+// IsNotFoundError) if the group doesn't exist. See
+// https://developer.jamf.com/jamf-pro/reference/updategroupbyid.
+func (c *Client) UpdateGroupMembers(ctx context.Context, groupID int, name string, members []BaseType) error {
+	url, err := c.getUrl(fmt.Sprintf(groupUrlPath, groupID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := GroupMembersUpdateBody{
+		Name:    name,
+		Members: &groupMembersList{Users: members},
+	}
 	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
 }
 
@@ -538,7 +603,7 @@ func (c *Client) SetGroupPrivilegeSet(ctx context.Context, groupID int, privileg
 // under concurrent provisioning for the same user should serialize calls
 // per-userID.
 func (c *Client) AddUserSite(ctx context.Context, userID int, siteID int) (bool, error) {
-	user, err := c.getUserDetails(ctx, userID) // always re-read — never reuse a cached User
+	user, err := c.getUserDetails(ctx, userID) // always re-read — never reuse a cached User; bypasses the HTTP GET cache too when ctx carries WithFreshReads
 	if err != nil {
 		return false, err
 	}
@@ -660,6 +725,9 @@ func (c *Client) doRequestWithJSONMethod(
 // doRequestWithMethod (XML, Classic API) and doRequestWithJSONMethod (JSON,
 // Pro API) — same auth/retry/decode behavior, differing only in how reqBody
 // is encoded onto the wire.
+//
+// GET requests made with a ctx wrapped by WithFreshReads bypass the HTTP
+// wrapper's response cache (uhttp.WithNoCache) — see WithFreshReads.
 func (c *Client) doRequestWithMethodAndBodyEncoding(
 	ctx context.Context,
 	method string,
@@ -684,6 +752,9 @@ GotoRetry:
 			"Authorization",
 			fmt.Sprintf("Bearer %s", c.token),
 		),
+	}
+	if method == http.MethodGet && wantsFreshReads(ctx) {
+		requestOpts = append(requestOpts, uhttp.WithNoCache())
 	}
 	if reqBody != nil {
 		requestOpts = append(requestOpts, bodyEncoding(reqBody))

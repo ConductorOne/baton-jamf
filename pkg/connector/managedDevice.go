@@ -196,6 +196,8 @@ func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Res
 //     GrantReplaced annotation naming the grant that write just displaced, so
 //     ConductorOne can mark it revoked without a separate Revoke RPC.
 func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
 	if principal.Id.ResourceType != resourceTypeUser.Id {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: device assignment can only be granted to users, got resource type %q", principal.Id.ResourceType)
 	}
@@ -252,6 +254,8 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 // username="" in that case would silently wipe out the new assignment
 // instead of just removing the stale grant.
 func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
 	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
 		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: device assignment can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
 	}
@@ -280,9 +284,15 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 	// email is cleared alongside username (see
 	// ComputerAssignedUserUpdateLocation.Email) so a future sync's
 	// resolveUser can't re-derive this assignee from a leftover email and
-	// effectively undo the revoke; mobile devices carry no email field to
-	// clear, so setAssignedUser's clearEmail argument is a no-op there.
-	if err := d.setAssignedUser(ctx, gr.Entitlement.Resource, "", true); err != nil {
+	// effectively undo the revoke — but ONLY when the device's current email
+	// actually matches the principal's resolved email. An admin may have set
+	// that email deliberately, unrelated to the username match that
+	// triggered this revoke; blindly clearing it on every revoke could
+	// destroy real data nobody asked to remove. Mobile devices carry no
+	// email field to clear, so setAssignedUser's clearEmail argument is a
+	// no-op there regardless.
+	clearEmail := strings.EqualFold(currentEmail, principalEmail)
+	if err := d.setAssignedUser(ctx, gr.Entitlement.Resource, "", clearEmail); err != nil {
 		return nil, fmt.Errorf("jamf-connector: revoke device assigned: %w", err)
 	}
 	return nil, nil
@@ -445,6 +455,14 @@ func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, usernam
 //     grant. gr.Principal.Id.Resource is not a numeric Jamf user id in this
 //     case, so GetUserDetails would fail; the raw value is read back from the
 //     annotation instead.
+//
+// The ExternalResourceMatch annotation depends on the platform passing it
+// back on the Revoke request; if it's absent (e.g. a different platform
+// version, or the annotation gets stripped somewhere) AND the principal id
+// isn't a numeric Jamf user id either, this falls back to treating the raw
+// id string itself as an email or username — mirroring deviceGrants' own
+// email-vs-username heuristic (presence of "@") — rather than letting
+// resolvePrincipalUser's strconv.Atoi fail with InvalidArgument.
 func principalIdentityForRevoke(ctx context.Context, client *jamf.Client, gr *v2.Grant) (string, string, error) {
 	match := &v2.ExternalResourceMatch{}
 	grantAnnos := annotations.Annotations(gr.GetAnnotations())
@@ -461,6 +479,14 @@ func principalIdentityForRevoke(ctx context.Context, client *jamf.Client, gr *v2
 		default:
 			return "", "", status.Errorf(codes.Internal, "jamf-connector: unknown external resource match key %q", match.GetKey())
 		}
+	}
+
+	if _, err := strconv.Atoi(gr.Principal.Id.Resource); err != nil {
+		value := strings.TrimSpace(gr.Principal.Id.Resource)
+		if strings.Contains(value, "@") {
+			return "", value, nil
+		}
+		return value, "", nil
 	}
 
 	return resolvePrincipalUser(ctx, client, gr.Principal)

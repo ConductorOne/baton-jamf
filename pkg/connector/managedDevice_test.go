@@ -862,6 +862,115 @@ func TestManagedDeviceRevoke_MobileDevice_ClearsUsername(t *testing.T) {
 	}
 }
 
+// TestManagedDeviceRevoke_EmailDoesNotMatch_ClearsUsernameOnly covers Fix 5:
+// an admin may have set the device's current email deliberately, unrelated
+// to the username match that makes this grant "still the current assignee".
+// When the device's current email does NOT match the principal's resolved
+// email, Revoke must clear only username and leave email untouched in the
+// PATCH body.
+func TestManagedDeviceRevoke_EmailDoesNotMatch_ClearsUsernameOnly(t *testing.T) {
+	var patchBody []byte
+	// Username matches ("jappleseed") so the grant is still live and Revoke
+	// proceeds, but the device's current email is some unrelated
+	// admin-set value that does not match the principal's resolved email
+	// (empty, since the mock's /JSSResource/users/ response carries no email).
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "jappleseed", "", "jappleseed", "admin-set@ex.com", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, userPrincipal(t, 42).Id)
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if annos != nil {
+		t.Errorf("expected no annotations (grant should be revoked), got %v", annos)
+	}
+	if patchBody == nil {
+		t.Fatal("expected a PATCH to be sent to clear username")
+	}
+	if want := `{"userAndLocation":{"username":""}}` + "\n"; string(patchBody) != want {
+		t.Errorf("PATCH body = %q, want %q (email must NOT be cleared when it doesn't match the principal)", string(patchBody), want)
+	}
+}
+
+// TestManagedDeviceRevoke_ExternalMatchPrincipal_EmailDoesNotMatch_ClearsUsernameOnly
+// is the ExternalResourceMatch-principal counterpart: the principal's
+// identity comes from the grant annotation (a raw email string) rather than
+// GetUserDetails, but the same email-match gating must still apply.
+func TestManagedDeviceRevoke_ExternalMatchPrincipal_EmailDoesNotMatch_ClearsUsernameOnly(t *testing.T) {
+	var patchBody []byte
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "unused", "unused@ex.com", "ghost", "admin-set@ex.com", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	// Keyed on username, not email: the device's current username ("ghost")
+	// still matches, so assigneeMatches succeeds and Revoke proceeds, but the
+	// device's current email ("admin-set@ex.com") has no counterpart on this
+	// principal to match against.
+	principal, err := rs.NewResourceID(resourceTypeUser, "ghost")
+	if err != nil {
+		t.Fatalf("NewResourceID: %v", err)
+	}
+	match := v2.ExternalResourceMatch_builder{
+		ResourceType: v2.ResourceType_TRAIT_USER,
+		Key:          matchKeyUsername,
+		Value:        "ghost",
+	}.Build()
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, principal, grant.WithAnnotation(match))
+
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if annos != nil {
+		t.Errorf("expected no annotations (grant should be revoked), got %v", annos)
+	}
+	if patchBody == nil {
+		t.Fatal("expected a PATCH to be sent to clear username")
+	}
+	if want := `{"userAndLocation":{"username":""}}` + "\n"; string(patchBody) != want {
+		t.Errorf("PATCH body = %q, want %q (email must NOT be cleared when it doesn't match the principal)", string(patchBody), want)
+	}
+}
+
+// TestPrincipalIdentityForRevoke_NoAnnotation_FallsBackOnRawIDShape covers
+// Fix 6: when the platform doesn't send back an ExternalResourceMatch
+// annotation AND the principal id isn't a numeric Jamf user id,
+// principalIdentityForRevoke must fall back to treating the raw id string as
+// an email (if it contains "@") or a username (otherwise) — mirroring
+// deviceGrants' own heuristic — instead of handing a non-numeric string to
+// resolvePrincipalUser's strconv.Atoi and failing with InvalidArgument.
+func TestPrincipalIdentityForRevoke_NoAnnotation_FallsBackOnRawIDShape(t *testing.T) {
+	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("expected no API call for a non-numeric principal id, got %s %s", r.Method, r.URL.Path)
+	})
+
+	emailPrincipal, err := rs.NewResourceID(resourceTypeUser, "ghost@ex.com")
+	if err != nil {
+		t.Fatalf("NewResourceID: %v", err)
+	}
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, emailPrincipal)
+	username, email, err := principalIdentityForRevoke(context.Background(), client, gr)
+	if err != nil {
+		t.Fatalf("principalIdentityForRevoke: %v", err)
+	}
+	if username != "" || email != "ghost@ex.com" {
+		t.Errorf("got (username=%q, email=%q), want (\"\", \"ghost@ex.com\") for an email-shaped raw id", username, email)
+	}
+
+	usernamePrincipal, err := rs.NewResourceID(resourceTypeUser, "ghost")
+	if err != nil {
+		t.Fatalf("NewResourceID: %v", err)
+	}
+	gr = grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, usernamePrincipal)
+	username, email, err = principalIdentityForRevoke(context.Background(), client, gr)
+	if err != nil {
+		t.Fatalf("principalIdentityForRevoke: %v", err)
+	}
+	if username != "ghost" || email != "" {
+		t.Errorf("got (username=%q, email=%q), want (\"ghost\", \"\") for a non-email-shaped raw id", username, email)
+	}
+}
+
 func TestManagedDeviceGrant_NonUserPrincipal_Errors(t *testing.T) {
 	d := managedDeviceBuilder(nil)
 	_, _, err := d.Grant(context.Background(), userGroupPrincipal(t, 7), deviceEntitlement(t, "computer:17"))

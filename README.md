@@ -11,17 +11,28 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 | Sync | Yes |
 | Account Creation (Users, User Accounts) | Yes — one type per connector instance, see `create-account-resource-type` below |
 | Account Deletion (Users, User Accounts) | Yes |
-| Provisioning (Grant/Revoke) | Yes — User Groups (static groups only), Sites (`user` principal only), Managed Devices (`assigned`, `user` principal only), Roles (built-in privilege sets only, see below). Groups remain sync-only. |
+| Provisioning (Grant/Revoke) | Yes — Groups (`userAccount` principal only, Group Access accounts only), User Groups (static groups only), Sites (`user` principal only), Managed Devices (`assigned`, `user` principal only), Roles (built-in privilege sets and individual privileges, `userAccount`/`group` principal, see below). |
 
 ## Required Jamf privileges for provisioning
 
 | Resource | Operation | Privilege |
 |---|---|---|
+| Group | Grant/Revoke membership (`userAccount` principal) | `Update - User accounts and groups` |
 | User Group | Grant/Revoke membership (static group) | `Update - Static User Groups` |
 | Site | Grant/Revoke membership (`user` principal) | `Update - Users` |
 | Managed Device (computer) | Grant/Revoke `assigned` user | `Update Computers` |
 | Managed Device (mobile device) | Grant/Revoke `assigned` user | `Update Mobile Devices` |
 | Role | Grant/Revoke `privilege_set` (`userAccount`/`group` principal) | `Update - User accounts and groups` |
+
+Group Grant/Revoke adds or removes a `userAccount` from an admin account
+group's member list. A group with no members cannot receive its first member
+through the connector — Jamf can transiently return an empty member list even
+when the group genuinely has members, and the connector aborts rather than
+risk writing over a list it can't trust is complete. Only Group Access
+accounts can usefully be granted membership — a Full or Site Access account's
+rights come from its own `privilege_set`, not its groups, so Grant rejects
+adding one (membership grants it nothing). Directory (LDAP) groups are
+managed by the directory and are not supported for membership changes.
 
 Smart User Groups cannot be granted/revoked (membership is computed from
 criteria, not assignable) — the connector rejects these before calling the
@@ -32,13 +43,24 @@ single-valued — granting it to a new user displaces whichever user was
 previously assigned. Grant currently only works on devices that already have
 an assigned user (the `assigned` entitlement is only emitted for devices that
 report an assignee) — it cannot be used to assign a previously-unassigned
-device to a user. Role Grant/Revoke sets a `userAccount` or `group`'s
-`privilege_set`. Only the three built-in sets (`Administrator`, `Auditor`,
-`Enrollment Only`) are provisionable — individual privileges (meaningful only
-under a `Custom` privilege_set) remain sync-only. This is single-valued —
-granting a set displaces whichever one the principal previously held. Revoke
-always downgrades to `Enrollment Only`, since Jamf's `privilege_set` has no
-neutral "no access" value.
+device to a user.
+
+Role Grant/Revoke sets or clears a `userAccount` or `group`'s role. All three
+built-in privilege sets (`Administrator`, `Auditor`, `Enrollment Only`) and
+every individual privilege are grantable — `Custom` itself is not a role you
+grant directly. Granting a set displaces whichever one the principal
+previously held. Revoke moves the principal to `Custom` with only the
+`Read License Information` privilege — the lowest access Jamf allows, since
+`privilege_set` has no neutral "no access" value. Individual privileges can
+only be granted while the principal's `privilege_set` is already `Custom`:
+the flow is Revoke the current set first (which moves it to Custom), then
+Grant the individual privileges — granting a built-in set again later leaves
+Custom and discards those individual privileges. Group Access accounts are
+not supported for Role Grant/Revoke — their rights come from their groups, so
+assign the role to the group instead. Changing a Full or Site Access
+account's role removes it from any admin group it belonged to (that
+membership granted it nothing). A write rejected by the connector's own Jamf
+account shows up as a 401 authentication error from Jamf.
 
 ## Jamf Pro console admin account privileges (`userAccount`)
 

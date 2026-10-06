@@ -123,6 +123,8 @@ func (g *userGroupResourceType) isSmartUserGroup(ctx context.Context, groupID in
 // entitlement's resource. Smart groups are rejected — their membership is
 // computed from criteria, not assignable.
 func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
 	if principal.Id.ResourceType != resourceTypeUser.Id {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: user group membership can only be granted to users, got resource type %q", principal.Id.ResourceType)
 	}
@@ -176,6 +178,8 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 // Revoke removes gr's principal (a Jamf user) from the static user group
 // backing gr's entitlement resource. Smart groups are rejected, same as Grant.
 func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
 	if gr.Principal.Id.ResourceType != resourceTypeUser.Id {
 		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: user group membership can only be revoked for users, got resource type %q", gr.Principal.Id.ResourceType)
 	}

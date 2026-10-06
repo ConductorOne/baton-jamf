@@ -12,6 +12,8 @@ import (
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -26,8 +28,14 @@ func (o *roleResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 }
 
 // privilegeSets are the built-in sets; privilegeSetCustom is deliberately
-// excluded — a Custom account's access is described by its individual privileges.
+// excluded — a Custom account's access is described by its individual
+// privileges, not by "Custom" being a role someone holds.
 var privilegeSets = []string{privilegeSetAdministrator, privilegeSetAuditor, privilegeSetEnrollmentOnly}
+
+// privilegeReadLicenseInformation is the one privilege Jamf always keeps on
+// every Custom privilege set and never lets a client remove — see Revoke's
+// individual-privilege path.
+const privilegeReadLicenseInformation = "Read License Information"
 
 // Create a new connector resource for a Jamf role.
 func roleResource(ctx context.Context, role string, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
@@ -77,38 +85,39 @@ func (o *roleResourceType) List(ctx context.Context, parentId *v2.ResourceId, at
 	return rv, nil, nil
 }
 
+// Entitlements declares every Role resource — the three built-in privilege
+// sets and every individual privilege — as grantable to both userAccount and
+// group principals. Grant/Revoke (below) are the source of truth for the
+// actual rules (a privilege set is always grantable; an individual privilege
+// is only meaningfully grantable while the principal's privilege_set is
+// Custom) — this declaration is deliberately permissive so the platform can
+// always attempt a grant and get back a precise, actionable error instead of
+// never offering the option at all. Custom itself is not a Role resource —
+// see List — so it is never declared grantable here either.
 func (o *roleResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ resource.SyncOpAttrs) ([]*v2.Entitlement, *resource.SyncOpResults, error) {
-	var rv []*v2.Entitlement
-
-	description := fmt.Sprintf("Privilege set of %s", resource.DisplayName)
-	privilegeOptions := []ent.EntitlementOption{
-		ent.WithDisplayName(fmt.Sprintf("%s privilege set %s", resource.DisplayName, memberEntitlement)),
-	}
-
-	// Grant/Revoke provisioning (see Grant/Revoke below) is scoped to the 3
-	// built-in privilege sets: granting one displaces whatever privilege_set
-	// the principal previously held, and revoking always downgrades to
-	// Enrollment Only. Individual-privilege Role resources are meaningful
-	// only under a Custom privilege_set and are sync-only — WithGrantableTo
-	// is deliberately not declared for them, so the catalog never advertises
-	// provisioning that Grant/Revoke would then reject.
+	description := fmt.Sprintf("Individual privilege %q — only grantable while the principal's privilege set is %q", resource.DisplayName, privilegeSetCustom)
 	if slices.Contains(privilegeSets, resource.Id.Resource) {
-		description = fmt.Sprintf("%s — granting this overwrites the principal's current privilege set; revoking downgrades to %q", description, privilegeSetEnrollmentOnly)
-		privilegeOptions = append(privilegeOptions, ent.WithGrantableTo(resourceTypeUserAccount, resourceTypeGroup))
+		description = fmt.Sprintf(
+			"Privilege set of %s — granting this overwrites the principal's current privilege set; revoking moves the principal to %q with only the %q privilege",
+			resource.DisplayName, privilegeSetCustom, privilegeReadLicenseInformation,
+		)
 	}
-	privilegeOptions = append(privilegeOptions, ent.WithDescription(description))
 
-	privilegesEn := ent.NewPermissionEntitlement(resource, memberEntitlement, privilegeOptions...)
-	rv = append(rv, privilegesEn)
+	privilegesEn := ent.NewPermissionEntitlement(resource, memberEntitlement,
+		ent.WithDisplayName(fmt.Sprintf("%s privilege set %s", resource.DisplayName, memberEntitlement)),
+		ent.WithDescription(description),
+		ent.WithGrantableTo(resourceTypeUserAccount, resourceTypeGroup),
+	)
 
-	return rv, nil, nil
+	return []*v2.Entitlement{privilegesEn}, nil, nil
 }
 
 // matchesIndividualPrivilege reports whether an account/group holding
 // privilegeSet and privileges should be granted the given individual
 // privilege role. Privileges is only meaningful for a Custom privilege_set
-// (see jamf.UserAccountCreateBody.Privileges) — a built-in set's Privileges
-// data, if Jamf ever returns any, must not be treated as an access grant.
+// (see jamf.AccountPrivilegesUpdateBody.Privileges) — a built-in set's
+// Privileges data, if Jamf ever returns any, must not be treated as an
+// access grant.
 func matchesIndividualPrivilege(privilegeSet string, privileges *jamf.Privileges, privilege string) bool {
 	return privilegeSet == privilegeSetCustom && privileges.Contains(privilege)
 }
@@ -159,82 +168,287 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 	return rv, nil, nil
 }
 
-// Grant sets principal (a userAccount or group) to hold the built-in
-// privilege set backing entitlement's resource. Single-valued/exclusive:
-// this displaces whatever privilege_set the principal previously held —
-// same pattern as Managed Device's "assigned" entitlement and Site's
-// non-user principals elsewhere in this connector. Individual-privilege
-// Role resources are out of scope (see Entitlements) and rejected here.
-func (o *roleResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
-	targetPrivilegeSet := entitlement.Resource.Id.Resource
-	if !slices.Contains(privilegeSets, targetPrivilegeSet) {
-		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: role provisioning is only supported for the built-in privilege sets %v, got %q", privilegeSets, targetPrivilegeSet)
+// roleOps abstracts the account/group-specific GET and minimal privilege-only
+// PUT that Role Grant/Revoke otherwise share entirely. fetch always re-reads
+// (ctx is wrapped with jamf.WithFreshReads by both Grant and Revoke), so a
+// write immediately followed by another fetch observes the write.
+type roleOps interface {
+	// fetch returns the principal's current privilege_set, privileges, and
+	// (for a userAccount; always "" for a group) access_level.
+	fetch(ctx context.Context) (privilegeSet string, privileges jamf.Privileges, accessLevel string, err error)
+	// write sends the minimal privilege-only PUT. A nil privileges omits the
+	// <privileges> element entirely; a non-nil pointer — even to an
+	// all-empty Privileges — forces an explicit element.
+	write(ctx context.Context, privilegeSet string, privileges *jamf.Privileges) error
+	// name is the principal's display name, populated by the most recent
+	// fetch call.
+	name() string
+}
+
+type userAccountRoleOps struct {
+	client      *jamf.Client
+	id          int
+	accountName string
+}
+
+func (u *userAccountRoleOps) fetch(ctx context.Context) (string, jamf.Privileges, string, error) {
+	account, err := u.client.GetUserAccountDetails(ctx, u.id)
+	if err != nil {
+		return "", jamf.Privileges{}, "", err
 	}
+	u.accountName = account.Name
+	return account.PrivilegeSet, account.Privileges, account.AccessLevel, nil
+}
 
-	newGrant := grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)
+func (u *userAccountRoleOps) write(ctx context.Context, privilegeSet string, privileges *jamf.Privileges) error {
+	return u.client.UpdateAccountPrivileges(ctx, u.id, u.accountName, privilegeSet, privileges)
+}
 
-	switch principal.Id.ResourceType {
+func (u *userAccountRoleOps) name() string { return u.accountName }
+
+type groupRoleOps struct {
+	client    *jamf.Client
+	id        int
+	groupName string
+}
+
+func (g *groupRoleOps) fetch(ctx context.Context) (string, jamf.Privileges, string, error) {
+	group, err := g.client.GetGroupDetails(ctx, g.id)
+	if err != nil {
+		return "", jamf.Privileges{}, "", err
+	}
+	g.groupName = group.Name
+	return group.PrivilegeSet, group.Privileges, "", nil
+}
+
+func (g *groupRoleOps) write(ctx context.Context, privilegeSet string, privileges *jamf.Privileges) error {
+	return g.client.UpdateGroupPrivileges(ctx, g.id, g.groupName, privilegeSet, privileges)
+}
+
+func (g *groupRoleOps) name() string { return g.groupName }
+
+// roleOpsFor builds the account/group-specific roleOps for resourceID,
+// rejecting any other principal/entitlement resource type with
+// InvalidArgument — shared by Grant and Revoke.
+func (o *roleResourceType) roleOpsFor(resourceID *v2.ResourceId) (roleOps, error) {
+	switch resourceID.ResourceType {
 	case resourceTypeUserAccount.Id:
-		userID, err := strconv.Atoi(principal.Id.Resource)
+		id, err := strconv.Atoi(resourceID.Resource)
 		if err != nil {
-			return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant role: invalid user account id %q: %s", principal.Id.Resource, err)
+			return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: invalid user account id %q: %s", resourceID.Resource, err)
 		}
-
-		current, err := o.client.GetUserAccountDetails(ctx, userID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
-		}
-		if current.PrivilegeSet == targetPrivilegeSet {
-			// Already holds this exact privilege set — nothing would be
-			// displaced, and re-sending the same PUT would only churn Jamf's
-			// audit log.
-			return []*v2.Grant{newGrant}, annotations.New(&v2.GrantAlreadyExists{}), nil
-		}
-
-		if err := o.client.SetUserAccountPrivilegeSet(ctx, userID, targetPrivilegeSet); err != nil {
-			return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
-		}
-
-		annos, err := o.replacedPrivilegeSetAnnotation(ctx, current.PrivilegeSet, targetPrivilegeSet, principal, entitlement)
-		if err != nil {
-			return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
-		}
-		return []*v2.Grant{newGrant}, annos, nil
+		return &userAccountRoleOps{client: o.client, id: id}, nil
 	case resourceTypeGroup.Id:
-		groupID, err := strconv.Atoi(principal.Id.Resource)
+		id, err := strconv.Atoi(resourceID.Resource)
 		if err != nil {
-			return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant role: invalid group id %q: %s", principal.Id.Resource, err)
+			return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: invalid group id %q: %s", resourceID.Resource, err)
 		}
-
-		current, err := o.client.GetGroupDetails(ctx, groupID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
-		}
-		if current.PrivilegeSet == targetPrivilegeSet {
-			return []*v2.Grant{newGrant}, annotations.New(&v2.GrantAlreadyExists{}), nil
-		}
-
-		if err := o.client.SetGroupPrivilegeSet(ctx, groupID, targetPrivilegeSet); err != nil {
-			return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
-		}
-
-		annos, err := o.replacedPrivilegeSetAnnotation(ctx, current.PrivilegeSet, targetPrivilegeSet, principal, entitlement)
-		if err != nil {
-			return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
-		}
-		return []*v2.Grant{newGrant}, annos, nil
+		return &groupRoleOps{client: o.client, id: id}, nil
 	default:
-		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: role can only be granted to a user account or group, got resource type %q", principal.Id.ResourceType)
+		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: role can only be granted/revoked for a user account or group, got resource type %q", resourceID.ResourceType)
 	}
 }
 
+// Grant sets principal (a userAccount or group) to hold the Role resource
+// backing entitlement — either one of the three built-in privilege sets
+// (Administrator, Auditor, Enrollment Only) or an individual privilege. See
+// grantPrivilegeSet and grantIndividualPrivilege for the respective rules.
+func (o *roleResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
+	ops, err := o.roleOpsFor(principal.Id)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	currentPrivilegeSet, currentPrivileges, accessLevel, err := ops.fetch(ctx)
+	if err != nil {
+		if jamf.IsNotFoundError(err) {
+			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant role: %s %q not found", principal.Id.ResourceType, principal.Id.Resource)
+		}
+		return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
+	}
+
+	if principal.Id.ResourceType == resourceTypeUserAccount.Id && accessLevel == accessLevelGroupAccess {
+		return nil, nil, status.Errorf(codes.FailedPrecondition,
+			"jamf-connector: account %q has Group Access, so its rights come from its groups; assign the role to the group instead.", ops.name())
+	}
+
+	newGrant := grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)
+	target := entitlement.Resource.Id.Resource
+
+	if slices.Contains(privilegeSets, target) {
+		return o.grantPrivilegeSet(ctx, ops, currentPrivilegeSet, target, principal, entitlement, newGrant)
+	}
+	return o.grantIndividualPrivilege(ctx, ops, currentPrivilegeSet, currentPrivileges, target, newGrant)
+}
+
+// grantPrivilegeSet handles Grant of a built-in privilege set. Single-valued
+// and never gated on the principal's current privilege_set: granting
+// displaces whatever privilege_set (including Custom) the principal
+// previously held.
+func (o *roleResourceType) grantPrivilegeSet(
+	ctx context.Context,
+	ops roleOps,
+	currentPrivilegeSet, target string,
+	principal *v2.Resource,
+	entitlement *v2.Entitlement,
+	newGrant *v2.Grant,
+) ([]*v2.Grant, annotations.Annotations, error) {
+	if currentPrivilegeSet == target {
+		// Already holds this exact privilege set — nothing would be
+		// displaced, and re-sending the same PUT would only churn Jamf's
+		// audit log.
+		return []*v2.Grant{newGrant}, annotations.New(&v2.GrantAlreadyExists{}), nil
+	}
+
+	if currentPrivilegeSet == privilegeSetCustom {
+		ctxzap.Extract(ctx).Debug("jamf-connector: grant role: displacing a Custom privilege set discards its individual privileges",
+			zap.String("principal", ops.name()))
+	}
+
+	if err := ops.write(ctx, target, nil); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
+	}
+
+	newPrivilegeSet, _, _, err := ops.fetch(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant role: verify: %w", err)
+	}
+	if newPrivilegeSet != target {
+		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: Jamf did not apply privilege set %q to %q", target, ops.name())
+	}
+
+	annos, err := o.replacedPrivilegeSetAnnotation(ctx, currentPrivilegeSet, target, principal, entitlement)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
+	}
+	return []*v2.Grant{newGrant}, annos, nil
+}
+
+// grantIndividualPrivilege handles Grant of a single named privilege. Only
+// allowed while the principal's privilege_set is already Custom: Grant never
+// transitions a principal into Custom on the caller's behalf, since arriving
+// at Custom that way would (per Jamf's own escalation trap — see
+// jamf.AccountPrivilegesUpdateBody) copy the principal's previous set's
+// entire expanded privilege list rather than starting from nothing. The
+// intended flow is: Revoke the current privilege set first (which moves the
+// principal to Custom with an explicit empty block — see revokePrivilegeSet),
+// then Grant individual privileges.
+func (o *roleResourceType) grantIndividualPrivilege(
+	ctx context.Context,
+	ops roleOps,
+	currentPrivilegeSet string,
+	currentPrivileges jamf.Privileges,
+	target string,
+	newGrant *v2.Grant,
+) ([]*v2.Grant, annotations.Annotations, error) {
+	if currentPrivilegeSet != privilegeSetCustom {
+		return nil, nil, status.Errorf(codes.FailedPrecondition,
+			"jamf-connector: %q does not have a Custom privilege set, so individual privileges cannot be granted; "+
+				"revoke its current privilege set first (this moves it to Custom) and then grant the privileges.", ops.name())
+	}
+
+	if currentPrivileges.Contains(target) {
+		return []*v2.Grant{newGrant}, annotations.New(&v2.GrantAlreadyExists{}), nil
+	}
+
+	updated := addPrivilege(currentPrivileges, target)
+	if err := ops.write(ctx, privilegeSetCustom, &updated); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
+	}
+
+	_, verifyPrivileges, _, err := ops.fetch(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: grant role: verify: %w", err)
+	}
+	if !verifyPrivileges.Contains(target) {
+		// Jamf silently drops privilege names it doesn't recognize (201,
+		// same as a successful write), so the PUT response alone can't be
+		// trusted.
+		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: Jamf did not apply privilege %q to %q", target, ops.name())
+	}
+
+	return []*v2.Grant{newGrant}, nil, nil
+}
+
+// addPrivilege returns a deduped copy of current with target added under the
+// JSSObjects category — Jamf files every privilege name under its correct
+// category regardless of which category element it was sent under, so where
+// a newly granted privilege is placed in the request body doesn't affect
+// which category it ends up stored in.
+func addPrivilege(current jamf.Privileges, target string) jamf.Privileges {
+	updated := dedupePrivileges(current)
+	if !slices.Contains(updated.JSSObjects, target) {
+		updated.JSSObjects = append(updated.JSSObjects, target)
+	}
+	return updated
+}
+
+// removePrivilege returns a deduped copy of current with target removed from
+// whichever category(ies) it appears in.
+func removePrivilege(current jamf.Privileges, target string) jamf.Privileges {
+	updated := dedupePrivileges(current)
+	updated.JSSObjects = removeString(updated.JSSObjects, target)
+	updated.JSSSettings = removeString(updated.JSSSettings, target)
+	updated.JSSActions = removeString(updated.JSSActions, target)
+	updated.Recon = removeString(updated.Recon, target)
+	updated.CasperAdmin = removeString(updated.CasperAdmin, target)
+	updated.CasperRemote = removeString(updated.CasperRemote, target)
+	updated.CasperImaging = removeString(updated.CasperImaging, target)
+	return updated
+}
+
+// dedupePrivileges returns a copy of p with each category's duplicate
+// entries removed — Jamf's GET response can contain duplicates within a
+// category, and re-sending them verbatim would only grow the list on every
+// write.
+func dedupePrivileges(p jamf.Privileges) jamf.Privileges {
+	return jamf.Privileges{
+		JSSObjects:    dedupeStrings(p.JSSObjects),
+		JSSSettings:   dedupeStrings(p.JSSSettings),
+		JSSActions:    dedupeStrings(p.JSSActions),
+		Recon:         dedupeStrings(p.Recon),
+		CasperAdmin:   dedupeStrings(p.CasperAdmin),
+		CasperRemote:  dedupeStrings(p.CasperRemote),
+		CasperImaging: dedupeStrings(p.CasperImaging),
+	}
+}
+
+func dedupeStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+func removeString(in []string, target string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == target {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // replacedPrivilegeSetAnnotation reports a GrantReplaced annotation naming the
-// grant that Grant's write just displaced, mirroring the pattern used by
-// Managed Device's Grant for its "assigned" entitlement. previousPrivilegeSet
-// is the principal's privilege_set as read BEFORE the write. There is nothing
-// to report — and the annotation is skipped — when previousPrivilegeSet is
-// empty/unset, Custom (individual privileges have no Role-resource grant to
-// name), or already the target set (nothing was displaced).
+// grant that Grant's write just displaced. previousPrivilegeSet is the
+// principal's privilege_set as read BEFORE the write. There is nothing to
+// report — and the annotation is skipped — when previousPrivilegeSet is
+// empty/unset, Custom (individual privileges have no single Role-resource
+// grant to name as displaced; grantPrivilegeSet logs that case separately),
+// or already the target set (nothing was displaced).
 func (o *roleResourceType) replacedPrivilegeSetAnnotation(
 	ctx context.Context,
 	previousPrivilegeSet, targetPrivilegeSet string,
@@ -255,87 +469,95 @@ func (o *roleResourceType) replacedPrivilegeSetAnnotation(
 	return annotations.New(&v2.GrantReplaced{ReplacedGrantId: replacedGrantID}), nil
 }
 
-// Revoke always downgrades gr's principal (a userAccount or group) to the
-// fixed Enrollment Only privilege set, regardless of which built-in set is
-// being revoked. Jamf's privilege_set enum has no neutral/no-access value,
-// so Enrollment Only — the least-privileged built-in set — is the
-// deliberate, fixed downgrade target for every Revoke; this is not an
-// attempt to compute a "smarter" target.
-//
-// Revoke only downgrades if the principal STILL holds the specific
-// privilege_set that gr's entitlement resource represents. A Grant for a
-// different privilege set (see Grant's GrantReplaced annotation) may have
-// displaced this grant's privilege_set already; if the platform dispatches a
-// stale Revoke for it before that reconciles, downgrading here would wipe
-// out whatever privilege_set the principal currently, legitimately holds.
-// Entitlements does not declare WithGrantableTo for individual-privilege
-// Role resources, so the platform should never invoke Revoke for one, but
-// the built-in-set guard below rejects it defensively anyway, same as Grant.
+// Revoke revokes gr's Role grant (either a built-in privilege set or an
+// individual privilege) from gr's principal (a userAccount or group). See
+// revokePrivilegeSet and revokeIndividualPrivilege for the respective rules.
+// If the account/group backing the grant has itself been deleted,
+// GetUserAccountDetails/GetGroupDetails 404s, which is mapped to
+// GrantAlreadyRevoked — a deleted principal trivially has nothing left to
+// revoke.
 func (o *roleResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
-	grantedPrivilegeSet := gr.Entitlement.Resource.Id.Resource
-	if !slices.Contains(privilegeSets, grantedPrivilegeSet) {
-		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: role provisioning is only supported for the built-in privilege sets %v, got %q", privilegeSets, grantedPrivilegeSet)
+	ctx = jamf.WithFreshReads(ctx)
+
+	ops, err := o.roleOpsFor(gr.Principal.Id)
+	if err != nil {
+		return nil, err
 	}
 
-	switch gr.Principal.Id.ResourceType {
-	case resourceTypeUserAccount.Id:
-		userID, err := strconv.Atoi(gr.Principal.Id.Resource)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke role: invalid user account id %q: %s", gr.Principal.Id.Resource, err)
-		}
-
-		current, err := o.client.GetUserAccountDetails(ctx, userID)
-		if err != nil {
-			return nil, fmt.Errorf("jamf-connector: revoke role: %w", err)
-		}
-		if current.PrivilegeSet == privilegeSetEnrollmentOnly {
-			// Enrollment Only is the fixed floor Revoke downgrades everything to
-			// (see the doc comment above), so revoking a grant that's itself
-			// Enrollment Only is inherently a no-op — there is nothing lower to
-			// move to. This intentionally returns GrantAlreadyRevoked rather than
-			// writing, even though Entitlements does advertise Enrollment Only as
-			// independently grantable.
+	currentPrivilegeSet, currentPrivileges, accessLevel, err := ops.fetch(ctx)
+	if err != nil {
+		if jamf.IsNotFoundError(err) {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}
-		if current.PrivilegeSet != grantedPrivilegeSet {
-			// The account has since moved to some other privilege set — this
-			// specific grant is stale/already-superseded. Downgrading now
-			// would destroy the currently correct privilege_set nobody asked
-			// to revoke, so treat this grant as already gone instead.
-			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
-		}
+		return nil, fmt.Errorf("jamf-connector: revoke role: %w", err)
+	}
 
-		if err := o.client.SetUserAccountPrivilegeSet(ctx, userID, privilegeSetEnrollmentOnly); err != nil {
-			return nil, fmt.Errorf("jamf-connector: revoke role: %w", err)
-		}
-	case resourceTypeGroup.Id:
-		groupID, err := strconv.Atoi(gr.Principal.Id.Resource)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke role: invalid group id %q: %s", gr.Principal.Id.Resource, err)
-		}
+	if gr.Principal.Id.ResourceType == resourceTypeUserAccount.Id && accessLevel == accessLevelGroupAccess {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"jamf-connector: account %q has Group Access, so its rights come from its groups; assign the role to the group instead.", ops.name())
+	}
 
-		current, err := o.client.GetGroupDetails(ctx, groupID)
-		if err != nil {
-			return nil, fmt.Errorf("jamf-connector: revoke role: %w", err)
-		}
-		if current.PrivilegeSet == privilegeSetEnrollmentOnly {
-			// Enrollment Only is the fixed floor Revoke downgrades everything to
-			// (see the doc comment above), so revoking a grant that's itself
-			// Enrollment Only is inherently a no-op — there is nothing lower to
-			// move to. This intentionally returns GrantAlreadyRevoked rather than
-			// writing, even though Entitlements does advertise Enrollment Only as
-			// independently grantable.
-			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
-		}
-		if current.PrivilegeSet != grantedPrivilegeSet {
-			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
-		}
+	target := gr.Entitlement.Resource.Id.Resource
+	if slices.Contains(privilegeSets, target) {
+		return o.revokePrivilegeSet(ctx, ops, currentPrivilegeSet, target)
+	}
+	return o.revokeIndividualPrivilege(ctx, ops, currentPrivilegeSet, currentPrivileges, target)
+}
 
-		if err := o.client.SetGroupPrivilegeSet(ctx, groupID, privilegeSetEnrollmentOnly); err != nil {
-			return nil, fmt.Errorf("jamf-connector: revoke role: %w", err)
-		}
-	default:
-		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: role can only be revoked for a user account or group, got resource type %q", gr.Principal.Id.ResourceType)
+// revokePrivilegeSet handles Revoke of a built-in privilege set. There is no
+// neutral/no-access privilege_set in Jamf's enum, so revoking a set moves the
+// principal to Custom with an explicit empty <privileges> block — the lowest
+// access Jamf allows (it always re-adds "Read License Information" and never
+// lets a client remove it). Revoke only does this if the principal STILL
+// holds the specific set gr's entitlement names: a Grant for a different set
+// may have displaced this grant's privilege_set already (see Grant's
+// GrantReplaced annotation), and downgrading here would then wipe out
+// whatever the principal currently, legitimately holds.
+func (o *roleResourceType) revokePrivilegeSet(ctx context.Context, ops roleOps, currentPrivilegeSet, target string) (annotations.Annotations, error) {
+	if currentPrivilegeSet != target {
+		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+	}
+
+	empty := jamf.Privileges{}
+	if err := ops.write(ctx, privilegeSetCustom, &empty); err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke role: %w", err)
+	}
+
+	newPrivilegeSet, _, _, err := ops.fetch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke role: verify: %w", err)
+	}
+	if newPrivilegeSet != privilegeSetCustom {
+		return nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: Jamf did not move %q to %q", ops.name(), privilegeSetCustom)
+	}
+
+	return nil, nil
+}
+
+// revokeIndividualPrivilege handles Revoke of a single named privilege.
+// "Read License Information" is rejected outright — Jamf requires it on
+// every Custom privilege set and silently keeps it even if asked to remove
+// it, so reporting success here would be a lie.
+func (o *roleResourceType) revokeIndividualPrivilege(ctx context.Context, ops roleOps, currentPrivilegeSet string, currentPrivileges jamf.Privileges, target string) (annotations.Annotations, error) {
+	if currentPrivilegeSet != privilegeSetCustom || !currentPrivileges.Contains(target) {
+		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+	}
+
+	if target == privilegeReadLicenseInformation {
+		return nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: Jamf requires this privilege on every Custom privilege set")
+	}
+
+	updated := removePrivilege(currentPrivileges, target)
+	if err := ops.write(ctx, privilegeSetCustom, &updated); err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke role: %w", err)
+	}
+
+	_, verifyPrivileges, _, err := ops.fetch(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: revoke role: verify: %w", err)
+	}
+	if verifyPrivileges.Contains(target) {
+		return nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: Jamf did not remove privilege %q from %q", target, ops.name())
 	}
 
 	return nil, nil

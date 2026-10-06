@@ -216,22 +216,70 @@ type UserAccountCreateBody struct {
 	Privileges *Privileges `xml:"privileges,omitempty"`
 }
 
-// UserAccountPrivilegeSetUpdate is the PUT body for
-// /JSSResource/accounts/userid/{id} that updates only privilege_set. Per
-// Classic API field-level-merge semantics (client.go doc comment at
-// doRequestWithMethod), sending only this element leaves the rest of the
-// account record (email, full_name, access_level, etc.) untouched.
-type UserAccountPrivilegeSetUpdate struct {
-	XMLName      xml.Name `xml:"account"`
-	PrivilegeSet string   `xml:"privilege_set"`
+// AccountPrivilegesUpdateBody is the minimal XML PUT body for
+// /JSSResource/accounts/userid/{id} used by Role Grant/Revoke to change an
+// account's privilege_set/privileges without touching anything else.
+// Confirmed-safe field-level merge (see package-level VERIFIED API BEHAVIOUR
+// notes in role.go): omitted elements are left untouched by Jamf, so there
+// is no need to round-trip full_name/email/enabled/access_level the way an
+// unconfirmed-merge endpoint would require. Password and Site are
+// deliberately absent — Password because Jamf never returns it on GET so it
+// can't be preserved, and Site because Jamf rejects a zero site ID with 409
+// and there is no legitimate non-zero value worth risking here.
+//
+// Privileges is a pointer so an explicit, possibly-empty
+// <privileges></privileges> can be forced: a nil pointer omits the element
+// entirely (leaving Jamf's stored privileges untouched), while a non-nil
+// pointer — even one wrapping an all-empty Privileges — still emits the
+// wrapper element. The latter is required whenever privilege_set is written
+// as Custom: sending Custom without an explicit block (even an empty one)
+// makes Jamf copy the account's previous set's entire expanded privilege
+// list rather than leaving it empty.
+type AccountPrivilegesUpdateBody struct {
+	XMLName      xml.Name    `xml:"account"`
+	Name         string      `xml:"name"`
+	PrivilegeSet string      `xml:"privilege_set,omitempty"`
+	Privileges   *Privileges `xml:"privileges,omitempty"`
 }
 
-// GroupPrivilegeSetUpdate is the PUT body for
-// /JSSResource/accounts/groupid/{id} that updates only privilege_set. Same
-// field-level-merge semantics as UserAccountPrivilegeSetUpdate.
-type GroupPrivilegeSetUpdate struct {
-	XMLName      xml.Name `xml:"group"`
-	PrivilegeSet string   `xml:"privilege_set"`
+// GroupPrivilegesUpdateBody is AccountPrivilegesUpdateBody's counterpart for
+// PUT /JSSResource/accounts/groupid/{id} — same minimal-body, confirmed-merge
+// rationale. Deliberately has no Members field: Role Grant/Revoke must never
+// send <members> for a group, since that element is exactly what
+// group.go's Grant/Revoke (a different entitlement entirely) uses to manage
+// membership, and omitting it here preserves whatever membership the group
+// currently has.
+type GroupPrivilegesUpdateBody struct {
+	XMLName      xml.Name    `xml:"group"`
+	Name         string      `xml:"name"`
+	PrivilegeSet string      `xml:"privilege_set,omitempty"`
+	Privileges   *Privileges `xml:"privileges,omitempty"`
+}
+
+// GroupMembersUpdateBody is the minimal XML PUT body for
+// /JSSResource/accounts/groupid/{id} used for membership-only changes (see
+// Client.UpdateGroupMembers). Unlike GroupUpdateBody — used by
+// SetGroupPrivilegeSet's full-object PUT, which exists because
+// privilege_set-only writes are not confirmed to merge — a membership PUT
+// carrying only name and members is confirmed safe on its own: access_level,
+// privilege_set and site are left untouched when omitted. Resending them
+// here would risk reintroducing a zero site (Jamf rejects
+// <site><id>0</id></site> with a 409), so they are deliberately not fields
+// on this type at all.
+//
+// Members is a pointer so an explicit empty <members></members> can be
+// forced when the last member is being removed: a nil slice under
+// `xml:"members>user"` (as GroupUpdateBody uses) would omit the element
+// entirely, which Jamf interprets as "leave members unchanged" rather than
+// "clear members".
+type GroupMembersUpdateBody struct {
+	XMLName xml.Name          `xml:"group"`
+	Name    string            `xml:"name"`
+	Members *groupMembersList `xml:"members"`
+}
+
+type groupMembersList struct {
+	Users []BaseType `xml:"user"`
 }
 
 type UserGroupsResponse struct {
