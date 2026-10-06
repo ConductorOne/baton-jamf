@@ -94,7 +94,7 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 			return nil, nil, err
 		}
 		for _, site := range user.Sites {
-			stringId := strconv.Itoa(site.Site.ID)
+			stringId := strconv.Itoa(site.ID)
 			if stringId == resource.Id.Resource {
 				userMembershipGrant := grant.NewGrant(resource, memberEntitlement, ur.Id)
 				rv = append(rv, userMembershipGrant)
@@ -154,6 +154,17 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 	return rv, nil, nil
 }
 
+// userHasSite reports whether siteID appears in sites, a user's current
+// <sites> list.
+func userHasSite(sites jamf.UserSites, siteID int) bool {
+	for _, s := range sites {
+		if s.ID == siteID {
+			return true
+		}
+	}
+	return false
+}
+
 // Grant adds principal (a Jamf user) to the multi-valued <sites> list of the
 // site backing entitlement's resource. The principal-type guard is defense-
 // in-depth: Grants() emits site grants for four principal types, but only
@@ -163,6 +174,10 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 // Aligned with userGroup.go's Grant/Revoke pattern: client.AddUserSite
 // reports via its bool return whether the user was already a site member, so
 // that case is surfaced here as GrantAlreadyExists instead of a fresh grant.
+// A 409 from the write isn't necessarily "already a member" — Jamf's Classic
+// API also 409s for other validation failures on this endpoint (e.g. an
+// unknown site id) — so that case is disambiguated with a fresh re-read
+// rather than assumed to be success.
 func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -181,6 +196,16 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 
 	alreadyMember, err := g.client.AddUserSite(ctx, userID, siteID)
 	if err != nil {
+		if jamf.IsAlreadyExistsError(err) {
+			updated, detailsErr := g.client.GetUserDetails(ctx, userID)
+			if detailsErr != nil {
+				return nil, nil, fmt.Errorf("jamf-connector: grant site member: 409 response, and failed to verify membership: %w", detailsErr)
+			}
+			if userHasSite(updated.Sites, siteID) {
+				return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+			}
+			return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: Jamf could not assign site %d to user %d; the site may no longer exist", siteID, userID)
+		}
 		return nil, nil, fmt.Errorf("jamf-connector: grant site member: %w", err)
 	}
 	if alreadyMember {
@@ -195,7 +220,10 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 // RemoveUserSite reports via its bool return whether the user was already
 // absent from the site (including the case where the user has since been
 // deleted), so that case is surfaced here as GrantAlreadyRevoked instead of
-// a plain success.
+// a plain success. A 409 from the write is disambiguated the same way as
+// Grant: the pre-write read already confirmed the user had the site, so a
+// 409 here means something else went wrong — re-read fresh and only report
+// GrantAlreadyRevoked if the site is actually gone.
 func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -214,6 +242,15 @@ func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotation
 
 	alreadyAbsent, err := g.client.RemoveUserSite(ctx, userID, siteID)
 	if err != nil {
+		if jamf.IsAlreadyExistsError(err) {
+			updated, detailsErr := g.client.GetUserDetails(ctx, userID)
+			if detailsErr != nil {
+				return nil, fmt.Errorf("jamf-connector: revoke site member: 409 response, and failed to verify membership: %w", detailsErr)
+			}
+			if !userHasSite(updated.Sites, siteID) {
+				return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+			}
+		}
 		return nil, fmt.Errorf("jamf-connector: revoke site member: %w", err)
 	}
 	if alreadyAbsent {

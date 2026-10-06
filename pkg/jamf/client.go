@@ -607,13 +607,11 @@ func (c *Client) AddUserSite(ctx context.Context, userID int, siteID int) (bool,
 		return false, err
 	}
 	for _, s := range user.Sites {
-		if s.Site.ID == siteID {
+		if s.ID == siteID {
 			return true, nil // already a member — idempotent success, not an error
 		}
 	}
-	user.Sites = append(user.Sites, struct {
-		Site BaseType `json:"site"`
-	}{Site: BaseType{ID: siteID}})
+	user.Sites = append(user.Sites, BaseType{ID: siteID})
 	if err := c.updateUserSites(ctx, userID, user.Sites); err != nil {
 		return false, err
 	}
@@ -640,12 +638,10 @@ func (c *Client) RemoveUserSite(ctx context.Context, userID int, siteID int) (bo
 		return false, err
 	}
 
-	newSites := make([]struct {
-		Site BaseType `json:"site"`
-	}, 0, len(user.Sites))
+	newSites := make(UserSites, 0, len(user.Sites))
 	found := false
 	for _, s := range user.Sites {
-		if s.Site.ID == siteID {
+		if s.ID == siteID {
 			found = true
 			continue
 		}
@@ -663,9 +659,7 @@ func (c *Client) RemoveUserSite(ctx context.Context, userID int, siteID int) (bo
 // updateUserSites PUTs the full desired <sites> list for a user. Per Classic
 // API field-level-merge semantics, sending only <sites> leaves the rest of
 // the user record untouched.
-func (c *Client) updateUserSites(ctx context.Context, userID int, sites []struct {
-	Site BaseType `json:"site"`
-}) error {
+func (c *Client) updateUserSites(ctx context.Context, userID int, sites UserSites) error {
 	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userID))
 	if err != nil {
 		return err
@@ -673,7 +667,7 @@ func (c *Client) updateUserSites(ctx context.Context, userID int, sites []struct
 
 	items := make([]userSiteItem, 0, len(sites))
 	for _, s := range sites {
-		items = append(items, userSiteItem{ID: s.Site.ID})
+		items = append(items, userSiteItem{ID: s.ID})
 	}
 	reqBody := UserSitesUpdateBody{Sites: items}
 	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)

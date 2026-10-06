@@ -187,9 +187,7 @@ func (s *server) seedData() {
 		{
 			BaseType: jamf.BaseType{ID: 1, Name: "john.appleseed"},
 			FullName: "John Appleseed", Email: "john.appleseed@example.com",
-			Sites: []struct {
-				Site jamf.BaseType `json:"site"`
-			}{{Site: headquarters}},
+			Sites: jamf.UserSites{headquarters},
 		},
 		{BaseType: jamf.BaseType{ID: 2, Name: "jane.doe"}, FullName: "Jane Doe", Email: "jane.doe@example.com"},
 		{BaseType: jamf.BaseType{ID: 3, Name: "carol.smith"}, FullName: "Carol Smith", Email: "carol.smith@example.com"},
@@ -197,9 +195,7 @@ func (s *server) seedData() {
 		{
 			BaseType: jamf.BaseType{ID: 5, Name: "eve.miller"},
 			FullName: "Eve Miller", Email: "eve.miller@example.com",
-			Sites: []struct {
-				Site jamf.BaseType `json:"site"`
-			}{{Site: remote}},
+			Sites: jamf.UserSites{remote},
 		},
 	}
 	for _, u := range users {
@@ -462,7 +458,9 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 // There is no distinct "already a member"/"not a member" error status here —
 // AddUserSite/RemoveUserSite absorb both cases client-side before ever
 // issuing this PUT (see pkg/jamf/client.go), so this handler simply replaces
-// the user's Sites wholesale and always succeeds for a known user.
+// the user's Sites wholesale for a known user. An unrecognized site id
+// (including the sentinel 0) fails the whole PUT with 409, mirroring a live
+// Jamf Pro tenant's validation on this endpoint.
 func (s *server) handleUpdateUserSites(w http.ResponseWriter, r *http.Request, id int) {
 	body, ok := decodeXMLBody[jamf.UserSitesUpdateBody](w, r)
 	if !ok {
@@ -478,18 +476,14 @@ func (s *server) handleUpdateUserSites(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 
-	newSites := make([]struct {
-		Site jamf.BaseType `json:"site"`
-	}, 0, len(body.Sites))
+	newSites := make(jamf.UserSites, 0, len(body.Sites))
 	for _, item := range body.Sites {
 		site, ok := s.findSiteByIDLocked(item.ID)
 		if !ok {
-			writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown site id %d", item.ID))
+			writeJSONError(w, http.StatusConflict, fmt.Sprintf("unknown site id %d", item.ID))
 			return
 		}
-		newSites = append(newSites, struct {
-			Site jamf.BaseType `json:"site"`
-		}{Site: site.BaseType})
+		newSites = append(newSites, site.BaseType)
 	}
 	u.Sites = newSites
 

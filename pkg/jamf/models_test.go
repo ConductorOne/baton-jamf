@@ -139,6 +139,57 @@ func TestUserSitesUpdateBody_EmptySitesSendsEmptyWrapper(t *testing.T) {
 	}
 }
 
+// TestUserSites_UnmarshalJSON_AcceptsFlatAndWrappedShapes covers the fix for
+// CXH-2344: a live Jamf Pro 11.32.1 tenant returns a user's <sites> list as a
+// flat JSON list (each entry's id/name at the top level), but the Classic
+// API's documented shape wraps each entry under a "site" key. UserSites must
+// decode real ids from either shape, plus the empty-list and null cases.
+func TestUserSites_UnmarshalJSON_AcceptsFlatAndWrappedShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want UserSites
+	}{
+		{
+			name: "flat shape (live tenant)",
+			in:   `[{"id":5,"name":"Site A"},{"id":6,"name":"Site B"}]`,
+			want: UserSites{{ID: 5, Name: "Site A"}, {ID: 6, Name: "Site B"}},
+		},
+		{
+			name: "wrapped shape (documented Classic API shape)",
+			in:   `[{"site":{"id":5,"name":"Site A"}}]`,
+			want: UserSites{{ID: 5, Name: "Site A"}},
+		},
+		{
+			name: "empty list",
+			in:   `[]`,
+			want: UserSites{},
+		},
+		{
+			name: "null",
+			in:   `null`,
+			want: UserSites{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got UserSites
+			if err := json.Unmarshal([]byte(tt.in), &got); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %+v, want %+v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("index %d: got %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestComputerAssignedUserUpdate_JSONRoundTrip(t *testing.T) {
 	body := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserFields{
 		Username: "jappleseed",

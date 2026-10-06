@@ -1,6 +1,7 @@
 package jamf
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"slices"
 )
@@ -21,10 +22,46 @@ type User struct {
 	// PhoneNumber is the Classic API's key for this field (findusersbyid) -
 	// not "phone", which is the unrelated key Jamf uses for a computer's
 	// userAndLocation.phone.
-	PhoneNumber string `json:"phone_number"`
-	Sites       []struct {
-		Site BaseType `json:"site"`
-	} `json:"sites"`
+	PhoneNumber string    `json:"phone_number"`
+	Sites       UserSites `json:"sites"`
+}
+
+// UserSites is the decoded form of a Jamf user's <sites> list. A live Jamf
+// Pro 11.32.1 tenant returns this as a flat list, each entry's id/name at the
+// top level (e.g. {"id":5,"name":"Site A"}), while the Classic API's
+// documented shape wraps each entry under a "site" key (e.g.
+// {"site":{"id":5,"name":"Site A"}}). UnmarshalJSON accepts both so a site's
+// real id is always decoded, regardless of which shape the tenant serves.
+type UserSites []BaseType
+
+func (s *UserSites) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	sites := make(UserSites, 0, len(raw))
+	for _, item := range raw {
+		var wrapped struct {
+			Site *BaseType `json:"site"`
+		}
+		if err := json.Unmarshal(item, &wrapped); err != nil {
+			return err
+		}
+		if wrapped.Site != nil {
+			sites = append(sites, *wrapped.Site)
+			continue
+		}
+
+		var flat BaseType
+		if err := json.Unmarshal(item, &flat); err != nil {
+			return err
+		}
+		sites = append(sites, flat)
+	}
+
+	*s = sites
+	return nil
 }
 
 type BaseAccount struct {

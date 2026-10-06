@@ -27,8 +27,10 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 }
 
 // userSitesHandler serves GET /JSSResource/users/id/{id} returning the
-// user's current site memberships, and records the <sites> payload of any PUT
-// to the same path so tests can assert the read-modify-write result.
+// user's current site memberships in the flat JSON shape a live Jamf Pro
+// 11.32.1 tenant serves (each entry's id/name at the top level, not wrapped
+// under a "site" key), and records the <sites> payload of any PUT to the
+// same path so tests can assert the read-modify-write result.
 func userSitesHandler(t *testing.T, currentSiteIDs []int, gotPUTBody *[]byte) http.HandlerFunc {
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -36,7 +38,7 @@ func userSitesHandler(t *testing.T, currentSiteIDs []int, gotPUTBody *[]byte) ht
 		case http.MethodGet:
 			sites := make([]map[string]any, 0, len(currentSiteIDs))
 			for _, id := range currentSiteIDs {
-				sites = append(sites, map[string]any{"site": map[string]any{"id": id, "name": "Site"}})
+				sites = append(sites, map[string]any{"id": id, "name": "Site"})
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
