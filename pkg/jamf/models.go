@@ -17,7 +17,12 @@ type User struct {
 	Email        string `json:"email"`
 	EmailAddress string `json:"email_address"`
 	Username     string `json:"username"`
-	Sites        []struct {
+	Position     string `json:"position"`
+	// PhoneNumber is the Classic API's key for this field (findusersbyid) -
+	// not "phone", which is the unrelated key Jamf uses for a computer's
+	// userAndLocation.phone.
+	PhoneNumber string `json:"phone_number"`
+	Sites       []struct {
 		Site BaseType `json:"site"`
 	} `json:"sites"`
 }

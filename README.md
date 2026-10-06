@@ -43,7 +43,13 @@ single-valued — granting it to a new user displaces whichever user was
 previously assigned. Grant currently only works on devices that already have
 an assigned user (the `assigned` entitlement is only emitted for devices that
 report an assignee) — it cannot be used to assign a previously-unassigned
-device to a user.
+device to a user. Computers use the Jamf Pro v4 computers-inventory API.
+Granting a computer overwrites the assignee's username, name, email,
+position and phone with the new user's values (Jamf never fills these in on
+its own for computers); Revoke clears all five. Mobile devices only ever
+have their username set directly — Jamf derives the assignee's name, email
+and phone from the directory automatically, and Revoke clears all of them
+together by clearing the username.
 
 Role Grant/Revoke sets or clears a `userAccount` or `group`'s role. All three
 built-in privilege sets (`Administrator`, `Auditor`, `Enrollment Only`) and

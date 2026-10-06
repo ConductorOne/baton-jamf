@@ -161,33 +161,27 @@ type MobileDeviceDetailLocation struct {
 }
 
 // ComputerAssignedUserUpdate is the PATCH body for
-// /api/v1/computers-inventory-detail/{id} that sets (Grant) or clears
-// (Revoke) the assigned user via userAndLocation.username.
+// /api/v4/computers-inventory-detail/{id} that sets (Grant) or clears
+// (Revoke) the assigned user's identity via userAndLocation.
 type ComputerAssignedUserUpdate struct {
-	UserAndLocation ComputerAssignedUserUpdateLocation `json:"userAndLocation"`
+	UserAndLocation ComputerAssignedUserFields `json:"userAndLocation"`
 }
 
-type ComputerAssignedUserUpdateLocation struct {
-	// Empty string is assumed to clear the assignment. This is unverified
-	// against a live Jamf tenant — if Jamf instead requires the field to be
-	// omitted entirely, or rejects/no-ops on an empty string, Revoke will
-	// silently fail to clear the assignment. Confirm against a real tenant
-	// before relying on this in production.
+// ComputerAssignedUserFields is the assignee-identity subset of a computer's
+// userAndLocation that Grant/Revoke write: username, realname, email,
+// position and phone. Confirmed against a live tenant: "" clears a field,
+// an omitted key is a no-op, and the keys are independent — so all five are
+// always sent as plain strings (no `omitempty`). Grant populates every field
+// from the new assignee's Jamf user record (overwriting whatever the
+// previous assignee left behind, since Jamf never auto-populates these for
+// computers), and Revoke sends the zero value of this struct to clear all
+// five.
+type ComputerAssignedUserFields struct {
 	Username string `json:"username"`
-
-	// Email is best-effort mitigation for a stale-email reassignment risk:
-	// resolveUser can match a device's assignee onto a synced user via email,
-	// so leaving a cleared computer's email untouched on Revoke could let a
-	// future sync re-derive the old assignee from that leftover value and
-	// effectively undo the revoke, if Jamf's PATCH is a partial merge rather
-	// than a full replace. A *string is used (rather than a plain string) so
-	// this field can be omitted entirely for Grant, which must never touch
-	// email, while Revoke still sends an explicit "" to clear it — a plain
-	// string with `omitempty` could not do the latter, since "" is also the
-	// zero value `omitempty` would use to justify dropping the field. Like
-	// Username above, the empty-string clear semantics here are unverified
-	// against a live Jamf tenant.
-	Email *string `json:"email,omitempty"`
+	Realname string `json:"realname"`
+	Email    string `json:"email"`
+	Position string `json:"position"`
+	Phone    string `json:"phone"`
 }
 
 // MobileDeviceAssignedUserUpdate is the PATCH body for
@@ -197,7 +191,13 @@ type MobileDeviceAssignedUserUpdate struct {
 	Location MobileDeviceAssignedUserUpdateLocation `json:"location"`
 }
 
+// MobileDeviceAssignedUserUpdateLocation carries only username: setting it
+// makes Jamf auto-populate realname/email/position/phone from the directory
+// user (confirmed against a live tenant), and a nonexistent username is
+// accepted by auto-creating a directory user, so the connector never has
+// (or needs) those fields to send here. "" clears the username and every
+// auto-populated field together; null/{} are silent no-ops, so Revoke must
+// always send an explicit "" rather than omitting the field.
 type MobileDeviceAssignedUserUpdateLocation struct {
-	// Same open question as ComputerAssignedUserUpdateLocation.Username above.
 	Username string `json:"username"`
 }

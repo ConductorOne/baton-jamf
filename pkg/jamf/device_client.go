@@ -9,14 +9,15 @@ import (
 )
 
 const (
-	// TODO(follow-up ticket): v1 list/detail are deprecated (x-deprecation-date
-	// 2025-06-30), and v3 is also now deprecated (2026-07-14) — don't migrate to
-	// it. v4 is the current, non-deprecated replacement and has been confirmed a
-	// compatible drop-in swap (same fields, same envelope, only the URL path
-	// changes); Jamf guarantees ~1 year of availability past deprecation, so
-	// removal could land in any release.
-	computersInventoryUrlPath      = "/api/v1/computers-inventory"
-	computerInventoryDetailUrlPath = "/api/v1/computers-inventory-detail/%s"
+	// v1 and v3 computers-inventory(-detail) are both deprecated (v1's
+	// x-deprecation-date was 2025-06-30, v3's is 2026-07-14); v4 is the
+	// current, non-deprecated replacement and a confirmed drop-in swap for
+	// list/detail (same fields, same envelope). The one behavioral
+	// difference: v4's PATCH returns 204 with no body, where v1 returned 200
+	// with the updated record — doRequestWithJSONMethod already skips
+	// decoding when target is nil, so this is a no-op for callers.
+	computersInventoryUrlPath      = "/api/v4/computers-inventory"
+	computerInventoryDetailUrlPath = "/api/v4/computers-inventory-detail/%s"
 	mobileDevicesUrlPath           = "/api/v2/mobile-devices"
 	mobileDeviceUrlPath            = "/api/v2/mobile-devices/%s"
 	mobileDeviceDetailUrlPath      = "/api/v2/mobile-devices/%s/detail"
@@ -138,26 +139,35 @@ func (c *Client) GetMobileDeviceDetail(ctx context.Context, deviceID string) (*M
 	return &target, nil
 }
 
-// SetComputerAssignedUser sets (Grant) or clears (Revoke, username == "")
-// the assigned-user field on a computer's inventory record via
-// PATCH /api/v1/computers-inventory-detail/{id}, userAndLocation.username.
-// email, when non-nil, is also sent — Revoke passes a pointer to "" to clear
-// the stale email alongside username (see ComputerAssignedUserUpdateLocation.
-// Email); Grant passes nil so its PATCH body never touches email. Single-
-// valued/exclusive: setting a new username silently displaces whatever
-// username was previously recorded.
-func (c *Client) SetComputerAssignedUser(ctx context.Context, computerID string, username string, email *string) error {
+// SetComputerAssignedUser sets (Grant) or clears (Revoke, the zero value of
+// fields) the assigned user's identity on a computer's inventory record via
+// PATCH /api/v4/computers-inventory-detail/{id}, userAndLocation. All five
+// fields are sent as plain strings on every call — Grant to overwrite
+// whatever the previous assignee left behind (Jamf never auto-populates
+// these for computers), Revoke to clear them — never omitted, since an
+// omitted key is a no-op. Single-valued/exclusive: setting a new username
+// silently displaces whatever username was previously recorded. The Classic
+// PUT is deliberately not used for device assignment — see
+// SetMobileDeviceAssignedUser for the confirmed risk that makes it unsafe.
+func (c *Client) SetComputerAssignedUser(ctx context.Context, computerID string, fields ComputerAssignedUserFields) error {
 	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
 	if err != nil {
 		return err
 	}
 
-	reqBody := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserUpdateLocation{Username: username, Email: email}}
+	reqBody := ComputerAssignedUserUpdate{UserAndLocation: fields}
 	return c.doRequestWithJSONMethod(ctx, http.MethodPatch, url, reqBody, nil)
 }
 
 // SetMobileDeviceAssignedUser is the mobile-device equivalent, via
-// PATCH /api/v2/mobile-devices/{id}, location.username.
+// PATCH /api/v2/mobile-devices/{id}, location.username. Setting a non-empty
+// username makes Jamf auto-populate realname/email/position/phone from the
+// directory user (a nonexistent username is accepted and auto-creates one),
+// so the connector never sends those fields itself; username == "" clears
+// the username and every auto-populated field together. The Classic PUT is
+// deliberately not used here: confirmed against a live tenant, it writes the
+// device's leftover location values back into the directory user's own
+// record.
 func (c *Client) SetMobileDeviceAssignedUser(ctx context.Context, deviceID string, username string) error {
 	url, err := c.getUrl(fmt.Sprintf(mobileDeviceUrlPath, deviceID))
 	if err != nil {

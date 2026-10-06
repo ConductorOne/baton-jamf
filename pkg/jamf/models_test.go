@@ -140,13 +140,19 @@ func TestUserSitesUpdateBody_EmptySitesSendsEmptyWrapper(t *testing.T) {
 }
 
 func TestComputerAssignedUserUpdate_JSONRoundTrip(t *testing.T) {
-	body := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserUpdateLocation{Username: "jappleseed"}}
+	body := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserFields{
+		Username: "jappleseed",
+		Realname: "Johnny Appleseed",
+		Email:    "jappleseed@ex.com",
+		Position: "Engineer",
+		Phone:    "555-1234",
+	}}
 
 	out, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := `{"userAndLocation":{"username":"jappleseed"}}`; string(out) != want {
+	if want := `{"userAndLocation":{"username":"jappleseed","realname":"Johnny Appleseed","email":"jappleseed@ex.com","position":"Engineer","phone":"555-1234"}}`; string(out) != want {
 		t.Errorf("got %q, want %q", string(out), want)
 	}
 
@@ -159,14 +165,14 @@ func TestComputerAssignedUserUpdate_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestComputerAssignedUserUpdate_EmptyUsernameClearsField(t *testing.T) {
-	body := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserUpdateLocation{Username: ""}}
+func TestComputerAssignedUserUpdate_EmptyFieldsClearEverything(t *testing.T) {
+	body := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserFields{}}
 
 	out, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := `{"userAndLocation":{"username":""}}`; string(out) != want {
+	if want := `{"userAndLocation":{"username":"","realname":"","email":"","position":"","phone":""}}`; string(out) != want {
 		t.Errorf("got %q, want %q", string(out), want)
 	}
 }
