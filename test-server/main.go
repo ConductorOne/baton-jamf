@@ -995,10 +995,11 @@ func (s *server) handleUserGroupByID(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateUserGroupMembers implements User Group Grant/Revoke
 // (CXH-2344): PUT /JSSResource/usergroups/id/{id} carrying either
-// <user_additions> or <user_deletions>. Mirrors the idempotency mapping the
-// connector assumes (architecture-plan.md §2.4/§9 item 1, unverified against
-// a live tenant): adding an existing member 409s, removing a non-member
-// 404s.
+// <user_additions> or <user_deletions>. Mirrors verified behaviour against a
+// live Jamf Pro 11.32.1 tenant: adding an existing member (or adding to a
+// smart group) 201s and changes nothing; adding an unknown user id or
+// removing a non-member 409s with "Unable to match user ... in
+// additions/deletions list".
 func (s *server) handleUpdateUserGroupMembers(w http.ResponseWriter, r *http.Request, id int) {
 	body, ok := decodeXMLBody[jamf.UserGroupMemberMutation](w, r)
 	if !ok {
@@ -1016,32 +1017,34 @@ func (s *server) handleUpdateUserGroupMembers(w http.ResponseWriter, r *http.Req
 
 	switch {
 	case body.Additions != nil:
+		if g.IsSmart {
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
 		for _, u := range body.Additions.Users {
 			member, ok := s.users[u.ID]
 			if !ok {
-				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("unknown user id %d", u.ID))
+				writeJSONError(w, http.StatusConflict, fmt.Sprintf("Unable to match user in additions list id=%d", u.ID))
 				return
 			}
 			if userGroupHasMember(g, u.ID) {
-				writeJSONError(w, http.StatusConflict, fmt.Sprintf("user %d is already a member of this group", u.ID))
-				return
+				continue
 			}
 			g.Users = append(g.Users, *member)
 		}
+		w.WriteHeader(http.StatusCreated)
 	case body.Deletions != nil:
 		for _, u := range body.Deletions.Users {
 			if !userGroupHasMember(g, u.ID) {
-				writeJSONError(w, http.StatusNotFound, fmt.Sprintf("user %d is not a member of this group", u.ID))
+				writeJSONError(w, http.StatusConflict, fmt.Sprintf("Unable to match user in deletions list id=%d", u.ID))
 				return
 			}
 			g.Users = deleteByID(g.Users, u.ID, func(m jamf.User) int { return m.ID })
 		}
+		w.WriteHeader(http.StatusOK)
 	default:
 		writeJSONError(w, http.StatusBadRequest, "request must set user_additions or user_deletions")
-		return
 	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 func userGroupHasMember(g *jamf.UserGroup, userID int) bool {

@@ -107,21 +107,21 @@ func (g *userGroupResourceType) Grants(ctx context.Context, resource *v2.Resourc
 	return rv, nil, nil
 }
 
-// isSmartUserGroup fetches current group details and reports is_smart. Always
-// re-fetches rather than trusting a cached value from sync, because Grant/
-// Revoke are called independently of any prior List() in the same
-// process (CLI single-shot grant, or a sync that ran hours earlier).
-func (g *userGroupResourceType) isSmartUserGroup(ctx context.Context, groupID int) (bool, error) {
-	details, err := g.client.GetUserGroupDetails(ctx, groupID)
-	if err != nil {
-		return false, err
+// isUserGroupMember reports whether userID is in users, the membership list
+// returned on a Jamf user group's details.
+func isUserGroupMember(users []jamf.User, userID int) bool {
+	for _, member := range users {
+		if member.ID == userID {
+			return true
+		}
 	}
-	return details.IsSmart, nil
+	return false
 }
 
 // Grant adds principal (a Jamf user) to the static user group backing
 // entitlement's resource. Smart groups are rejected — their membership is
-// computed from criteria, not assignable.
+// computed from criteria, not assignable. ctx is wrapped with
+// jamf.WithFreshReads at the top, so both GETs below bypass the HTTP cache.
 func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -133,41 +133,42 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 	if err != nil {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant user group member: invalid group id %q: %s", entitlement.Resource.Id.Resource, err)
 	}
-
-	isSmart, err := g.isSmartUserGroup(ctx, groupID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: grant user group member: %w", err)
-	}
-	if isSmart {
-		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: cannot grant membership on smart user group %d — membership is computed from criteria, not assignable", groupID)
-	}
-
 	userID, err := strconv.Atoi(principal.Id.Resource)
 	if err != nil {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: grant user group member: invalid user id %q: %s", principal.Id.Resource, err)
 	}
 
-	err = g.client.AddUserGroupMembers(ctx, groupID, []int{userID})
+	group, err := g.client.GetUserGroupDetails(ctx, groupID)
 	if err != nil {
+		if jamf.IsNotFoundError(err) {
+			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant user group member: group %d not found", groupID)
+		}
+		return nil, nil, fmt.Errorf("jamf-connector: grant user group member: %w", err)
+	}
+	if group.IsSmart {
+		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: cannot grant membership on smart user group %d — membership is computed from criteria, not assignable", groupID)
+	}
+	if isUserGroupMember(group.Users, userID) {
+		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+	}
+
+	if err := g.client.AddUserGroupMembers(ctx, groupID, []int{userID}); err != nil {
 		// A 409 here isn't necessarily "already a member" — Jamf's Classic API
-		// can also return 409 for other validation failures on the same
-		// endpoint (e.g. an unknown user id in user_additions), and whether
-		// Jamf maps "already a member" onto 409 at all is unverified against
-		// a live tenant. Re-fetch the group and only report
-		// GrantAlreadyExists if userID is actually present in its Users list;
-		// otherwise surface the original error so a real failure isn't
-		// misreported as success.
+		// also 409s for other validation failures on the same endpoint (e.g.
+		// an unknown user id in user_additions). The membership check above
+		// already ruled out "already a member" as of the pre-write read, so
+		// re-fetch and only report GrantAlreadyExists if the write actually
+		// landed; otherwise this is a real failure (e.g. the user no longer
+		// exists) and must not be reported as success.
 		if jamf.IsAlreadyExistsError(err) {
-			group, detailsErr := g.client.GetUserGroupDetails(ctx, groupID)
+			updated, detailsErr := g.client.GetUserGroupDetails(ctx, groupID)
 			if detailsErr != nil {
 				return nil, nil, fmt.Errorf("jamf-connector: grant user group member: 409 response, and failed to verify membership: %w", detailsErr)
 			}
-			for _, member := range group.Users {
-				if member.ID == userID {
-					return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
-				}
+			if isUserGroupMember(updated.Users, userID) {
+				return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 			}
-			return nil, nil, fmt.Errorf("jamf-connector: grant user group member: %w", err)
+			return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: Jamf could not add user %d to user group %q; the user may no longer exist", userID, group.Name)
 		}
 		return nil, nil, fmt.Errorf("jamf-connector: grant user group member: %w", err)
 	}
@@ -176,7 +177,9 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 }
 
 // Revoke removes gr's principal (a Jamf user) from the static user group
-// backing gr's entitlement resource. Smart groups are rejected, same as Grant.
+// backing gr's entitlement resource. Smart groups are rejected, same as
+// Grant. ctx is wrapped with jamf.WithFreshReads at the top, so both GETs
+// below bypass the HTTP cache.
 func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -188,37 +191,48 @@ func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annot
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke user group member: invalid group id %q: %s", gr.Entitlement.Resource.Id.Resource, err)
 	}
-
-	isSmart, err := g.isSmartUserGroup(ctx, groupID)
-	if err != nil {
-		// GetUserGroupDetails 404s when the group itself has been deleted. A
-		// deleted group trivially has no membership left to revoke, so this
-		// maps to GrantAlreadyRevoked rather than propagating as an error —
-		// same reasoning as the RemoveUserGroupMembers 404 case below, just
-		// detected earlier (via the GET here instead of the PUT).
-		if jamf.IsNotFoundError(err) {
-			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
-		}
-		return nil, fmt.Errorf("jamf-connector: revoke user group member: %w", err)
-	}
-	if isSmart {
-		return nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: cannot revoke membership on smart user group %d", groupID)
-	}
-
 	userID, err := strconv.Atoi(gr.Principal.Id.Resource)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: revoke user group member: invalid user id %q: %s", gr.Principal.Id.Resource, err)
 	}
 
-	err = g.client.RemoveUserGroupMembers(ctx, groupID, []int{userID})
+	group, err := g.client.GetUserGroupDetails(ctx, groupID)
 	if err != nil {
-		// Per RemoveUserGroupMembers's doc comment, a 404 here means the
-		// group itself doesn't exist (not "user not a member") — most likely
-		// it was deleted between the isSmartUserGroup GET above and this PUT.
-		// Same reasoning as the isSmartUserGroup 404 case above: a
-		// nonexistent group trivially has no membership left to revoke.
+		// A 404 here means the group itself has been deleted. A deleted
+		// group trivially has no membership left to revoke.
 		if jamf.IsNotFoundError(err) {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		}
+		return nil, fmt.Errorf("jamf-connector: revoke user group member: %w", err)
+	}
+	if group.IsSmart {
+		return nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: cannot revoke membership on smart user group %d", groupID)
+	}
+	if !isUserGroupMember(group.Users, userID) {
+		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+	}
+
+	if err := g.client.RemoveUserGroupMembers(ctx, groupID, []int{userID}); err != nil {
+		// Per RemoveUserGroupMembers's doc comment, a 404 here means the
+		// group itself was deleted between the GET above and this PUT — same
+		// reasoning as the GET 404 case above, a nonexistent group trivially
+		// has no membership left to revoke. A 409 means the user wasn't
+		// actually a member as of the write, which the membership check
+		// above already ruled out as of the pre-write read; re-fetch and
+		// only report GrantAlreadyRevoked if the write actually landed,
+		// otherwise surface the original error.
+		if jamf.IsNotFoundError(err) {
+			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		}
+		if jamf.IsAlreadyExistsError(err) {
+			updated, detailsErr := g.client.GetUserGroupDetails(ctx, groupID)
+			if detailsErr != nil {
+				return nil, fmt.Errorf("jamf-connector: revoke user group member: 409 response, and failed to verify membership: %w", detailsErr)
+			}
+			if !isUserGroupMember(updated.Users, userID) {
+				return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+			}
+			return nil, fmt.Errorf("jamf-connector: revoke user group member: %w", err)
 		}
 		return nil, fmt.Errorf("jamf-connector: revoke user group member: %w", err)
 	}
