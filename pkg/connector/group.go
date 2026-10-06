@@ -135,17 +135,14 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 // Grant adds principal (a Jamf admin account) to the static admin account
 // group backing entitlement's resource.
 //
-// This deliberately uses GetGroupDetails, not GetGroupDetailsReliable's
-// retry workaround: role.go's Grant/Revoke need that retry because they
-// round-trip Members unmodified through a privilege_set-only PUT, where a
-// falsely-empty read would silently wipe the group's membership. Here, an
-// empty read is instead treated as ambiguous and the write is aborted
-// outright (see below) — retrying first would just delay reaching the same
-// safe decision, and a caller that wants the retry behavior can always call
-// Grant again. ctx is wrapped with jamf.WithFreshReads at the top of this
-// method, so every GET below — including the post-write verification read —
-// bypasses the HTTP cache and observes the PUT it just issued, instead of
-// replaying a cached pre-write response.
+// This deliberately skips the retry loop Grants (above) uses to work around
+// Jamf's intermittent empty-members read: here an empty read is instead
+// treated as ambiguous and the write is aborted outright (see below), since
+// retrying first would only delay reaching the same safe decision. ctx is
+// wrapped with jamf.WithFreshReads at the top of this method, so every GET
+// below — including the post-write verification read — bypasses the HTTP
+// cache and observes the PUT it just issued, instead of replaying a cached
+// pre-write response.
 //
 // After writing, this re-reads the group and confirms principal is
 // actually a member: Jamf silently drops members it doesn't recognize

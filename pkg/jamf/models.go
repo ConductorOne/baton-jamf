@@ -258,20 +258,16 @@ type GroupPrivilegesUpdateBody struct {
 
 // GroupMembersUpdateBody is the minimal XML PUT body for
 // /JSSResource/accounts/groupid/{id} used for membership-only changes (see
-// Client.UpdateGroupMembers). Unlike GroupUpdateBody — used by
-// SetGroupPrivilegeSet's full-object PUT, which exists because
-// privilege_set-only writes are not confirmed to merge — a membership PUT
-// carrying only name and members is confirmed safe on its own: access_level,
-// privilege_set and site are left untouched when omitted. Resending them
-// here would risk reintroducing a zero site (Jamf rejects
-// <site><id>0</id></site> with a 409), so they are deliberately not fields
-// on this type at all.
+// Client.UpdateGroupMembers). It carries only name and members:
+// access_level, privilege_set and site are left untouched when omitted, so
+// they are deliberately not fields on this type at all. Resending a zero
+// site would make Jamf reject the request with a 409, so site is never sent
+// here.
 //
 // Members is a pointer so an explicit empty <members></members> can be
 // forced when the last member is being removed: a nil slice under
-// `xml:"members>user"` (as GroupUpdateBody uses) would omit the element
-// entirely, which Jamf interprets as "leave members unchanged" rather than
-// "clear members".
+// `xml:"members>user"` would omit the element entirely, which Jamf
+// interprets as "leave members unchanged" rather than "clear members".
 type GroupMembersUpdateBody struct {
 	XMLName xml.Name          `xml:"group"`
 	Name    string            `xml:"name"`

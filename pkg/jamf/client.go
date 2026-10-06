@@ -565,13 +565,12 @@ func (c *Client) UpdateGroupPrivileges(ctx context.Context, groupID int, name, p
 
 // UpdateGroupMembers updates a Jamf access-level group's membership via a
 // minimal PUT to /JSSResource/accounts/groupid/{id}, carrying only <name>
-// and <members> (see GroupMembersUpdateBody's doc comment for why this
-// doesn't need to round-trip access_level/privilege_set/site the way
-// SetGroupPrivilegeSet's full-object PUT does). members is the complete
-// desired membership list — this always sends an explicit <members>
-// element, replacing whatever Jamf currently has, so callers that want to
-// clear the last member just pass an empty slice rather than needing a
-// separate code path. Returns a gRPC NotFound error (surfaced via
+// and <members> (see GroupMembersUpdateBody's doc comment for why
+// access_level/privilege_set/site don't need to round-trip here). members is
+// the complete desired membership list — this always sends an explicit
+// <members> element, replacing whatever Jamf currently has, so callers that
+// want to clear the last member just pass an empty slice rather than
+// needing a separate code path. Returns a gRPC NotFound error (surfaced via
 // IsNotFoundError) if the group doesn't exist. See
 // https://developer.jamf.com/jamf-pro/reference/updategroupbyid.
 func (c *Client) UpdateGroupMembers(ctx context.Context, groupID int, name string, members []BaseType) error {
