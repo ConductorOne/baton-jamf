@@ -34,7 +34,7 @@ The Jamf connector syncs the following resources:
 - **Roles**: Grant/Revoke sets or clears a `userAccount` or `group`'s role — the three built-in privilege sets (`Administrator`, `Auditor`, `Enrollment Only`) and every individual privilege are grantable; `Custom` itself is not a role you grant directly. Revoke moves the principal to `Custom` with only the `Read License Information` privilege (Jamf's lowest access, and not itself revocable). Individual privileges can only be granted while the principal is already `Custom`: revoke the current set first, then grant the individual privileges. **Group Access** accounts are rejected for Role Grant/Revoke — assign the role to the group instead. Changing a **Full** or **Site Access** account's role removes it from any admin group it belonged to (that membership granted it nothing).
 
 <Note>
-**Managed Devices is opt-in.** This resource type is off by default so existing connectors keep working after upgrading. Enable it by selecting the **Managed Device** resource type in the connector's sync configuration (cloud-hosted), or by passing `managedDevice` in `--sync-resource-types`/`$BATON_SYNC_RESOURCE_TYPES` alongside the other resource types you want to sync — e.g. `user,userAccount,group,userGroup,role,site,managedDevice` (self-hosted). This flag replaces the default sync set rather than adding to it, so listing only `managedDevice` syncs nothing else. Provisioning for devices is only available when `managedDevice` is included in the sync. When enabled, the Jamf account used by the connector must additionally have the **Read Computers** and **Read Mobile Devices** privileges, or the sync will fail.
+**Managed Devices is opt-in.** This resource type is off by default so existing connectors keep working after upgrading. Enable it by selecting the **Managed Device** resource type in the connector's sync configuration (cloud-hosted), or via `--sync-resource-types`/`$BATON_SYNC_RESOURCE_TYPES` (self-hosted). When enabled, the Jamf account used by the connector must additionally have the **Read Computers** and **Read Mobile Devices** privileges, or the sync will fail.
 </Note>
 
 Tested with Jamf Pro 11.32.1. Managed Devices use the Jamf Pro API v4 computers-inventory and v2 mobile-devices endpoints.
@@ -61,10 +61,6 @@ Give the user you create full access to the Jamf Pro instance and the Administra
 </Steps>
 
 **Done.** Next, move on to the connector configuration instructions. 
-
-### Authentication
-
-The connector signs in as a local Jamf Pro user account — not a Jamf API client (client ID/secret), which this connector does not support. It exchanges the account's username and password for a bearer token, and keeps the username and password in memory to re-authenticate when the token expires. A local account can still authenticate to the API even when SSO is enabled for the Jamf Pro server.
 
 ### Jamf account privileges
 

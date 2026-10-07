@@ -473,24 +473,12 @@ func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, a assig
 	return grant.NewGrantID(rid, entitlement), true, nil
 }
 
-// principalIdentityForRevoke resolves gr's principal to the identity
-// (username, email) Revoke compares against the device's current assignee.
-// deviceGrants builds two shapes of principal (see its doc comment):
-//   - a synced Jamf user, whose ResourceId.Resource is a numeric Jamf user id
-//     — resolved here via GetUserDetails/resolvePrincipalUser.
-//   - an unsynced assignee, whose ResourceId.Resource is the raw email or
-//     username string used to build an ExternalResourceMatch-annotated
-//     grant. gr.Principal.Id.Resource is not a numeric Jamf user id in this
-//     case, so GetUserDetails would fail; the raw value is read back from the
-//     annotation instead.
-//
-// The ExternalResourceMatch annotation depends on the platform passing it
-// back on the Revoke request; if it's absent (e.g. a different platform
-// version, or the annotation gets stripped somewhere) AND the principal id
-// isn't a numeric Jamf user id either, this falls back to treating the raw
-// id string itself as an email or username — mirroring deviceGrants' own
-// email-vs-username heuristic (presence of "@") — rather than letting
-// resolvePrincipalUser's strconv.Atoi fail with InvalidArgument.
+// principalIdentityForRevoke resolves gr's principal to the assignee Revoke
+// compares against the device's current one: a synced Jamf user (numeric
+// id, via resolvePrincipalUser) or an unsynced one carried in an
+// ExternalResourceMatch annotation — or, lacking that annotation, the raw id
+// string itself, read as an email if it contains "@" and a username
+// otherwise.
 func principalIdentityForRevoke(ctx context.Context, client *jamf.Client, gr *v2.Grant) (assignee, error) {
 	match := &v2.ExternalResourceMatch{}
 	grantAnnos := annotations.Annotations(gr.GetAnnotations())

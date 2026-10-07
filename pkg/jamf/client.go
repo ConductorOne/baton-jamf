@@ -513,16 +513,10 @@ func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
 }
 
 // updatePrivileges backs both UpdateAccountPrivileges and
-// UpdateGroupPrivileges: a minimal PUT to path (formatted with id) carrying
-// only <name> and, when privilegeSet is non-empty, <privilege_set>, with
-// root as the XML root element name ("account" or "group") — see
-// privilegesUpdateBody's doc comment for the full rationale. privileges is
-// nil to omit the <privileges> element entirely (leaving Jamf's stored
-// privileges untouched), or a pointer to an explicit — even all-empty —
-// Privileges to force the element: every write of privilegeSet == "Custom"
-// must pass a non-nil privileges, since Jamf copies the previous set's
-// entire expanded privilege list when Custom is set with the element
-// omitted.
+// UpdateGroupPrivileges: a minimal PUT carrying <name> and, optionally,
+// <privilege_set>/<privileges>, with root as the XML root element name
+// ("account" or "group") — see privilegesUpdateBody for the body shape and
+// the Custom-write caveat.
 func (c *Client) updatePrivileges(ctx context.Context, path, root string, id int, name, privilegeSet string, privileges *Privileges) error {
 	url, err := c.getUrl(fmt.Sprintf(path, id))
 	if err != nil {
@@ -553,14 +547,10 @@ func (c *Client) UpdateGroupPrivileges(ctx context.Context, groupID int, name, p
 }
 
 // UpdateGroupMembers updates a Jamf access-level group's membership via a
-// minimal PUT to /JSSResource/accounts/groupid/{id}, carrying only <name>
-// and <members> (see GroupMembersUpdateBody's doc comment for why
-// access_level/privilege_set/site don't need to round-trip here). members is
-// the complete desired membership list — this always sends an explicit
-// <members> element, replacing whatever Jamf currently has, so callers that
-// want to clear the last member just pass an empty slice rather than
-// needing a separate code path. Returns a gRPC NotFound error (surfaced via
-// IsNotFoundError) if the group doesn't exist. See
+// minimal PUT carrying only <name> and <members> — see
+// GroupMembersUpdateBody. members is the complete desired list; pass an
+// empty slice to clear the last member. Returns a gRPC NotFound error
+// (IsNotFoundError) if the group doesn't exist. See
 // https://developer.jamf.com/jamf-pro/reference/updategroupbyid.
 func (c *Client) UpdateGroupMembers(ctx context.Context, groupID int, name string, members []BaseType) error {
 	url, err := c.getUrl(fmt.Sprintf(groupUrlPath, groupID))
@@ -575,17 +565,13 @@ func (c *Client) UpdateGroupMembers(ctx context.Context, groupID int, name strin
 	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
 }
 
-// UpdateUserSites PUTs the full desired <sites> list for a user. Per
-// Classic API field-level-merge semantics, sending only <sites> leaves the
-// rest of the user record untouched. Callers are responsible for the
-// read-modify-write and idempotency checks (see site.go's Grant/Revoke).
+// UpdateUserSites PUTs the full desired <sites> list for a user, leaving
+// the rest of the user record untouched (Classic API field-level merge).
+// Callers own the read-modify-write and idempotency checks (see site.go).
 //
-// Concurrency note: this has no locking/versioning guard. Two concurrent
-// calls for the same userID (e.g. a site grant racing a site revoke, or two
-// grants for different sites) can both start from the same <sites> list and
-// each PUT back a version missing the other's change, silently dropping one
-// of the updates. Callers that need strict correctness under concurrent
-// provisioning for the same user should serialize calls per-userID.
+// Concurrency note: no locking/versioning guard — concurrent calls for the
+// same userID can race and silently drop one side's change; serialize calls
+// per user if that matters.
 func (c *Client) UpdateUserSites(ctx context.Context, userID int, sites UserSites) error {
 	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userID))
 	if err != nil {

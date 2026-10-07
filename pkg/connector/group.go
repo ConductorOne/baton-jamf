@@ -138,9 +138,7 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 // outright (see below) rather than assumed to mean the group is genuinely
 // empty: an empty read for a populated group could not be reproduced during
 // testing, but it cannot be ruled out, and writing back an empty list would
-// silently wipe the group's real membership if it ever occurs. ctx is
-// wrapped with jamf.WithFreshReads at the top of this method, so every GET
-// below bypasses the HTTP cache.
+// silently wipe the group's real membership if it ever occurs.
 func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -171,10 +169,8 @@ func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, e
 
 	// Membership only grants anything to a Group Access account — a Full or
 	// Site Access account's rights come from its own privilege_set, so
-	// adding it to a group would silently do nothing. Fetched fresh (ctx is
-	// wrapped with jamf.WithFreshReads above), right before the write, so
-	// this reflects the account's current access level rather than a cached
-	// one.
+	// adding it to a group would silently do nothing. Fetched fresh, right
+	// before the write, so this reflects the account's current access level.
 	account, err := g.client.GetUserAccountDetails(ctx, userID)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {

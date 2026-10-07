@@ -47,10 +47,9 @@ func annotationsForManagedDeviceResourceType() annotations.Annotations {
 	return annos
 }
 
-// requirePrincipalType rejects principalType unless it matches want, with the
-// same "jamf-connector: <noun> can only be <verb>, got resource type %q"
-// wording every Grant/Revoke principal-type guard already used — replacing
-// the repeated inline checks.
+// requirePrincipalType rejects principalType unless it matches want, naming
+// noun/verb in the InvalidArgument message (e.g. "group membership" /
+// "granted to user accounts").
 func requirePrincipalType(principalType string, want *v2.ResourceType, noun, verb string) error {
 	if principalType != want.Id {
 		return status.Errorf(codes.InvalidArgument, "jamf-connector: %s can only be %s, got resource type %q", noun, verb, principalType)
@@ -58,9 +57,8 @@ func requirePrincipalType(principalType string, want *v2.ResourceType, noun, ver
 	return nil
 }
 
-// parseResourceID parses idStr as a Jamf numeric id, returning the same
-// InvalidArgument error every call site already produced on a parse failure.
-// prefix is the full message up to (and not including) the id value, e.g.
+// parseResourceID parses idStr as a Jamf numeric id. prefix is the message
+// up to (not including) the id value, e.g.
 // "jamf-connector: grant group member: invalid group id".
 func parseResourceID(idStr, prefix string) (int, error) {
 	id, err := strconv.Atoi(idStr)

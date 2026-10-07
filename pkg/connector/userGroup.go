@@ -116,8 +116,7 @@ func isUserGroupMember(users []jamf.User, userID int) bool {
 
 // Grant adds principal (a Jamf user) to the static user group backing
 // entitlement's resource. Smart groups are rejected — their membership is
-// computed from criteria, not assignable. ctx is wrapped with
-// jamf.WithFreshReads at the top, so both GETs below bypass the HTTP cache.
+// computed from criteria, not assignable.
 func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -152,8 +151,7 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 
 // Revoke removes gr's principal (a Jamf user) from the static user group
 // backing gr's entitlement resource. Smart groups are rejected, same as
-// Grant. ctx is wrapped with jamf.WithFreshReads at the top, so both GETs
-// below bypass the HTTP cache.
+// Grant.
 func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -179,10 +177,8 @@ func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annot
 	}
 
 	if err := g.client.RemoveUserGroupMembers(ctx, groupID, []int{userID}); err != nil {
-		// Per RemoveUserGroupMembers's doc comment, a 404 here means the
-		// group itself was deleted between the GET above and this PUT — same
-		// reasoning as the GET 404 case above, a nonexistent group trivially
-		// has no membership left to revoke.
+		// A 404 here means the group was deleted between the GET and this
+		// PUT — same as the GET 404 case above.
 		if jamf.IsNotFoundError(err) {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}

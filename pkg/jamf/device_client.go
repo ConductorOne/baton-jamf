@@ -9,12 +9,8 @@ import (
 )
 
 const (
-	// v1 and v3 computers-inventory(-detail) are deprecated (v1's
-	// x-deprecation-date was 2025-06-30, v3's is 2026-07-14); v4 is a
-	// drop-in replacement for list/detail (same fields, same envelope).
-	// v4's PATCH returns 204 with no body, where v1 returned 200 with the
-	// updated record; doRequestWithJSONMethod skips decoding when target is
-	// nil, so this is a no-op for callers.
+	// v4 is the non-deprecated version of the computers-inventory(-detail)
+	// endpoints.
 	computersInventoryUrlPath      = "/api/v4/computers-inventory"
 	computerInventoryDetailUrlPath = "/api/v4/computers-inventory-detail/%s"
 	mobileDevicesUrlPath           = "/api/v2/mobile-devices"
@@ -127,10 +123,8 @@ func (c *Client) GetMobileDeviceDetail(ctx context.Context, deviceID string) (*M
 }
 
 // SetComputerAssignedUser sets (Grant) or clears (Revoke, zero-value fields)
-// the assigned user on a computer's inventory record. All five fields are
-// always sent as plain strings, never omitted — an omitted key is a no-op
-// and Jamf never auto-populates these fields for computers — so setting a
-// new username silently displaces whatever was recorded before.
+// the assigned user on a computer's inventory record — see
+// ComputerAssignedUserFields for the field semantics.
 func (c *Client) SetComputerAssignedUser(ctx context.Context, computerID string, fields ComputerAssignedUserFields) error {
 	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
 	if err != nil {
@@ -142,13 +136,9 @@ func (c *Client) SetComputerAssignedUser(ctx context.Context, computerID string,
 }
 
 // SetMobileDeviceAssignedUser is the mobile-device equivalent, via
-// PATCH /api/v2/mobile-devices/{id}, location.username. Setting a non-empty
-// username makes Jamf auto-populate realname/email/position/phone from the
-// directory user (a nonexistent username is accepted and auto-creates one),
-// so the connector never sends those fields itself; username == "" clears
-// the username and every auto-populated field together. The Classic PUT is
-// deliberately not used here: it writes the device's leftover location
-// values back into the directory user's own record.
+// location.username — see MobileDeviceLocation for the field semantics. The
+// Classic PUT is deliberately not used here: it writes the device's
+// leftover location values back into the directory user's own record.
 func (c *Client) SetMobileDeviceAssignedUser(ctx context.Context, deviceID string, username string) error {
 	url, err := c.getUrl(fmt.Sprintf(mobileDeviceUrlPath, deviceID))
 	if err != nil {
