@@ -139,14 +139,7 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 // testing, but it cannot be ruled out, and writing back an empty list would
 // silently wipe the group's real membership if it ever occurs. ctx is
 // wrapped with jamf.WithFreshReads at the top of this method, so every GET
-// below — including the post-write verification read — bypasses the HTTP
-// cache and observes the PUT it just issued, instead of replaying a cached
-// pre-write response.
-//
-// After writing, this re-reads the group and confirms principal is
-// actually a member: Jamf silently drops members it doesn't recognize
-// (bad id) with the same 201 response as a successful write, so the PUT
-// response alone cannot be trusted.
+// below bypasses the HTTP cache.
 func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -206,25 +199,15 @@ func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, e
 		return nil, nil, fmt.Errorf("jamf-connector: grant group member: %w", err)
 	}
 
-	updated, err := g.client.GetGroupDetails(ctx, groupID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: grant group member: verify membership: %w", err)
-	}
-	for _, member := range updated.Members {
-		if member.ID == userID {
-			return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
-		}
-	}
-
-	return nil, nil, status.Errorf(codes.FailedPrecondition,
-		"jamf-connector: Jamf did not apply membership for user account %d in group %d", userID, groupID)
+	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
 }
 
 // Revoke removes gr's principal (a Jamf admin account) from the static
-// admin account group backing gr's entitlement resource. Unlike Grant, this
-// does not re-read after writing to confirm the removal — there is no
-// known silent-drop failure mode on the removal path the way there is for
-// additions of unrecognized members.
+// admin account group backing gr's entitlement resource. An empty members
+// read is ambiguous in the same way as Grant (see above): rather than
+// reporting a principal that may still be a member as revoked, this returns
+// a retryable error so the platform retries instead of recording a false
+// success.
 func (g *groupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -253,12 +236,14 @@ func (g *groupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotatio
 
 	if len(current.Members) == 0 {
 		// Same ambiguity as Grant: an empty read could be a genuinely empty
-		// group, or an unreproduced empty-members response. Either way, the
-		// principal is not demonstrably a member, so there is nothing to
-		// safely revoke — never write on this read.
-		ctxzap.Extract(ctx).Debug("jamf-connector: group returned no members on Revoke; treating as already revoked",
+		// group, or an unreproduced empty-members response. Reporting this as
+		// already-revoked would let a still-present member silently keep its
+		// access, so this never writes on this read and instead asks the
+		// platform to retry.
+		ctxzap.Extract(ctx).Debug("jamf-connector: group returned no members on Revoke; not revoking on an ambiguous read",
 			zap.Int("group_id", groupID))
-		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		return nil, status.Errorf(codes.Unavailable,
+			"jamf-connector: Jamf returned no members for group %q; not revoking on an ambiguous read", current.Name)
 	}
 
 	remaining := make([]jamf.BaseType, 0, len(current.Members))

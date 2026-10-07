@@ -79,9 +79,8 @@ func groupPrincipal(t *testing.T, id int) *v2.Resource {
 }
 
 // accountRoleHandler serves GET /JSSResource/accounts/userid/{id} returning
-// the n-th entry of snapshots on the n-th GET (clamped to the last entry once
-// exhausted — Grant/Revoke re-read after a successful write to verify it took
-// effect). Every PUT body received is appended to putBodies.
+// the n-th entry of snapshots on the n-th GET (clamped to the last entry
+// once exhausted). Every PUT body received is appended to putBodies.
 func accountRoleHandler(t *testing.T, id int, name string, snapshots []jamf.UserAccount, putBodies *[][]byte) http.HandlerFunc {
 	t.Helper()
 	getCount := 0
@@ -292,24 +291,6 @@ func TestRoleGrant_AlreadyHasPrivilegeSet_MapsToGrantAlreadyExists(t *testing.T)
 	}
 }
 
-func TestRoleGrant_PrivilegeSetNotApplied_ReturnsFailedPrecondition(t *testing.T) {
-	var putBodies [][]byte
-	// The post-PUT verification GET still shows the old privilege_set.
-	client := newTestJamfClient(t, accountRoleHandler(t, 42, "jappleseed", []jamf.UserAccount{
-		{PrivilegeSet: privilegeSetAuditor},
-		{PrivilegeSet: privilegeSetAuditor},
-	}, &putBodies))
-	r := roleBuilder(client)
-
-	_, _, err := r.Grant(context.Background(), userAccountPrincipal(t, 42), roleEntitlement(t, privilegeSetAdministrator))
-	if err == nil {
-		t.Fatal("expected an error when the re-read doesn't show the new privilege_set")
-	}
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("expected FailedPrecondition, got %v", err)
-	}
-}
-
 func TestRoleGrant_Deleted404_MapsToNotFound(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -466,28 +447,6 @@ func TestRoleGrant_IndividualPrivilege_NotCustom_Rejected(t *testing.T) {
 	}
 }
 
-func TestRoleGrant_IndividualPrivilege_NotApplied_ReturnsFailedPrecondition(t *testing.T) {
-	var putBodies [][]byte
-	// Jamf silently drops the unrecognized privilege name — the verification
-	// GET comes back without it.
-	client := newTestJamfClient(t, accountRoleHandler(t, 42, "jappleseed", []jamf.UserAccount{
-		{PrivilegeSet: privilegeSetCustom},
-		{PrivilegeSet: privilegeSetCustom},
-	}, &putBodies))
-	r := roleBuilder(client)
-
-	_, _, err := r.Grant(context.Background(), userAccountPrincipal(t, 42), roleEntitlement(t, "Read Knobs"))
-	if err == nil {
-		t.Fatal("expected an error when Jamf doesn't apply the privilege")
-	}
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("expected FailedPrecondition, got %v", err)
-	}
-	if len(putBodies) != 1 {
-		t.Errorf("expected the PUT to still have been attempted, got %d", len(putBodies))
-	}
-}
-
 func TestRoleGrant_IndividualPrivilege_GroupAccessAccount_Rejected(t *testing.T) {
 	client := newTestJamfClient(t, accountRoleHandler(t, 42, "jappleseed", []jamf.UserAccount{
 		{PrivilegeSet: privilegeSetCustom, AccessLevel: accessLevelGroupAccess},
@@ -591,24 +550,6 @@ func TestRoleRevoke_StalePrivilegeSet_NoWrite(t *testing.T) {
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
 		t.Errorf("expected a GrantAlreadyRevoked annotation, got %v", annos)
-	}
-}
-
-func TestRoleRevoke_PrivilegeSetNotMovedToCustom_ReturnsFailedPrecondition(t *testing.T) {
-	var putBodies [][]byte
-	client := newTestJamfClient(t, accountRoleHandler(t, 42, "jappleseed", []jamf.UserAccount{
-		{PrivilegeSet: privilegeSetAdministrator},
-		{PrivilegeSet: privilegeSetAdministrator},
-	}, &putBodies))
-	r := roleBuilder(client)
-
-	gr := grant.NewGrant(roleEntitlement(t, privilegeSetAdministrator).Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
-	_, err := r.Revoke(context.Background(), gr)
-	if err == nil {
-		t.Fatal("expected an error when the re-read doesn't show Custom")
-	}
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("expected FailedPrecondition, got %v", err)
 	}
 }
 
@@ -788,25 +729,6 @@ func TestRoleRevoke_ReadLicenseInformation_Rejected(t *testing.T) {
 	}
 	if len(putBodies) != 0 {
 		t.Error("expected no PUT revoking Read License Information")
-	}
-}
-
-func TestRoleRevoke_IndividualPrivilege_NotRemoved_ReturnsFailedPrecondition(t *testing.T) {
-	var putBodies [][]byte
-	// The verification GET still shows the privilege present.
-	client := newTestJamfClient(t, accountRoleHandler(t, 42, "jappleseed", []jamf.UserAccount{
-		{PrivilegeSet: privilegeSetCustom, Privileges: jamf.Privileges{JSSObjects: []string{"Read User"}}},
-		{PrivilegeSet: privilegeSetCustom, Privileges: jamf.Privileges{JSSObjects: []string{"Read User"}}},
-	}, &putBodies))
-	r := roleBuilder(client)
-
-	gr := grant.NewGrant(roleEntitlement(t, "Read User").Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
-	_, err := r.Revoke(context.Background(), gr)
-	if err == nil {
-		t.Fatal("expected an error when Jamf doesn't remove the privilege")
-	}
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("expected FailedPrecondition, got %v", err)
 	}
 }
 

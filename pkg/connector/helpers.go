@@ -1,8 +1,10 @@
 package connector
 
 import (
+	"fmt"
 	"strconv"
 
+	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"google.golang.org/grpc/codes"
@@ -78,4 +80,16 @@ func containsID[T any](items []T, id int, idOf func(T) int) bool {
 		}
 	}
 	return false
+}
+
+// membershipWriteError wraps a failed membership write for op. Jamf answers a
+// 409 (mapped to AlreadyExists by the jamf package) for writes it rejects, e.g.
+// one naming a user deleted since the pre-write read; that read already ruled
+// out an existing membership, so a 409 is reported as FailedPrecondition.
+// subject names what may have disappeared, e.g. "the user or group".
+func membershipWriteError(op, subject string, err error) error {
+	if jamf.IsAlreadyExistsError(err) {
+		return status.Errorf(codes.FailedPrecondition, "jamf-connector: %s: Jamf rejected the change with 409 Conflict (%s may no longer exist): %v", op, subject, err)
+	}
+	return fmt.Errorf("jamf-connector: %s: %w", op, err)
 }

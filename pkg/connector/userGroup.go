@@ -148,24 +148,10 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 	}
 
 	if err := g.client.AddUserGroupMembers(ctx, groupID, []int{userID}); err != nil {
-		// A 409 here isn't necessarily "already a member" — Jamf's Classic API
-		// also 409s for other validation failures on the same endpoint (e.g.
-		// an unknown user id in user_additions). The membership check above
-		// already ruled out "already a member" as of the pre-write read, so
-		// re-fetch and only report GrantAlreadyExists if the write actually
-		// landed; otherwise this is a real failure (e.g. the user no longer
-		// exists) and must not be reported as success.
-		if jamf.IsAlreadyExistsError(err) {
-			updated, detailsErr := g.client.GetUserGroupDetails(ctx, groupID)
-			if detailsErr != nil {
-				return nil, nil, fmt.Errorf("jamf-connector: grant user group member: 409 response, and failed to verify membership: %w", detailsErr)
-			}
-			if isUserGroupMember(updated.Users, userID) {
-				return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
-			}
-			return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: Jamf could not add user %d to user group %q; the user may no longer exist", userID, group.Name)
+		if jamf.IsNotFoundError(err) {
+			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant user group member: group %d not found", groupID)
 		}
-		return nil, nil, fmt.Errorf("jamf-connector: grant user group member: %w", err)
+		return nil, nil, membershipWriteError("grant user group member", "the user or group", err)
 	}
 
 	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
@@ -211,25 +197,11 @@ func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annot
 		// Per RemoveUserGroupMembers's doc comment, a 404 here means the
 		// group itself was deleted between the GET above and this PUT — same
 		// reasoning as the GET 404 case above, a nonexistent group trivially
-		// has no membership left to revoke. A 409 means the user wasn't
-		// actually a member as of the write, which the membership check
-		// above already ruled out as of the pre-write read; re-fetch and
-		// only report GrantAlreadyRevoked if the write actually landed,
-		// otherwise surface the original error.
+		// has no membership left to revoke.
 		if jamf.IsNotFoundError(err) {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}
-		if jamf.IsAlreadyExistsError(err) {
-			updated, detailsErr := g.client.GetUserGroupDetails(ctx, groupID)
-			if detailsErr != nil {
-				return nil, fmt.Errorf("jamf-connector: revoke user group member: 409 response, and failed to verify membership: %w", detailsErr)
-			}
-			if !isUserGroupMember(updated.Users, userID) {
-				return annotations.New(&v2.GrantAlreadyRevoked{}), nil
-			}
-			return nil, fmt.Errorf("jamf-connector: revoke user group member: %w", err)
-		}
-		return nil, fmt.Errorf("jamf-connector: revoke user group member: %w", err)
+		return nil, membershipWriteError("revoke user group member", "the user or group", err)
 	}
 	return nil, nil
 }

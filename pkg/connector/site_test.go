@@ -47,9 +47,7 @@ func jamfUserSitesHandler(t *testing.T, currentSiteIDs []int, gotPUTBody *[]byte
 
 // jamfUserSitesStatefulHandler serves GET /JSSResource/users/id/{id},
 // reporting sitesBeforePut on the first GET and sitesAfterPut on every GET
-// thereafter, so tests can simulate Grant/Revoke's re-read-after-409
-// disambiguation (the first GET is the pre-write read, the second is the
-// post-409 re-verification). PUT records its body and returns putStatus.
+// thereafter. PUT records its body and returns putStatus.
 func jamfUserSitesStatefulHandler(t *testing.T, sitesBeforePut, sitesAfterPut []int, putStatus int, gotPUTBody *[]byte) http.HandlerFunc {
 	t.Helper()
 	getCalls := 0
@@ -232,44 +230,24 @@ func TestSiteGrant_UserDeleted_ReturnsNotFound(t *testing.T) {
 	}
 }
 
-// TestSiteGrant_Conflict_ReReadHasSite_MapsToGrantAlreadyExists covers the
-// 409 disambiguation on Grant: the user does not have the site as of the
-// pre-write GET (so the write is attempted), the PUT 409s, and the post-409
-// re-read shows the user now has the site — treated as GrantAlreadyExists
-// rather than an error.
-func TestSiteGrant_Conflict_ReReadHasSite_MapsToGrantAlreadyExists(t *testing.T) {
-	var putBody []byte
-	client := newTestJamfClient(t, jamfUserSitesStatefulHandler(t, []int{1}, []int{1, 2}, http.StatusConflict, &putBody))
-	s := siteBuilder(client)
-
-	grants, annos, err := s.Grant(context.Background(), userPrincipal(t, 42), siteEntitlement(t, 2))
-	if err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
-	if grants != nil {
-		t.Errorf("expected no grants returned on the 409-but-already-member path, got %v", grants)
-	}
-	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
-		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)
-	}
-}
-
-// TestSiteGrant_Conflict_ReReadStillAbsent_ReturnsFailedPrecondition covers
-// the 409 disambiguation on Grant when the conflict wasn't actually about
-// this site becoming assignable (e.g. an unknown site id): the re-read after
-// the 409 still shows the site absent, so Grant must surface a real failure
-// rather than silently reporting success.
-func TestSiteGrant_Conflict_ReReadStillAbsent_ReturnsFailedPrecondition(t *testing.T) {
+// TestSiteGrant_Conflict_ReturnsFailedPrecondition covers a 409 on the write
+// (e.g. an unknown site id): the pre-write read already ruled out "already a
+// member", so Grant surfaces the 409 as FailedPrecondition instead of
+// AlreadyExists or success.
+func TestSiteGrant_Conflict_ReturnsFailedPrecondition(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesStatefulHandler(t, []int{1}, []int{1}, http.StatusConflict, &putBody))
 	s := siteBuilder(client)
 
 	_, _, err := s.Grant(context.Background(), userPrincipal(t, 42), siteEntitlement(t, 2))
 	if err == nil {
-		t.Fatal("expected an error when the 409 isn't backed by the site actually being assigned")
+		t.Fatal("expected an error for a 409 on the write")
 	}
 	if status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("expected FailedPrecondition, got %v", err)
+		t.Errorf("expected FailedPrecondition for a 409 on the write, got %v", err)
+	}
+	if len(putBody) == 0 {
+		t.Error("expected the PUT to be attempted since the pre-write check shows no site")
 	}
 }
 
@@ -295,31 +273,10 @@ func TestSiteRevoke_LastSite_SendsExplicitEmptySitesElement(t *testing.T) {
 	}
 }
 
-// TestSiteRevoke_Conflict_ReReadAbsent_MapsToGrantAlreadyRevoked covers the
-// 409 disambiguation on Revoke: the user has the site as of the pre-write
-// GET (so the write is attempted), the PUT 409s, and the post-409 re-read
-// shows the site is now absent — treated as GrantAlreadyRevoked.
-func TestSiteRevoke_Conflict_ReReadAbsent_MapsToGrantAlreadyRevoked(t *testing.T) {
-	var putBody []byte
-	client := newTestJamfClient(t, jamfUserSitesStatefulHandler(t, []int{1, 2}, []int{1}, http.StatusConflict, &putBody))
-	s := siteBuilder(client)
-
-	gr := grant.NewGrant(siteEntitlement(t, 2).Resource, memberEntitlement, userPrincipal(t, 42).Id)
-	annos, err := s.Revoke(context.Background(), gr)
-	if err != nil {
-		t.Fatalf("Revoke: %v", err)
-	}
-	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
-		t.Errorf("expected a GrantAlreadyRevoked annotation, got %v", annos)
-	}
-}
-
-// TestSiteRevoke_Conflict_ReReadStillPresent_ReturnsError covers the 409
-// disambiguation on Revoke when the conflict wasn't actually about this
-// site's removal: the re-read after the 409 still shows the site present, so
-// Revoke must surface the original error rather than silently reporting
-// success.
-func TestSiteRevoke_Conflict_ReReadStillPresent_ReturnsError(t *testing.T) {
+// TestSiteRevoke_Conflict_ReturnsFailedPrecondition covers a 409 on the
+// write: the pre-write read already ruled out "not a member", so Revoke
+// surfaces the 409 as FailedPrecondition instead of assuming success.
+func TestSiteRevoke_Conflict_ReturnsFailedPrecondition(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesStatefulHandler(t, []int{1, 2}, []int{1, 2}, http.StatusConflict, &putBody))
 	s := siteBuilder(client)
@@ -327,7 +284,13 @@ func TestSiteRevoke_Conflict_ReReadStillPresent_ReturnsError(t *testing.T) {
 	gr := grant.NewGrant(siteEntitlement(t, 2).Resource, memberEntitlement, userPrincipal(t, 42).Id)
 	_, err := s.Revoke(context.Background(), gr)
 	if err == nil {
-		t.Fatal("expected an error when the 409 isn't backed by the site actually being removed")
+		t.Fatal("expected an error for a 409 on the write")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition for a 409 on the write, got %v", err)
+	}
+	if len(putBody) == 0 {
+		t.Error("expected the PUT to be attempted since the pre-write check shows the site present")
 	}
 }
 

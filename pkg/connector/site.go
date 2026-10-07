@@ -11,8 +11,6 @@ import (
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type siteResourceType struct {
@@ -154,12 +152,6 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 	return rv, nil, nil
 }
 
-// userHasSite reports whether siteID appears in sites, a user's current
-// <sites> list.
-func userHasSite(sites jamf.UserSites, siteID int) bool {
-	return containsID([]jamf.BaseType(sites), siteID, func(s jamf.BaseType) int { return s.ID })
-}
-
 // Grant adds principal (a Jamf user) to the multi-valued <sites> list of the
 // site backing entitlement's resource. The principal-type guard is defense-
 // in-depth: Grants() emits site grants for four principal types, but only
@@ -168,10 +160,7 @@ func userHasSite(sites jamf.UserSites, siteID int) bool {
 //
 // client.AddUserSite reports via its bool return whether the user was
 // already a site member, so that case is surfaced here as GrantAlreadyExists
-// instead of a fresh grant. A 409 from the write isn't necessarily "already a
-// member" — Jamf's Classic API also 409s for other validation failures on
-// this endpoint (e.g. an unknown site id) — so that case is disambiguated
-// with a fresh re-read rather than assumed to be success.
+// instead of a fresh grant.
 func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -190,17 +179,7 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 
 	alreadyMember, err := g.client.AddUserSite(ctx, userID, siteID)
 	if err != nil {
-		if jamf.IsAlreadyExistsError(err) {
-			updated, detailsErr := g.client.GetUserDetails(ctx, userID)
-			if detailsErr != nil {
-				return nil, nil, fmt.Errorf("jamf-connector: grant site member: 409 response, and failed to verify membership: %w", detailsErr)
-			}
-			if userHasSite(updated.Sites, siteID) {
-				return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
-			}
-			return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: Jamf could not assign site %d to user %d; the site may no longer exist", siteID, userID)
-		}
-		return nil, nil, fmt.Errorf("jamf-connector: grant site member: %w", err)
+		return nil, nil, membershipWriteError("grant site member", "the user or site", err)
 	}
 	if alreadyMember {
 		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
@@ -213,11 +192,7 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 // guard rationale. client.RemoveUserSite reports via its bool return whether
 // the user was already absent from the site (including the case where the
 // user has since been deleted), so that case is surfaced here as
-// GrantAlreadyRevoked instead of a plain success. A 409 from the write is
-// disambiguated the same way as
-// Grant: the pre-write read already confirmed the user had the site, so a
-// 409 here means something else went wrong — re-read fresh and only report
-// GrantAlreadyRevoked if the site is actually gone.
+// GrantAlreadyRevoked instead of a plain success.
 func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -236,16 +211,7 @@ func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotation
 
 	alreadyAbsent, err := g.client.RemoveUserSite(ctx, userID, siteID)
 	if err != nil {
-		if jamf.IsAlreadyExistsError(err) {
-			updated, detailsErr := g.client.GetUserDetails(ctx, userID)
-			if detailsErr != nil {
-				return nil, fmt.Errorf("jamf-connector: revoke site member: 409 response, and failed to verify membership: %w", detailsErr)
-			}
-			if !userHasSite(updated.Sites, siteID) {
-				return annotations.New(&v2.GrantAlreadyRevoked{}), nil
-			}
-		}
-		return nil, fmt.Errorf("jamf-connector: revoke site member: %w", err)
+		return nil, membershipWriteError("revoke site member", "the user or site", err)
 	}
 	if alreadyAbsent {
 		return annotations.New(&v2.GrantAlreadyRevoked{}), nil

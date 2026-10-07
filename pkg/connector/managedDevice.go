@@ -375,17 +375,20 @@ func (d *managedDeviceResourceType) currentAssignedUser(ctx context.Context, res
 }
 
 // assigneeMatches reports whether the principal identity resolved from a
-// grant is still the device's current assignee. When the current username
-// is non-empty, only usernames are compared (Jamf never auto-populates a
-// computer's email when its username changes, so a stale email could
-// otherwise coincidentally match, or make Revoke clear a different live
-// assignee's data); only when the username is empty does this fall back to
-// email. Either comparison only counts when both sides are non-empty.
+// grant is still the device's current assignee. Usernames are compared only
+// when BOTH sides carry one; whenever either side has no username (the
+// device is currently unassigned, or the principal is an unsynced assignee
+// matched by email alone — see deviceGrants), this falls back to comparing
+// emails instead. Jamf never auto-populates a computer's email when its
+// username changes, so mixing the two (e.g. comparing a stale email against
+// a live username) could let Revoke clear a different, live assignee's
+// data — hence the comparison never crosses from one field to the other
+// when both sides do have a username.
 func assigneeMatches(currentUsername, currentEmail, principalUsername, principalEmail string) bool {
 	currentUsername = strings.TrimSpace(currentUsername)
 	principalUsername = strings.TrimSpace(principalUsername)
-	if currentUsername != "" {
-		return principalUsername != "" && strings.EqualFold(currentUsername, principalUsername)
+	if currentUsername != "" && principalUsername != "" {
+		return strings.EqualFold(currentUsername, principalUsername)
 	}
 
 	currentEmail = strings.TrimSpace(currentEmail)

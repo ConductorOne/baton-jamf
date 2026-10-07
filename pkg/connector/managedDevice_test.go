@@ -536,6 +536,42 @@ func TestManagedDeviceRevoke_ExternalMatchPrincipal_Patches(t *testing.T) {
 	}
 }
 
+// TestManagedDeviceRevoke_ExternalMatchPrincipal_EmailOnly_DeviceHasUsername_Clears
+// covers a bug fix: deviceGrants keys an unsynced assignee's grant by email
+// whenever the assignee has one, even if the device also has a username —
+// so the resulting ExternalResourceMatch principal here carries no username
+// at all. assigneeMatches must still compare by email in that case, even
+// though the device's current assignee ALSO reports a username. Before the
+// fix, matching was keyed off the device's username being present, so this
+// case always fell through to GrantAlreadyRevoked without clearing.
+func TestManagedDeviceRevoke_ExternalMatchPrincipal_EmailOnly_DeviceHasUsername_Clears(t *testing.T) {
+	var patchBody []byte
+	client := newTestJamfClient(t, jamfDeviceAssignHandlerEmail(t, "unused", "unused@ex.com", "bob", "ghost@ex.com", &patchBody))
+	d := managedDeviceBuilder(client)
+
+	principal, err := rs.NewResourceID(resourceTypeUser, "ghost@ex.com")
+	if err != nil {
+		t.Fatalf("NewResourceID: %v", err)
+	}
+	match := v2.ExternalResourceMatch_builder{
+		ResourceType: v2.ResourceType_TRAIT_USER,
+		Key:          matchKeyEmail,
+		Value:        "ghost@ex.com",
+	}.Build()
+	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, principal, grant.WithAnnotation(match))
+
+	annos, err := d.Revoke(context.Background(), gr)
+	if err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if annos != nil {
+		t.Errorf("expected no annotations (grant should be revoked), got %v", annos)
+	}
+	if patchBody == nil {
+		t.Fatal("expected a PATCH to be sent: the principal's email matches the device's current assignee even though the device also reports a username")
+	}
+}
+
 // TestManagedDeviceGrant_Computer_PatchesUserAndLocation grants a
 // previously-unassigned device (current assignee "" from the mock's detail
 // GET): no prior assignee means no displacement, so this also covers

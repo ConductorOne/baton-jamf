@@ -37,8 +37,8 @@ func userPrincipal(t *testing.T, userID int) *v2.Resource {
 
 // jamfUserGroupHandler serves GET /JSSResource/usergroups/id/{id} returning
 // is_smart, and PUT to the same path recording whether it was called. It
-// returns putStatus for the PUT so tests can force idempotency-mapping paths
-// (409) as well as the happy path.
+// returns putStatus for the PUT so tests can force a write failure (409) as
+// well as the happy path.
 func jamfUserGroupHandler(t *testing.T, isSmart bool, putStatus int, putCalled *bool) http.HandlerFunc {
 	t.Helper()
 	return jamfUserGroupHandlerWithMembers(t, isSmart, putStatus, nil, putCalled)
@@ -54,10 +54,7 @@ func jamfUserGroupHandlerWithMembers(t *testing.T, isSmart bool, putStatus int, 
 
 // jamfUserGroupStatefulHandler serves GET /JSSResource/usergroups/id/{id},
 // reporting membersBeforePut on the first GET and membersAfterPut on every
-// GET thereafter, so tests can simulate Grant/Revoke's re-read-after-409
-// disambiguation (the first GET is the pre-write membership check, the
-// second is the post-409 re-verification). PUT records that it was called
-// and returns putStatus.
+// GET thereafter. PUT records that it was called and returns putStatus.
 func jamfUserGroupStatefulHandler(t *testing.T, isSmart bool, putStatus int, membersBeforePut, membersAfterPut []int, putCalled *bool) http.HandlerFunc {
 	t.Helper()
 	getCalls := 0
@@ -189,43 +186,21 @@ func TestUserGroupRevoke_NotAMember_MapsToGrantAlreadyRevokedWithoutCallingAPI(t
 	}
 }
 
-// TestUserGroupRevoke_Conflict_ReReadNotMember_MapsToGrantAlreadyRevoked
-// covers the 409 disambiguation on Revoke: the principal is a member as of
-// the pre-write GET (so the write is attempted), the PUT 409s, and the
-// post-409 re-read shows the principal is no longer a member — treated as
-// GrantAlreadyRevoked rather than an error.
-func TestUserGroupRevoke_Conflict_ReReadNotMember_MapsToGrantAlreadyRevoked(t *testing.T) {
+// TestUserGroupRevoke_Conflict_ReturnsFailedPrecondition covers a 409 on the
+// write: the pre-write read already ruled out "not a member", so Revoke
+// surfaces the 409 as FailedPrecondition instead of assuming success.
+func TestUserGroupRevoke_Conflict_ReturnsFailedPrecondition(t *testing.T) {
 	putCalled := false
-	client := newTestJamfClient(t, jamfUserGroupStatefulHandler(t, false, http.StatusConflict, []int{1938}, nil, &putCalled))
-	g := userGroupBuilder(client)
-
-	gr := grant.NewGrant(userGroupEntitlement(t, 5).Resource, memberEntitlement, userPrincipal(t, 1938).Id)
-	annos, err := g.Revoke(context.Background(), gr)
-	if err != nil {
-		t.Fatalf("Revoke: %v", err)
-	}
-	if !putCalled {
-		t.Error("expected the PUT to be attempted since the pre-write check shows a member")
-	}
-	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
-		t.Error("expected a GrantAlreadyRevoked annotation once the re-read confirms the user is no longer a member")
-	}
-}
-
-// TestUserGroupRevoke_Conflict_ReReadStillMember_ReturnsError covers the
-// 409 disambiguation on Revoke when the conflict wasn't actually about this
-// principal's membership: the re-read after the 409 still shows the
-// principal as a member, so the original error must be surfaced rather than
-// reported as GrantAlreadyRevoked.
-func TestUserGroupRevoke_Conflict_ReReadStillMember_ReturnsError(t *testing.T) {
-	putCalled := false
-	client := newTestJamfClient(t, jamfUserGroupStatefulHandler(t, false, http.StatusConflict, []int{1938}, []int{1938}, &putCalled))
+	client := newTestJamfClient(t, jamfUserGroupHandlerWithMembers(t, false, http.StatusConflict, []int{1938}, &putCalled))
 	g := userGroupBuilder(client)
 
 	gr := grant.NewGrant(userGroupEntitlement(t, 5).Resource, memberEntitlement, userPrincipal(t, 1938).Id)
 	_, err := g.Revoke(context.Background(), gr)
 	if err == nil {
-		t.Fatal("expected an error when the 409 isn't backed by the principal actually being removed")
+		t.Fatal("expected an error for a 409 on the write")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition for a 409 on the write, got %v", err)
 	}
 	if !putCalled {
 		t.Error("expected the PUT to be attempted since the pre-write check shows a member")
@@ -257,53 +232,30 @@ func TestUserGroupGrant_AlreadyMember_MapsToGrantAlreadyExistsWithoutCallingAPI(
 	}
 }
 
-// TestUserGroupGrant_Conflict_ReReadMember_MapsToGrantAlreadyExists covers
-// the 409 disambiguation on Grant: the principal is not yet a member as of
-// the pre-write GET (so the write is attempted), the PUT 409s, and the
-// post-409 re-read shows the principal is now a member — treated as
-// GrantAlreadyExists.
-func TestUserGroupGrant_Conflict_ReReadMember_MapsToGrantAlreadyExists(t *testing.T) {
+// TestUserGroupGrant_Conflict_ReturnsFailedPrecondition covers a 409 on the
+// write (e.g. a user deleted since the pre-write read): the read already
+// ruled out "already a member", so Grant surfaces the 409 as
+// FailedPrecondition instead of AlreadyExists or success.
+func TestUserGroupGrant_Conflict_ReturnsFailedPrecondition(t *testing.T) {
 	putCalled := false
-	client := newTestJamfClient(t, jamfUserGroupStatefulHandler(t, false, http.StatusConflict, nil, []int{1938}, &putCalled))
+	client := newTestJamfClient(t, jamfUserGroupHandler(t, false, http.StatusConflict, &putCalled))
 	g := userGroupBuilder(client)
 
 	grants, annos, err := g.Grant(context.Background(), userPrincipal(t, 1938), userGroupEntitlement(t, 5))
-	if err != nil {
-		t.Fatalf("Grant: %v", err)
+	if err == nil {
+		t.Fatal("expected an error for a 409 on the write")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition for a 409 on the write, got %v", err)
 	}
 	if !putCalled {
 		t.Error("expected the PUT to be attempted since the pre-write check shows no member")
 	}
 	if grants != nil {
-		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
-	}
-	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
-		t.Error("expected a GrantAlreadyExists annotation once the re-read confirms the user is now a member")
-	}
-}
-
-// TestUserGroupGrant_Conflict_ReReadNotMember_ReturnsFailedPrecondition
-// covers the 409 disambiguation on Grant when the conflict wasn't actually
-// about this principal (e.g. a user id Jamf can no longer match): the
-// re-read after the 409 still shows the principal isn't a member, so Grant
-// reports FailedPrecondition instead of misreporting success.
-func TestUserGroupGrant_Conflict_ReReadNotMember_ReturnsFailedPrecondition(t *testing.T) {
-	putCalled := false
-	client := newTestJamfClient(t, jamfUserGroupStatefulHandler(t, false, http.StatusConflict, nil, nil, &putCalled))
-	g := userGroupBuilder(client)
-
-	grants, annos, err := g.Grant(context.Background(), userPrincipal(t, 1938), userGroupEntitlement(t, 5))
-	if err == nil {
-		t.Fatal("expected an error when the 409 isn't backed by actual membership")
-	}
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("expected FailedPrecondition, got %v", err)
-	}
-	if grants != nil {
 		t.Errorf("expected no grants returned, got %v", grants)
 	}
 	if annos != nil {
-		t.Errorf("expected no GrantAlreadyExists annotation when membership can't be confirmed, got %v", annos)
+		t.Errorf("expected no annotations on a write failure, got %v", annos)
 	}
 }
 

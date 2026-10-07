@@ -41,12 +41,11 @@ func groupDetailsResponse(id int, name string, memberIDs []int) map[string]any {
 
 // groupHandler serves GET /JSSResource/accounts/groupid/{id}, returning the
 // n-th entry of getMemberSnapshots on the n-th GET (clamped to the last
-// entry once exhausted — Grant issues a second GET after a successful PUT to
-// verify the write actually took effect). Every PUT body received is
-// appended to putBodies. The account GET Grant's Group Access guard now also
-// issues (/JSSResource/accounts/userid/{id}) is routed to a Group Access
-// account by default — see accountAccessLevelHandler and routeByPath for
-// tests that need a different access level or a 404.
+// entry once exhausted). Every PUT body received is appended to putBodies.
+// The account GET Grant's Group Access guard also issues
+// (/JSSResource/accounts/userid/{id}) is routed to a Group Access account by
+// default — see accountAccessLevelHandler and routeByPath for tests that
+// need a different access level or a 404.
 func groupHandler(t *testing.T, groupID int, groupName string, getMemberSnapshots [][]int, putBodies *[][]byte) http.HandlerFunc {
 	t.Helper()
 	return routeByPath(
@@ -201,25 +200,6 @@ func TestGroupGrant_EmptyMemberList_AbortsWithoutWrite(t *testing.T) {
 	}
 }
 
-func TestGroupGrant_PrincipalNotAppliedAfterWrite_ReturnsError(t *testing.T) {
-	var putBodies [][]byte
-	// The post-PUT verification GET still comes back without the new member
-	// (e.g. Jamf silently dropped it) — Grant must not report success.
-	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{10}, {10}}, &putBodies))
-	g := groupBuilder(client)
-
-	_, _, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
-	if err == nil {
-		t.Fatal("expected an error when the re-read doesn't show the new member")
-	}
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("expected FailedPrecondition, got %v", err)
-	}
-	if len(putBodies) != 1 {
-		t.Errorf("expected the PUT to still have been attempted, got %d", len(putBodies))
-	}
-}
-
 func TestGroupGrant_Group404_MapsToNotFound(t *testing.T) {
 	client := newTestJamfClient(t, groupNotFoundHandler(t))
 	g := groupBuilder(client)
@@ -353,21 +333,21 @@ func TestGroupRevoke_NotAMember_MapsToGrantAlreadyRevoked(t *testing.T) {
 	}
 }
 
-func TestGroupRevoke_EmptyMemberList_MapsToGrantAlreadyRevokedNoWrite(t *testing.T) {
+func TestGroupRevoke_EmptyMemberList_ReturnsRetryableErrorNoWrite(t *testing.T) {
 	var putBodies [][]byte
 	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{}}, &putBodies))
 	g := groupBuilder(client)
 
 	gr := groupRevokeGrant(t, 7, 42)
-	annos, err := g.Revoke(context.Background(), gr)
-	if err != nil {
-		t.Fatalf("Revoke: %v", err)
+	_, err := g.Revoke(context.Background(), gr)
+	if err == nil {
+		t.Fatal("expected an error when Jamf returns no members")
+	}
+	if status.Code(err) != codes.Unavailable {
+		t.Errorf("expected Unavailable, got %v", err)
 	}
 	if len(putBodies) != 0 {
 		t.Errorf("expected no PUT when the member list is empty, got %d", len(putBodies))
-	}
-	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
-		t.Errorf("expected GrantAlreadyRevoked, got %v", annos)
 	}
 }
 
