@@ -3,6 +3,7 @@ package jamf
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -219,7 +220,8 @@ func (c *Client) getBaseUsers(ctx context.Context) ([]BaseType, error) {
 	return target.Users, nil
 }
 
-func (c *Client) getUserDetails(ctx context.Context, userId int) (*User, error) {
+// GetUserDetails returns Jamf user details for a single directory user.
+func (c *Client) GetUserDetails(ctx context.Context, userId int) (*User, error) {
 	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userId))
 	if err != nil {
 		return nil, err
@@ -231,11 +233,6 @@ func (c *Client) getUserDetails(ctx context.Context, userId int) (*User, error) 
 	}
 
 	return &target.User, nil
-}
-
-// GetUserDetails returns Jamf user details for a single directory user.
-func (c *Client) GetUserDetails(ctx context.Context, userId int) (*User, error) {
-	return c.getUserDetails(ctx, userId)
 }
 
 func (c *Client) getBaseAccounts(ctx context.Context) (*BaseAccount, error) {
@@ -336,7 +333,7 @@ func (c *Client) GetUsers(ctx context.Context) ([]*User, error) {
 	}
 
 	for _, baseUser := range baseUsers {
-		user, err := c.getUserDetails(ctx, baseUser.ID)
+		user, err := c.GetUserDetails(ctx, baseUser.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -356,7 +353,7 @@ func (c *Client) AddUserGroupMembers(ctx context.Context, groupID int, userIDs [
 		return err
 	}
 
-	reqBody := UserGroupMemberMutation{Additions: &userGroupUsers{Users: baseTypesFromIDs(userIDs)}}
+	reqBody := UserGroupMemberMutation{Additions: &memberUsers{Users: baseTypesFromIDs(userIDs)}}
 	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
 }
 
@@ -370,7 +367,7 @@ func (c *Client) RemoveUserGroupMembers(ctx context.Context, groupID int, userID
 		return err
 	}
 
-	reqBody := UserGroupMemberMutation{Deletions: &userGroupUsers{Users: baseTypesFromIDs(userIDs)}}
+	reqBody := UserGroupMemberMutation{Deletions: &memberUsers{Users: baseTypesFromIDs(userIDs)}}
 	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
 }
 
@@ -515,26 +512,25 @@ func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
 	return c.doRequestWithMethod(ctx, http.MethodDelete, url, nil, nil)
 }
 
-// UpdateAccountPrivileges updates a Jamf admin account's privilege_set
-// and/or individual privileges via a minimal PUT to
-// /JSSResource/accounts/userid/{id} carrying only <name> and, when
-// privilegeSet is non-empty, <privilege_set> (see
-// AccountPrivilegesUpdateBody's doc comment for why this doesn't need to
-// round-trip full_name/email/enabled/access_level/site the way an
-// unconfirmed-merge endpoint would). privileges is nil to omit the
-// <privileges> element entirely (leaving Jamf's stored privileges
-// untouched), or a pointer to an explicit — even all-empty — Privileges to
-// force the element: every write of privilegeSet == "Custom" must pass a
-// non-nil privileges, since Jamf copies the account's previous set's entire
-// expanded privilege list when Custom is set with the element omitted. See
-// https://developer.jamf.com/jamf-pro/reference/updateaccountbyid.
-func (c *Client) UpdateAccountPrivileges(ctx context.Context, accountID int, name, privilegeSet string, privileges *Privileges) error {
-	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, accountID))
+// updatePrivileges backs both UpdateAccountPrivileges and
+// UpdateGroupPrivileges: a minimal PUT to path (formatted with id) carrying
+// only <name> and, when privilegeSet is non-empty, <privilege_set>, with
+// root as the XML root element name ("account" or "group") — see
+// privilegesUpdateBody's doc comment for the full rationale. privileges is
+// nil to omit the <privileges> element entirely (leaving Jamf's stored
+// privileges untouched), or a pointer to an explicit — even all-empty —
+// Privileges to force the element: every write of privilegeSet == "Custom"
+// must pass a non-nil privileges, since Jamf copies the previous set's
+// entire expanded privilege list when Custom is set with the element
+// omitted.
+func (c *Client) updatePrivileges(ctx context.Context, path, root string, id int, name, privilegeSet string, privileges *Privileges) error {
+	url, err := c.getUrl(fmt.Sprintf(path, id))
 	if err != nil {
 		return err
 	}
 
-	reqBody := AccountPrivilegesUpdateBody{
+	reqBody := privilegesUpdateBody{
+		XMLName:      xml.Name{Local: root},
 		Name:         name,
 		PrivilegeSet: privilegeSet,
 		Privileges:   privileges,
@@ -542,25 +538,18 @@ func (c *Client) UpdateAccountPrivileges(ctx context.Context, accountID int, nam
 	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
 }
 
-// UpdateGroupPrivileges is UpdateAccountPrivileges's counterpart for
-// /JSSResource/accounts/groupid/{id} — same minimal-body rationale, and
-// deliberately never sends <members>: Role Grant/Revoke must never touch a
-// group's membership (that's group.go's Grant/Revoke, a separate
-// entitlement), and omitting the element preserves whatever membership the
-// group currently has. See
+// UpdateAccountPrivileges updates a Jamf admin account's privilege_set
+// and/or individual privileges. See
+// https://developer.jamf.com/jamf-pro/reference/updateaccountbyid.
+func (c *Client) UpdateAccountPrivileges(ctx context.Context, accountID int, name, privilegeSet string, privileges *Privileges) error {
+	return c.updatePrivileges(ctx, accountUrlPath, "account", accountID, name, privilegeSet, privileges)
+}
+
+// UpdateGroupPrivileges is UpdateAccountPrivileges's counterpart for an
+// admin account group. See
 // https://developer.jamf.com/jamf-pro/reference/updategroupbyid.
 func (c *Client) UpdateGroupPrivileges(ctx context.Context, groupID int, name, privilegeSet string, privileges *Privileges) error {
-	url, err := c.getUrl(fmt.Sprintf(groupUrlPath, groupID))
-	if err != nil {
-		return err
-	}
-
-	reqBody := GroupPrivilegesUpdateBody{
-		Name:         name,
-		PrivilegeSet: privilegeSet,
-		Privileges:   privileges,
-	}
-	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+	return c.updatePrivileges(ctx, groupUrlPath, "group", groupID, name, privilegeSet, privileges)
 }
 
 // UpdateGroupMembers updates a Jamf access-level group's membership via a
@@ -581,95 +570,33 @@ func (c *Client) UpdateGroupMembers(ctx context.Context, groupID int, name strin
 
 	reqBody := GroupMembersUpdateBody{
 		Name:    name,
-		Members: &groupMembersList{Users: members},
+		Members: &memberUsers{Users: members},
 	}
 	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
 }
 
-// AddUserSite grants a Jamf user membership in the given site. Not atomic:
-// performs a read of the user's current <sites>, appends siteID if absent,
-// and PUTs the full list back. Returns alreadyMember=true without issuing a
-// PUT if the user is already a member — there is no distinct "already
-// exists" HTTP status to key off here (see IsAlreadyExistsError), so callers
-// must key off the returned bool rather than expecting that error shape from
-// this method.
+// UpdateUserSites PUTs the full desired <sites> list for a user. Per
+// Classic API field-level-merge semantics, sending only <sites> leaves the
+// rest of the user record untouched. Callers are responsible for the
+// read-modify-write and idempotency checks (see site.go's Grant/Revoke).
 //
-// Concurrency note: this read-modify-write has no locking/versioning guard.
-// Two concurrent calls for the same userID (e.g. a site grant racing a site
-// revoke, or two grants for different sites) can both read the same starting
-// <sites> list and each PUT back a version missing the other's change,
-// silently dropping one of the updates. Callers that need strict correctness
-// under concurrent provisioning for the same user should serialize calls
-// per-userID.
-func (c *Client) AddUserSite(ctx context.Context, userID int, siteID int) (bool, error) {
-	user, err := c.getUserDetails(ctx, userID) // always re-read — never reuse a cached User; bypasses the HTTP GET cache too when ctx carries WithFreshReads
-	if err != nil {
-		return false, err
-	}
-	for _, s := range user.Sites {
-		if s.ID == siteID {
-			return true, nil // already a member — idempotent success, not an error
-		}
-	}
-	user.Sites = append(user.Sites, BaseType{ID: siteID})
-	if err := c.updateUserSites(ctx, userID, user.Sites); err != nil {
-		return false, err
-	}
-	return false, nil
-}
-
-// RemoveUserSite revokes a Jamf user's membership in the given site via the
-// same read-modify-write pattern as AddUserSite. Returns alreadyAbsent=true
-// without issuing a PUT if the site is already absent from the user's
-// <sites> — same idempotency-absorption caveat as AddUserSite. Also treats a
-// NotFound from the initial user lookup (e.g. the user was deleted) as
-// alreadyAbsent=true: a deleted user trivially has no site membership left
-// to revoke, so this is a no-op success rather than a propagated error.
-//
-// Concurrency note: same lack of locking/versioning as AddUserSite — see its
-// doc comment. A concurrent grant/revoke for the same userID can race and
-// silently drop one side's change.
-func (c *Client) RemoveUserSite(ctx context.Context, userID int, siteID int) (bool, error) {
-	user, err := c.getUserDetails(ctx, userID)
-	if err != nil {
-		if IsNotFoundError(err) {
-			return true, nil // user no longer exists — nothing left to revoke
-		}
-		return false, err
-	}
-
-	newSites := make(UserSites, 0, len(user.Sites))
-	found := false
-	for _, s := range user.Sites {
-		if s.ID == siteID {
-			found = true
-			continue
-		}
-		newSites = append(newSites, s)
-	}
-	if !found {
-		return true, nil // not a member — idempotent success, not an error
-	}
-	if err := c.updateUserSites(ctx, userID, newSites); err != nil {
-		return false, err
-	}
-	return false, nil
-}
-
-// updateUserSites PUTs the full desired <sites> list for a user. Per Classic
-// API field-level-merge semantics, sending only <sites> leaves the rest of
-// the user record untouched.
-func (c *Client) updateUserSites(ctx context.Context, userID int, sites UserSites) error {
+// Concurrency note: this has no locking/versioning guard. Two concurrent
+// calls for the same userID (e.g. a site grant racing a site revoke, or two
+// grants for different sites) can both start from the same <sites> list and
+// each PUT back a version missing the other's change, silently dropping one
+// of the updates. Callers that need strict correctness under concurrent
+// provisioning for the same user should serialize calls per-userID.
+func (c *Client) UpdateUserSites(ctx context.Context, userID int, sites UserSites) error {
 	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userID))
 	if err != nil {
 		return err
 	}
 
-	items := make([]userSiteItem, 0, len(sites))
+	ids := make([]int, 0, len(sites))
 	for _, s := range sites {
-		items = append(items, userSiteItem{ID: s.ID})
+		ids = append(ids, s.ID)
 	}
-	reqBody := UserSitesUpdateBody{Sites: items}
+	reqBody := UserSitesUpdateBody{Sites: baseTypesFromIDs(ids)}
 	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
 }
 

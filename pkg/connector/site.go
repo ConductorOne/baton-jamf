@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
@@ -11,6 +12,8 @@ import (
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type siteResourceType struct {
@@ -157,64 +160,68 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 // in-depth: Grants() emits site grants for four principal types, but only
 // user is genuinely multi-valued/grantable — see the WithGrantableTo note in
 // Entitlements above.
-//
-// client.AddUserSite reports via its bool return whether the user was
-// already a site member, so that case is surfaced here as GrantAlreadyExists
-// instead of a fresh grant.
 func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if err := requirePrincipalType(principal.Id.ResourceType, resourceTypeUser, "site membership", "granted to users"); err != nil {
-		return nil, nil, err
-	}
-
-	siteID, err := parseResourceID("jamf-connector: grant site member: invalid site id", entitlement.Resource.Id.Resource)
-	if err != nil {
-		return nil, nil, err
-	}
-	userID, err := parseResourceID("jamf-connector: grant site member: invalid user id", principal.Id.Resource)
+	siteID, userID, err := membershipIDs("grant site member", resourceTypeUser, entitlement.Resource.Id, principal.Id)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	alreadyMember, err := g.client.AddUserSite(ctx, userID, siteID)
+	user, err := g.client.GetUserDetails(ctx, userID)
 	if err != nil {
-		return nil, nil, membershipWriteError("grant site member", "the user or site", err)
+		if jamf.IsNotFoundError(err) {
+			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant site member: user %d not found", userID)
+		}
+		return nil, nil, fmt.Errorf("jamf-connector: grant site member: %w", err)
 	}
-	if alreadyMember {
+	if slices.ContainsFunc(user.Sites, func(s jamf.BaseType) bool { return s.ID == siteID }) {
 		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+	}
+
+	newSites := append(append(jamf.UserSites{}, user.Sites...), jamf.BaseType{ID: siteID})
+	if err := g.client.UpdateUserSites(ctx, userID, newSites); err != nil {
+		return nil, nil, membershipWriteError("grant site member", "the user or site", err)
 	}
 	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
 }
 
 // Revoke removes gr's principal (a Jamf user) from the <sites> list of the
 // site backing gr's entitlement resource. See Grant for the principal-type
-// guard rationale. client.RemoveUserSite reports via its bool return whether
-// the user was already absent from the site (including the case where the
-// user has since been deleted), so that case is surfaced here as
-// GrantAlreadyRevoked instead of a plain success.
+// guard rationale.
 func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if err := requirePrincipalType(gr.Principal.Id.ResourceType, resourceTypeUser, "site membership", "revoked for users"); err != nil {
-		return nil, err
-	}
-
-	siteID, err := parseResourceID("jamf-connector: revoke site member: invalid site id", gr.Entitlement.Resource.Id.Resource)
-	if err != nil {
-		return nil, err
-	}
-	userID, err := parseResourceID("jamf-connector: revoke site member: invalid user id", gr.Principal.Id.Resource)
+	siteID, userID, err := membershipIDs("revoke site member", resourceTypeUser, gr.Entitlement.Resource.Id, gr.Principal.Id)
 	if err != nil {
 		return nil, err
 	}
 
-	alreadyAbsent, err := g.client.RemoveUserSite(ctx, userID, siteID)
+	user, err := g.client.GetUserDetails(ctx, userID)
 	if err != nil {
-		return nil, membershipWriteError("revoke site member", "the user or site", err)
+		if jamf.IsNotFoundError(err) {
+			// The user has been deleted — a deleted user trivially has no
+			// site membership left to revoke.
+			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		}
+		return nil, fmt.Errorf("jamf-connector: revoke site member: %w", err)
 	}
-	if alreadyAbsent {
+
+	remaining := make(jamf.UserSites, 0, len(user.Sites))
+	found := false
+	for _, s := range user.Sites {
+		if s.ID == siteID {
+			found = true
+			continue
+		}
+		remaining = append(remaining, s)
+	}
+	if !found {
 		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+	}
+
+	if err := g.client.UpdateUserSites(ctx, userID, remaining); err != nil {
+		return nil, membershipWriteError("revoke site member", "the user or site", err)
 	}
 	return nil, nil
 }

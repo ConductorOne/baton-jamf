@@ -96,7 +96,7 @@ func TestGetMobileDeviceDetail_IssuesGET(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath, gotMethod = r.URL.Path, r.Method
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(MobileDeviceDetail{ID: "3", Location: &MobileDeviceDetailLocation{Username: "jappleseed"}})
+		_ = json.NewEncoder(w).Encode(MobileDeviceDetail{ID: "3", Location: &MobileDeviceLocation{Username: "jappleseed"}})
 	})
 
 	detail, err := client.GetMobileDeviceDetail(context.Background(), "3")

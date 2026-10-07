@@ -148,7 +148,7 @@ func TestComputerResource_FullMapping(t *testing.T) {
 	}
 
 	// A resolvable assignee produces a direct grant to the synced Jamf user.
-	grants, err := deviceGrants(r, "jappleseed", "jappleseed@ex.com", testUserIndex())
+	grants, err := deviceGrants(r, assignee{username: "jappleseed", email: "jappleseed@ex.com"}, testUserIndex())
 	if err != nil {
 		t.Fatalf("deviceGrants: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestComputerResource_UnresolvedOwnerAndNoLastSeen(t *testing.T) {
 	}
 
 	// An assignee that is not a synced Jamf user produces an external-match grant.
-	grants, err := deviceGrants(r, "ghost", "", testUserIndex())
+	grants, err := deviceGrants(r, assignee{username: "ghost"}, testUserIndex())
 	if err != nil {
 		t.Fatalf("deviceGrants: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestComputerResource_NoAssignee(t *testing.T) {
 	if len(ents) != 0 {
 		t.Errorf("want 0 entitlements for unassigned device, got %d", len(ents))
 	}
-	grants, err := deviceGrants(r, "", "", testUserIndex())
+	grants, err := deviceGrants(r, assignee{}, testUserIndex())
 	if err != nil {
 		t.Fatalf("deviceGrants: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestMobileDeviceResource_Mapping(t *testing.T) {
 	if got, want := trait.GetManagementState(), v2.ManagedDeviceTrait_MANAGEMENT_STATE_MANAGED; got != want {
 		t.Errorf("management state = %v, want MANAGED", got)
 	}
-	grants, err := deviceGrants(r, "jappleseed", "", testUserIndex())
+	grants, err := deviceGrants(r, assignee{username: "jappleseed"}, testUserIndex())
 	if err != nil {
 		t.Fatalf("deviceGrants: %v", err)
 	}
@@ -440,6 +440,12 @@ func jamfDeviceAssignHandlerEmail(t *testing.T, principalUsername, principalEmai
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
+			// Grant's getUserIndex scan when resolving a GrantReplaced
+			// annotation for the outgoing assignee — empty is fine here, the
+			// annotation's exact id isn't asserted by these tests.
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"users": []any{}})
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/"):
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -852,18 +858,6 @@ func jamfDeviceGrantDisplaceHandler(t *testing.T, sc deviceGrantDisplaceScenario
 	oldUserID, oldUsername, oldEmail := sc.oldUserID, sc.oldUsername, sc.oldEmail
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/name/"):
-			// replacedGrantID's direct GetUserByName lookup for the outgoing
-			// assignee. oldUserID == 0 models an unsynced assignee: 404, so
-			// replacedGrantID falls back to the index below.
-			if oldUserID == 0 {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"user": map[string]any{"id": oldUserID, "name": oldUsername, "username": oldUsername, "email": oldEmail},
-			})
 		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
 			w.Header().Set("Content-Type", "application/json")
 			var users []map[string]any
@@ -1192,12 +1186,12 @@ func TestPrincipalIdentityForRevoke_NoAnnotation_FallsBackOnRawIDShape(t *testin
 		t.Fatalf("NewResourceID: %v", err)
 	}
 	gr := grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, emailPrincipal)
-	username, email, err := principalIdentityForRevoke(context.Background(), client, gr)
+	a, err := principalIdentityForRevoke(context.Background(), client, gr)
 	if err != nil {
 		t.Fatalf("principalIdentityForRevoke: %v", err)
 	}
-	if username != "" || email != "ghost@ex.com" {
-		t.Errorf("got (username=%q, email=%q), want (\"\", \"ghost@ex.com\") for an email-shaped raw id", username, email)
+	if a.username != "" || a.email != "ghost@ex.com" {
+		t.Errorf("got (username=%q, email=%q), want (\"\", \"ghost@ex.com\") for an email-shaped raw id", a.username, a.email)
 	}
 
 	usernamePrincipal, err := rs.NewResourceID(resourceTypeUser, "ghost")
@@ -1205,12 +1199,12 @@ func TestPrincipalIdentityForRevoke_NoAnnotation_FallsBackOnRawIDShape(t *testin
 		t.Fatalf("NewResourceID: %v", err)
 	}
 	gr = grant.NewGrant(deviceEntitlement(t, "computer:17").Resource, assignedEntitlement, usernamePrincipal)
-	username, email, err = principalIdentityForRevoke(context.Background(), client, gr)
+	a, err = principalIdentityForRevoke(context.Background(), client, gr)
 	if err != nil {
 		t.Fatalf("principalIdentityForRevoke: %v", err)
 	}
-	if username != "ghost" || email != "" {
-		t.Errorf("got (username=%q, email=%q), want (\"ghost\", \"\") for a non-email-shaped raw id", username, email)
+	if a.username != "ghost" || a.email != "" {
+		t.Errorf("got (username=%q, email=%q), want (\"ghost\", \"\") for a non-email-shaped raw id", a.username, a.email)
 	}
 }
 
@@ -1297,25 +1291,14 @@ func TestOSTypeFromName(t *testing.T) {
 	}
 }
 
-// replacedGrantIDHandler serves the two endpoints replacedGrantID's
-// resolution paths depend on: GET /JSSResource/users/name/{username} (the
-// direct outgoing-assignee lookup) and GET /JSSResource/users plus GET
-// /JSSResource/users/id/{id} (getUserIndex's full user-scan fallback).
-// listCalls counts requests to the bare list endpoint, so tests can assert
-// whether the full scan was paid for.
-func replacedGrantIDHandler(t *testing.T, byNameStatus int, byNameID int, byNameUsername string, indexUsers []map[string]any, listCalls *int) http.HandlerFunc {
+// replacedGrantIDHandler serves the endpoints replacedGrantID's full-index
+// resolution depends on: GET /JSSResource/users plus GET
+// /JSSResource/users/id/{id}. listCalls counts requests to the bare list
+// endpoint.
+func replacedGrantIDHandler(t *testing.T, indexUsers []map[string]any, listCalls *int) http.HandlerFunc {
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/name/"):
-			if byNameStatus != http.StatusOK {
-				w.WriteHeader(byNameStatus)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"user": map[string]any{"id": byNameID, "name": byNameUsername, "username": byNameUsername},
-			})
 		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
 			*listCalls++
 			w.Header().Set("Content-Type", "application/json")
@@ -1347,67 +1330,16 @@ func wantReplacedGrantID(t *testing.T, userID string, en *v2.Entitlement) string
 	return grant.NewGrantID(rid, en)
 }
 
-// TestReplacedGrantID_DirectLookupHit_SkipsIndex covers the direct-lookup
-// fast path: a non-empty username resolved by GetUserByName must short-circuit
-// before ever touching the full user index/scan.
-func TestReplacedGrantID_DirectLookupHit_SkipsIndex(t *testing.T) {
+// TestReplacedGrantID_ResolvesViaIndex covers resolving a synced outgoing
+// assignee through the full user index.
+func TestReplacedGrantID_ResolvesViaIndex(t *testing.T) {
 	var listCalls int
-	client := newTestJamfClient(t, replacedGrantIDHandler(t, http.StatusOK, 7, "old.user", nil, &listCalls))
+	indexUsers := []map[string]any{{"id": 7, "name": "old.user", "username": "old.user", "email": "old.user@ex.com"}}
+	client := newTestJamfClient(t, replacedGrantIDHandler(t, indexUsers, &listCalls))
 	d := managedDeviceBuilder(client)
 
 	en := deviceEntitlement(t, "computer:17")
-	rid, ok, err := d.replacedGrantID(context.Background(), "old.user", "old.user@ex.com", en)
-	if err != nil {
-		t.Fatalf("replacedGrantID: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if want := wantReplacedGrantID(t, "7", en); rid != want {
-		t.Errorf("replacedGrantID = %q, want %q", rid, want)
-	}
-	if listCalls != 0 {
-		t.Errorf("expected the direct lookup to avoid the full user index scan, got %d calls to the users list endpoint", listCalls)
-	}
-}
-
-// TestReplacedGrantID_DirectLookupNotFound_FallsBackToIndex covers a direct
-// lookup 404 (the outgoing assignee isn't a synced Jamf user): replacedGrantID
-// must fall back to the full index rather than treating the 404 as fatal.
-func TestReplacedGrantID_DirectLookupNotFound_FallsBackToIndex(t *testing.T) {
-	var listCalls int
-	indexUsers := []map[string]any{{"id": 7, "name": "old.user"}}
-	client := newTestJamfClient(t, replacedGrantIDHandler(t, http.StatusNotFound, 0, "", indexUsers, &listCalls))
-	d := managedDeviceBuilder(client)
-
-	en := deviceEntitlement(t, "computer:17")
-	rid, ok, err := d.replacedGrantID(context.Background(), "old.user", "", en)
-	if err != nil {
-		t.Fatalf("replacedGrantID: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if want := wantReplacedGrantID(t, "7", en); rid != want {
-		t.Errorf("replacedGrantID = %q, want %q", rid, want)
-	}
-	if listCalls != 1 {
-		t.Errorf("expected a 404 from the direct lookup to fall back to the full index, got %d calls to the users list endpoint", listCalls)
-	}
-}
-
-// TestReplacedGrantID_EmptyUsername_GoesStraightToIndex covers an empty
-// username (e.g. a device whose assignee was only ever attributed via
-// email): replacedGrantID must never call GetUserByName with an empty name
-// and should resolve straight through the index.
-func TestReplacedGrantID_EmptyUsername_GoesStraightToIndex(t *testing.T) {
-	var listCalls int
-	indexUsers := []map[string]any{{"id": 7, "name": "old.user", "email": "old.user@ex.com"}}
-	client := newTestJamfClient(t, replacedGrantIDHandler(t, http.StatusOK, 0, "", indexUsers, &listCalls))
-	d := managedDeviceBuilder(client)
-
-	en := deviceEntitlement(t, "computer:17")
-	rid, ok, err := d.replacedGrantID(context.Background(), "", "old.user@ex.com", en)
+	rid, ok, err := d.replacedGrantID(context.Background(), assignee{username: "old.user", email: "old.user@ex.com"}, en)
 	if err != nil {
 		t.Fatalf("replacedGrantID: %v", err)
 	}
@@ -1422,28 +1354,31 @@ func TestReplacedGrantID_EmptyUsername_GoesStraightToIndex(t *testing.T) {
 	}
 }
 
-// TestReplacedGrantID_DirectLookupOtherError_FallsBackToIndex covers a
-// non-404 error from the direct lookup (e.g. a transient 5xx): it must not
-// fail the Grant, falling back to the full index exactly like a 404 would.
-func TestReplacedGrantID_DirectLookupOtherError_FallsBackToIndex(t *testing.T) {
+// TestReplacedGrantID_NotInIndex_ExternalMatch covers an outgoing assignee
+// that doesn't resolve to any synced Jamf user: replacedGrantID falls back
+// to the same external-match-style resource id deviceGrants builds.
+func TestReplacedGrantID_NotInIndex_ExternalMatch(t *testing.T) {
 	var listCalls int
-	indexUsers := []map[string]any{{"id": 7, "name": "old.user"}}
-	client := newTestJamfClient(t, replacedGrantIDHandler(t, http.StatusInternalServerError, 0, "", indexUsers, &listCalls))
+	client := newTestJamfClient(t, replacedGrantIDHandler(t, nil, &listCalls))
 	d := managedDeviceBuilder(client)
 
 	en := deviceEntitlement(t, "computer:17")
-	rid, ok, err := d.replacedGrantID(context.Background(), "old.user", "", en)
+	rid, ok, err := d.replacedGrantID(context.Background(), assignee{email: "ghost@ex.com"}, en)
 	if err != nil {
 		t.Fatalf("replacedGrantID: %v", err)
 	}
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
-	if want := wantReplacedGrantID(t, "7", en); rid != want {
+	externalRid, err := rs.NewResourceID(resourceTypeUser, "ghost@ex.com")
+	if err != nil {
+		t.Fatalf("NewResourceID: %v", err)
+	}
+	if want := grant.NewGrantID(externalRid, en); rid != want {
 		t.Errorf("replacedGrantID = %q, want %q", rid, want)
 	}
 	if listCalls != 1 {
-		t.Errorf("expected a non-404 lookup error to fall back to the full index, got %d calls to the users list endpoint", listCalls)
+		t.Errorf("want 1 call to the users list endpoint, got %d", listCalls)
 	}
 }
 

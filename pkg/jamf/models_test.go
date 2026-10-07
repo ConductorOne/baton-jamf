@@ -73,7 +73,7 @@ func TestPrivileges_Contains(t *testing.T) {
 }
 
 func TestUserGroupMemberMutation_AdditionsMarshalsUserAdditions(t *testing.T) {
-	body := UserGroupMemberMutation{Additions: &userGroupUsers{Users: []BaseType{{ID: 1938}}}}
+	body := UserGroupMemberMutation{Additions: &memberUsers{Users: []BaseType{{ID: 1938}}}}
 
 	out, err := xml.Marshal(body)
 	if err != nil {
@@ -90,7 +90,7 @@ func TestUserGroupMemberMutation_AdditionsMarshalsUserAdditions(t *testing.T) {
 }
 
 func TestUserGroupMemberMutation_DeletionsMarshalsUserDeletions(t *testing.T) {
-	body := UserGroupMemberMutation{Deletions: &userGroupUsers{Users: []BaseType{{ID: 42}}}}
+	body := UserGroupMemberMutation{Deletions: &memberUsers{Users: []BaseType{{ID: 42}}}}
 
 	out, err := xml.Marshal(body)
 	if err != nil {
@@ -107,7 +107,7 @@ func TestUserGroupMemberMutation_DeletionsMarshalsUserDeletions(t *testing.T) {
 }
 
 func TestUserSitesUpdateBody_MarshalsSitesList(t *testing.T) {
-	body := UserSitesUpdateBody{Sites: []userSiteItem{{ID: 1}, {ID: 2}}}
+	body := UserSitesUpdateBody{Sites: []BaseType{{ID: 1}, {ID: 2}}}
 
 	out, err := xml.Marshal(body)
 	if err != nil {
@@ -123,12 +123,12 @@ func TestUserSitesUpdateBody_MarshalsSitesList(t *testing.T) {
 // TestUserSitesUpdateBody_EmptySitesSendsEmptyWrapper documents (rather than
 // works around) encoding/xml's behavior for a nil slice behind a ">"-chained
 // tag with no omitempty — see the wrapper-emission caveat already documented
-// on Privileges.MarshalXML. This is the desired behavior here: RemoveUserSite
-// reconstructing a zero-length <sites> list (the user's last site was
-// removed) must PUT an explicit empty <sites></sites> to actually clear
-// membership, not omit the element and leave the prior value untouched.
+// on Privileges.MarshalXML. This is the desired behavior here: a caller
+// revoking a user's last site must PUT an explicit empty <sites></sites> to
+// actually clear membership, not omit the element and leave the prior value
+// untouched.
 func TestUserSitesUpdateBody_EmptySitesSendsEmptyWrapper(t *testing.T) {
-	body := UserSitesUpdateBody{Sites: []userSiteItem{}}
+	body := UserSitesUpdateBody{Sites: []BaseType{}}
 
 	out, err := xml.Marshal(body)
 	if err != nil {
@@ -191,7 +191,7 @@ func TestUserSites_UnmarshalJSON_AcceptsFlatAndWrappedShapes(t *testing.T) {
 }
 
 func TestComputerAssignedUserUpdate_JSONRoundTrip(t *testing.T) {
-	body := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserFields{
+	body := computerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserFields{
 		Username: "jappleseed",
 		Realname: "Johnny Appleseed",
 		Email:    "jappleseed@ex.com",
@@ -207,7 +207,7 @@ func TestComputerAssignedUserUpdate_JSONRoundTrip(t *testing.T) {
 		t.Errorf("got %q, want %q", string(out), want)
 	}
 
-	var decoded ComputerAssignedUserUpdate
+	var decoded computerAssignedUserUpdate
 	if err := json.Unmarshal(out, &decoded); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestComputerAssignedUserUpdate_JSONRoundTrip(t *testing.T) {
 }
 
 func TestComputerAssignedUserUpdate_EmptyFieldsClearEverything(t *testing.T) {
-	body := ComputerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserFields{}}
+	body := computerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserFields{}}
 
 	out, err := json.Marshal(body)
 	if err != nil {
@@ -229,7 +229,7 @@ func TestComputerAssignedUserUpdate_EmptyFieldsClearEverything(t *testing.T) {
 }
 
 func TestMobileDeviceAssignedUserUpdate_JSONRoundTrip(t *testing.T) {
-	body := MobileDeviceAssignedUserUpdate{Location: MobileDeviceAssignedUserUpdateLocation{Username: "jappleseed"}}
+	body := mobileDeviceAssignedUserUpdate{Location: MobileDeviceLocation{Username: "jappleseed"}}
 
 	out, err := json.Marshal(body)
 	if err != nil {
@@ -239,7 +239,7 @@ func TestMobileDeviceAssignedUserUpdate_JSONRoundTrip(t *testing.T) {
 		t.Errorf("got %q, want %q", string(out), want)
 	}
 
-	var decoded MobileDeviceAssignedUserUpdate
+	var decoded mobileDeviceAssignedUserUpdate
 	if err := json.Unmarshal(out, &decoded); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -143,15 +144,7 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if err := requirePrincipalType(principal.Id.ResourceType, resourceTypeUserAccount, "group membership", "granted to user accounts"); err != nil {
-		return nil, nil, err
-	}
-
-	groupID, err := parseResourceID("jamf-connector: grant group member: invalid group id", entitlement.Resource.Id.Resource)
-	if err != nil {
-		return nil, nil, err
-	}
-	userID, err := parseResourceID("jamf-connector: grant group member: invalid user account id", principal.Id.Resource)
+	groupID, userID, err := membershipIDs("grant group member", resourceTypeUserAccount, entitlement.Resource.Id, principal.Id)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -172,7 +165,7 @@ func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, e
 				"it is not possible to tell whether the group is really empty or Jamf returned an incomplete response", current.Name)
 	}
 
-	if containsID(current.Members, userID, func(m jamf.BaseType) int { return m.ID }) {
+	if slices.ContainsFunc(current.Members, func(m jamf.BaseType) bool { return m.ID == userID }) {
 		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 	}
 
@@ -211,15 +204,7 @@ func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, e
 func (g *groupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if err := requirePrincipalType(gr.Principal.Id.ResourceType, resourceTypeUserAccount, "group membership", "revoked for user accounts"); err != nil {
-		return nil, err
-	}
-
-	groupID, err := parseResourceID("jamf-connector: revoke group member: invalid group id", gr.Entitlement.Resource.Id.Resource)
-	if err != nil {
-		return nil, err
-	}
-	userID, err := parseResourceID("jamf-connector: revoke group member: invalid user account id", gr.Principal.Id.Resource)
+	groupID, userID, err := membershipIDs("revoke group member", resourceTypeUserAccount, gr.Entitlement.Resource.Id, gr.Principal.Id)
 	if err != nil {
 		return nil, err
 	}

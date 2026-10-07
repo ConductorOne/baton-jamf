@@ -26,6 +26,24 @@ type User struct {
 	Sites       UserSites `json:"sites"`
 }
 
+// LoginName returns the account's login identifier: Username when set,
+// falling back to Name.
+func (u *User) LoginName() string {
+	if u.Username != "" {
+		return u.Username
+	}
+	return u.Name
+}
+
+// PrimaryEmail returns the account's email: Email when set, falling back to
+// EmailAddress.
+func (u *User) PrimaryEmail() string {
+	if u.Email != "" {
+		return u.Email
+	}
+	return u.EmailAddress
+}
+
 // UserSites is the decoded form of a Jamf user's <sites> list. A live Jamf
 // Pro 11.32.1 tenant returns this as a flat list, each entry's id/name at the
 // top level (e.g. {"id":5,"name":"Site A"}), while the Classic API's
@@ -42,22 +60,18 @@ func (s *UserSites) UnmarshalJSON(data []byte) error {
 
 	sites := make(UserSites, 0, len(raw))
 	for _, item := range raw {
-		var wrapped struct {
+		var entry struct {
+			BaseType
 			Site *BaseType `json:"site"`
 		}
-		if err := json.Unmarshal(item, &wrapped); err != nil {
+		if err := json.Unmarshal(item, &entry); err != nil {
 			return err
 		}
-		if wrapped.Site != nil {
-			sites = append(sites, *wrapped.Site)
-			continue
+		if entry.Site != nil {
+			sites = append(sites, *entry.Site)
+		} else {
+			sites = append(sites, entry.BaseType)
 		}
-
-		var flat BaseType
-		if err := json.Unmarshal(item, &flat); err != nil {
-			return err
-		}
-		sites = append(sites, flat)
 	}
 
 	*s = sites
@@ -108,6 +122,19 @@ func (p *Privileges) IsEmpty() bool {
 		len(p.CasperAdmin) == 0 &&
 		len(p.CasperRemote) == 0 &&
 		len(p.CasperImaging) == 0
+}
+
+// Map returns a copy of p with fn applied to each of its 7 categories.
+func (p Privileges) Map(fn func([]string) []string) Privileges {
+	return Privileges{
+		JSSObjects:    fn(p.JSSObjects),
+		JSSSettings:   fn(p.JSSSettings),
+		JSSActions:    fn(p.JSSActions),
+		Recon:         fn(p.Recon),
+		CasperAdmin:   fn(p.CasperAdmin),
+		CasperRemote:  fn(p.CasperRemote),
+		CasperImaging: fn(p.CasperImaging),
+	}
 }
 
 // Contains reports whether privilege appears in any of p's 7 categories.
@@ -255,14 +282,20 @@ type UserAccountCreateBody struct {
 	Privileges *Privileges `xml:"privileges,omitempty"`
 }
 
-// AccountPrivilegesUpdateBody is the minimal XML PUT body for
-// /JSSResource/accounts/userid/{id} used by Role Grant/Revoke to change an
-// account's privilege_set/privileges without touching anything else. Jamf's
-// field-level merge means there is no need to round-trip
-// full_name/email/enabled/access_level. Password and Site are deliberately
+// privilegesUpdateBody is the minimal XML PUT body for
+// /JSSResource/accounts/userid/{id} and /JSSResource/accounts/groupid/{id}
+// used by Role Grant/Revoke to change an account's or group's
+// privilege_set/privileges without touching anything else — XMLName is set
+// at runtime to "account" or "group" by the caller. Jamf's field-level merge
+// means there is no need to round-trip full_name/email/enabled/access_level
+// (or, for a group, members/site). Password and Site are deliberately
 // absent — Password because Jamf never returns it on GET so it can't be
 // preserved, and Site because Jamf rejects a zero site ID with 409 and there
-// is no legitimate non-zero value worth risking here.
+// is no legitimate non-zero value worth risking here. Deliberately has no
+// Members field either: Role Grant/Revoke must never send <members> for a
+// group, since that element is exactly what group.go's Grant/Revoke (a
+// different entitlement entirely) uses to manage membership, and omitting
+// it here preserves whatever membership the group currently has.
 //
 // Privileges is a pointer so an explicit, possibly-empty
 // <privileges></privileges> can be forced: a nil pointer omits the element
@@ -271,22 +304,8 @@ type UserAccountCreateBody struct {
 // wrapper element. This is required whenever privilege_set is written as
 // Custom: sending Custom without an explicit block copies the account's
 // previous set's entire expanded privilege list into it.
-type AccountPrivilegesUpdateBody struct {
-	XMLName      xml.Name    `xml:"account"`
-	Name         string      `xml:"name"`
-	PrivilegeSet string      `xml:"privilege_set,omitempty"`
-	Privileges   *Privileges `xml:"privileges,omitempty"`
-}
-
-// GroupPrivilegesUpdateBody is AccountPrivilegesUpdateBody's counterpart for
-// PUT /JSSResource/accounts/groupid/{id} — same minimal-body rationale.
-// Deliberately has no Members field: Role Grant/Revoke must never
-// send <members> for a group, since that element is exactly what
-// group.go's Grant/Revoke (a different entitlement entirely) uses to manage
-// membership, and omitting it here preserves whatever membership the group
-// currently has.
-type GroupPrivilegesUpdateBody struct {
-	XMLName      xml.Name    `xml:"group"`
+type privilegesUpdateBody struct {
+	XMLName      xml.Name
 	Name         string      `xml:"name"`
 	PrivilegeSet string      `xml:"privilege_set,omitempty"`
 	Privileges   *Privileges `xml:"privileges,omitempty"`
@@ -305,12 +324,16 @@ type GroupPrivilegesUpdateBody struct {
 // `xml:"members>user"` would omit the element entirely, which Jamf
 // interprets as "leave members unchanged" rather than "clear members".
 type GroupMembersUpdateBody struct {
-	XMLName xml.Name          `xml:"group"`
-	Name    string            `xml:"name"`
-	Members *groupMembersList `xml:"members"`
+	XMLName xml.Name     `xml:"group"`
+	Name    string       `xml:"name"`
+	Members *memberUsers `xml:"members"`
 }
 
-type groupMembersList struct {
+// memberUsers is the shared `{Users []BaseType \`xml:"user"\`}` shape used
+// for a <members>/<user_additions>/<user_deletions> element — the wrapping
+// element name comes from the containing field's own xml tag, not from this
+// type.
+type memberUsers struct {
 	Users []BaseType `xml:"user"`
 }
 
@@ -343,13 +366,9 @@ type PrivilegesResponse struct {
 // additions/deletions verb. Exactly one of Additions/Deletions is set per
 // call — Grant uses Additions, Revoke uses Deletions.
 type UserGroupMemberMutation struct {
-	XMLName   xml.Name        `xml:"user_group"`
-	Additions *userGroupUsers `xml:"user_additions,omitempty"`
-	Deletions *userGroupUsers `xml:"user_deletions,omitempty"`
-}
-
-type userGroupUsers struct {
-	Users []BaseType `xml:"user"`
+	XMLName   xml.Name     `xml:"user_group"`
+	Additions *memberUsers `xml:"user_additions,omitempty"`
+	Deletions *memberUsers `xml:"user_deletions,omitempty"`
 }
 
 // UserSitesUpdateBody is the PUT body for /users/id/{id} carrying only the
@@ -357,10 +376,6 @@ type userGroupUsers struct {
 // doc comment at doRequestWithMethod), sending only this element leaves the
 // rest of the user record (email, full_name, etc.) untouched.
 type UserSitesUpdateBody struct {
-	XMLName xml.Name       `xml:"user"`
-	Sites   []userSiteItem `xml:"sites>site"`
-}
-
-type userSiteItem struct {
-	ID int `xml:"id"`
+	XMLName xml.Name   `xml:"user"`
+	Sites   []BaseType `xml:"sites>site"`
 }

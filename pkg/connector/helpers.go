@@ -62,7 +62,7 @@ func requirePrincipalType(principalType string, want *v2.ResourceType, noun, ver
 // InvalidArgument error every call site already produced on a parse failure.
 // prefix is the full message up to (and not including) the id value, e.g.
 // "jamf-connector: grant group member: invalid group id".
-func parseResourceID(prefix, idStr string) (int, error) {
+func parseResourceID(idStr, prefix string) (int, error) {
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
 		return 0, status.Errorf(codes.InvalidArgument, "%s %q: %s", prefix, idStr, err)
@@ -70,16 +70,23 @@ func parseResourceID(prefix, idStr string) (int, error) {
 	return id, nil
 }
 
-// containsID reports whether any element of items has id as its numeric id,
-// as reported by idOf — replacing the repeated identical-shaped membership
-// loops used for group/user-group/site membership checks.
-func containsID[T any](items []T, id int, idOf func(T) int) bool {
-	for _, item := range items {
-		if idOf(item) == id {
-			return true
-		}
+// membershipIDs validates principal's resource type against want and parses
+// container's and principal's numeric ids — the shared preamble every
+// Grant/Revoke in group.go, userGroup.go and site.go repeats. op is the
+// action prefix used in every error message here, e.g. "grant group member".
+func membershipIDs(op string, want *v2.ResourceType, container, principal *v2.ResourceId) (int, int, error) {
+	if principal.ResourceType != want.Id {
+		return 0, 0, status.Errorf(codes.InvalidArgument, "jamf-connector: %s: principal must be resource type %q, got %q", op, want.Id, principal.ResourceType)
 	}
-	return false
+	containerID, err := parseResourceID(container.Resource, fmt.Sprintf("jamf-connector: %s: invalid container id", op))
+	if err != nil {
+		return 0, 0, err
+	}
+	principalID, err := parseResourceID(principal.Resource, fmt.Sprintf("jamf-connector: %s: invalid principal id", op))
+	if err != nil {
+		return 0, 0, err
+	}
+	return containerID, principalID, nil
 }
 
 // membershipWriteError wraps a failed membership write for op. Jamf answers a

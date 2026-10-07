@@ -23,8 +23,8 @@ const (
 )
 
 // ComputerInventorySections are the inventory sections requested from the v4
-// list endpoint, which ignores `section=` and returns every section
-// regardless; the parameter is sent anyway but has no effect.
+// list endpoint, which only returns the sections requested via `section=`
+// (only GENERAL when none is sent).
 var ComputerInventorySections = []string{
 	"GENERAL",
 	"HARDWARE",
@@ -137,7 +137,7 @@ func (c *Client) SetComputerAssignedUser(ctx context.Context, computerID string,
 		return err
 	}
 
-	reqBody := ComputerAssignedUserUpdate{UserAndLocation: fields}
+	reqBody := computerAssignedUserUpdate{UserAndLocation: fields}
 	return c.doRequestWithJSONMethod(ctx, http.MethodPatch, url, reqBody, nil)
 }
 
@@ -155,6 +155,6 @@ func (c *Client) SetMobileDeviceAssignedUser(ctx context.Context, deviceID strin
 		return err
 	}
 
-	reqBody := MobileDeviceAssignedUserUpdate{Location: MobileDeviceAssignedUserUpdateLocation{Username: username}}
+	reqBody := mobileDeviceAssignedUserUpdate{Location: MobileDeviceLocation{Username: username}}
 	return c.doRequestWithJSONMethod(ctx, http.MethodPatch, url, reqBody, nil)
 }

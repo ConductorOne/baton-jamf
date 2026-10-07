@@ -180,17 +180,29 @@ type rolePrincipal struct {
 }
 
 // rolePrincipalID parses rid's numeric id, rejecting any principal resource
-// type other than userAccount/group with InvalidArgument — shared by Grant,
-// Revoke and getRolePrincipal.
+// type other than userAccount/group with InvalidArgument — shared by
+// getRolePrincipal.
 func rolePrincipalID(rid *v2.ResourceId) (int, error) {
 	switch rid.ResourceType {
 	case resourceTypeUserAccount.Id:
-		return parseResourceID("jamf-connector: invalid user account id", rid.Resource)
+		return parseResourceID(rid.Resource, "jamf-connector: invalid user account id")
 	case resourceTypeGroup.Id:
-		return parseResourceID("jamf-connector: invalid group id", rid.Resource)
+		return parseResourceID(rid.Resource, "jamf-connector: invalid group id")
 	default:
 		return 0, status.Errorf(codes.InvalidArgument, "jamf-connector: role can only be granted/revoked for a user account or group, got resource type %q", rid.ResourceType)
 	}
+}
+
+// requireDirectPrivileges reports a FailedPrecondition error unless p holds
+// its own privilege_set directly — i.e. p is not a Group Access account,
+// whose rights come from its groups instead. verb names the caller's
+// corrective action (e.g. "assign the role to the group instead" for Grant).
+func (p *rolePrincipal) requireDirectPrivileges(verb string) error {
+	if p.resourceType == resourceTypeUserAccount.Id && p.accessLevel == accessLevelGroupAccess {
+		return status.Errorf(codes.FailedPrecondition,
+			"jamf-connector: account %q has Group Access, so its rights come from its groups; %s.", p.name, verb)
+	}
+	return nil
 }
 
 // getRolePrincipal reads the account/group backing rid. Client errors are
@@ -246,21 +258,19 @@ func (o *roleResourceType) updateRolePrincipal(ctx context.Context, p *rolePrinc
 func (o *roleResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if _, err := rolePrincipalID(principal.Id); err != nil {
-		return nil, nil, err
-	}
-
 	p, err := o.getRolePrincipal(ctx, principal.Id)
 	if err != nil {
+		if status.Code(err) == codes.InvalidArgument {
+			return nil, nil, err
+		}
 		if jamf.IsNotFoundError(err) {
 			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant role: %s %q not found", principal.Id.ResourceType, principal.Id.Resource)
 		}
 		return nil, nil, fmt.Errorf("jamf-connector: grant role: %w", err)
 	}
 
-	if principal.Id.ResourceType == resourceTypeUserAccount.Id && p.accessLevel == accessLevelGroupAccess {
-		return nil, nil, status.Errorf(codes.FailedPrecondition,
-			"jamf-connector: account %q has Group Access, so its rights come from its groups; assign the role to the group instead.", p.name)
+	if err := p.requireDirectPrivileges("assign the role to the group instead"); err != nil {
+		return nil, nil, err
 	}
 
 	target := entitlement.Resource.Id.Resource
@@ -354,15 +364,7 @@ func addPrivilege(current jamf.Privileges, target string) jamf.Privileges {
 // removePrivilege returns a deduped copy of current with target removed from
 // whichever category(ies) it appears in.
 func removePrivilege(current jamf.Privileges, target string) jamf.Privileges {
-	updated := dedupePrivileges(current)
-	updated.JSSObjects = removeString(updated.JSSObjects, target)
-	updated.JSSSettings = removeString(updated.JSSSettings, target)
-	updated.JSSActions = removeString(updated.JSSActions, target)
-	updated.Recon = removeString(updated.Recon, target)
-	updated.CasperAdmin = removeString(updated.CasperAdmin, target)
-	updated.CasperRemote = removeString(updated.CasperRemote, target)
-	updated.CasperImaging = removeString(updated.CasperImaging, target)
-	return updated
+	return dedupePrivileges(current).Map(func(s []string) []string { return removeString(s, target) })
 }
 
 // dedupePrivileges returns a copy of p with each category's duplicate
@@ -370,15 +372,7 @@ func removePrivilege(current jamf.Privileges, target string) jamf.Privileges {
 // category, and re-sending them verbatim would only grow the list on every
 // write.
 func dedupePrivileges(p jamf.Privileges) jamf.Privileges {
-	return jamf.Privileges{
-		JSSObjects:    dedupeStrings(p.JSSObjects),
-		JSSSettings:   dedupeStrings(p.JSSSettings),
-		JSSActions:    dedupeStrings(p.JSSActions),
-		Recon:         dedupeStrings(p.Recon),
-		CasperAdmin:   dedupeStrings(p.CasperAdmin),
-		CasperRemote:  dedupeStrings(p.CasperRemote),
-		CasperImaging: dedupeStrings(p.CasperImaging),
-	}
+	return p.Map(dedupeStrings)
 }
 
 func dedupeStrings(in []string) []string {
@@ -398,14 +392,7 @@ func dedupeStrings(in []string) []string {
 }
 
 func removeString(in []string, target string) []string {
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if s == target {
-			continue
-		}
-		out = append(out, s)
-	}
-	return out
+	return slices.DeleteFunc(slices.Clone(in), func(s string) bool { return s == target })
 }
 
 // replacedPrivilegeSetAnnotation reports a GrantReplaced annotation naming the
@@ -449,21 +436,19 @@ func replacedPrivilegeSetAnnotation(
 func (o *roleResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if _, err := rolePrincipalID(gr.Principal.Id); err != nil {
-		return nil, err
-	}
-
 	p, err := o.getRolePrincipal(ctx, gr.Principal.Id)
 	if err != nil {
+		if status.Code(err) == codes.InvalidArgument {
+			return nil, err
+		}
 		if jamf.IsNotFoundError(err) {
 			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 		}
 		return nil, fmt.Errorf("jamf-connector: revoke role: %w", err)
 	}
 
-	if gr.Principal.Id.ResourceType == resourceTypeUserAccount.Id && p.accessLevel == accessLevelGroupAccess {
-		return nil, status.Errorf(codes.FailedPrecondition,
-			"jamf-connector: account %q has Group Access, so its rights come from its groups; assign the role to the group instead.", p.name)
+	if err := p.requireDirectPrivileges("revoke the role from the group instead"); err != nil {
+		return nil, err
 	}
 
 	target := gr.Entitlement.Resource.Id.Resource

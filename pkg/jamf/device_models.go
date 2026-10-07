@@ -147,20 +147,26 @@ type MobileDevice struct {
 // endpoint. Only the location section needed to resolve the device's
 // current assignee is modeled here.
 type MobileDeviceDetail struct {
-	ID       string                      `json:"id"`
-	Location *MobileDeviceDetailLocation `json:"location"`
+	ID       string                `json:"id"`
+	Location *MobileDeviceLocation `json:"location"`
 }
 
-// MobileDeviceDetailLocation holds the `location` section of a mobile-device
-// detail record.
-type MobileDeviceDetailLocation struct {
+// MobileDeviceLocation holds the `location` section of a mobile-device
+// detail record (read), and doubles as the PATCH body's location payload
+// (write — see SetMobileDeviceAssignedUser): setting Username makes Jamf
+// auto-populate realname/email/position/phone from the directory user, and
+// a nonexistent username is accepted by auto-creating one, so the connector
+// never has (or needs) those fields to send here. "" clears the username and
+// every auto-populated field together; null/{} are silent no-ops, so Revoke
+// must always send an explicit "" rather than omitting the field.
+type MobileDeviceLocation struct {
 	Username string `json:"username"`
 }
 
-// ComputerAssignedUserUpdate is the PATCH body for
+// computerAssignedUserUpdate is the PATCH body for
 // /api/v4/computers-inventory-detail/{id} that sets (Grant) or clears
 // (Revoke) the assigned user's identity via userAndLocation.
-type ComputerAssignedUserUpdate struct {
+type computerAssignedUserUpdate struct {
 	UserAndLocation ComputerAssignedUserFields `json:"userAndLocation"`
 }
 
@@ -180,20 +186,9 @@ type ComputerAssignedUserFields struct {
 	Phone    string `json:"phone"`
 }
 
-// MobileDeviceAssignedUserUpdate is the PATCH body for
+// mobileDeviceAssignedUserUpdate is the PATCH body for
 // /api/v2/mobile-devices/{id} that sets (Grant) or clears (Revoke) the
 // assigned user via location.username.
-type MobileDeviceAssignedUserUpdate struct {
-	Location MobileDeviceAssignedUserUpdateLocation `json:"location"`
-}
-
-// MobileDeviceAssignedUserUpdateLocation carries only username: setting it
-// makes Jamf auto-populate realname/email/position/phone from the directory
-// user, and a nonexistent username is accepted by auto-creating a directory
-// user, so the connector never has (or needs) those fields to send here. ""
-// clears the username and every auto-populated field together; null/{} are
-// silent no-ops, so Revoke must always send an explicit "" rather than
-// omitting the field.
-type MobileDeviceAssignedUserUpdateLocation struct {
-	Username string `json:"username"`
+type mobileDeviceAssignedUserUpdate struct {
+	Location MobileDeviceLocation `json:"location"`
 }

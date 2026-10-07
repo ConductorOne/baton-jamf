@@ -26,107 +26,6 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	return NewClient(uhttp.NewBaseHttpClient(server.Client()), "user", "pass", "test-token", server.URL)
 }
 
-// userSitesHandler serves GET /JSSResource/users/id/{id} returning the
-// user's current site memberships in the flat JSON shape a live Jamf Pro
-// 11.32.1 tenant serves (each entry's id/name at the top level, not wrapped
-// under a "site" key), and records the <sites> payload of any PUT to the
-// same path so tests can assert the read-modify-write result.
-func userSitesHandler(t *testing.T, currentSiteIDs []int, gotPUTBody *[]byte) http.HandlerFunc {
-	t.Helper()
-	return func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			sites := make([]map[string]any, 0, len(currentSiteIDs))
-			for _, id := range currentSiteIDs {
-				sites = append(sites, map[string]any{"id": id, "name": "Site"})
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"user": map[string]any{"id": 42, "name": "jappleseed", "sites": sites},
-			})
-		case http.MethodPut:
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				t.Fatalf("read PUT body: %v", err)
-			}
-			*gotPUTBody = body
-			w.WriteHeader(http.StatusCreated)
-		default:
-			t.Fatalf("unexpected method %s", r.Method)
-		}
-	}
-}
-
-func TestAddUserSite_NotYetMember_IssuesPUTReturnsFalse(t *testing.T) {
-	var putBody []byte
-	client := newTestClient(t, userSitesHandler(t, []int{1}, &putBody))
-
-	alreadyMember, err := client.AddUserSite(context.Background(), 42, 2)
-	if err != nil {
-		t.Fatalf("AddUserSite: %v", err)
-	}
-	if alreadyMember {
-		t.Error("expected alreadyMember=false when the site is being newly added")
-	}
-	if len(putBody) == 0 {
-		t.Fatal("expected a PUT to be issued to add the new site")
-	}
-}
-
-// TestAddUserSite_AlreadyMember_ReturnsTrueNoPUT covers the bool-return
-// idempotency signal AddUserSite surfaces, which site.go's Grant keys off to
-// report GrantAlreadyExists instead of a fresh grant.
-func TestAddUserSite_AlreadyMember_ReturnsTrueNoPUT(t *testing.T) {
-	var putBody []byte
-	client := newTestClient(t, userSitesHandler(t, []int{2}, &putBody))
-
-	alreadyMember, err := client.AddUserSite(context.Background(), 42, 2)
-	if err != nil {
-		t.Fatalf("AddUserSite: %v", err)
-	}
-	if !alreadyMember {
-		t.Error("expected alreadyMember=true when the user already has the site")
-	}
-	if len(putBody) != 0 {
-		t.Errorf("expected no PUT for an already-member add, got body: %s", putBody)
-	}
-}
-
-func TestRemoveUserSite_IsMember_IssuesPUTReturnsFalse(t *testing.T) {
-	var putBody []byte
-	client := newTestClient(t, userSitesHandler(t, []int{1, 2}, &putBody))
-
-	alreadyAbsent, err := client.RemoveUserSite(context.Background(), 42, 2)
-	if err != nil {
-		t.Fatalf("RemoveUserSite: %v", err)
-	}
-	if alreadyAbsent {
-		t.Error("expected alreadyAbsent=false when the site is actually being removed")
-	}
-	if len(putBody) == 0 {
-		t.Fatal("expected a PUT to be issued to remove the site")
-	}
-}
-
-// TestRemoveUserSite_AlreadyAbsent_ReturnsTrueNoPUT covers the bool-return
-// idempotency signal RemoveUserSite surfaces, which site.go's Revoke keys
-// off to report GrantAlreadyRevoked instead of a plain success.
-func TestRemoveUserSite_AlreadyAbsent_ReturnsTrueNoPUT(t *testing.T) {
-	var putBody []byte
-	client := newTestClient(t, userSitesHandler(t, []int{1}, &putBody))
-
-	alreadyAbsent, err := client.RemoveUserSite(context.Background(), 42, 2)
-	if err != nil {
-		t.Fatalf("RemoveUserSite: %v", err)
-	}
-	if !alreadyAbsent {
-		t.Error("expected alreadyAbsent=true when the user never had the site")
-	}
-	if len(putBody) != 0 {
-		t.Errorf("expected no PUT for an already-absent remove, got body: %s", putBody)
-	}
-}
-
 // putOnlyHandler serves a bare PUT-capturing handler, failing the test if
 // any other method is hit.
 func putOnlyHandler(t *testing.T, gotPUTBody *[]byte) http.HandlerFunc {
@@ -396,24 +295,37 @@ func TestDoRequest_WithFreshReads_BypassesCache(t *testing.T) {
 	}
 }
 
-// TestRemoveUserSite_UserDeleted_ReturnsTrueNoError covers the
-// getUserDetails-404 case: if the user backing the revoke has since been
-// deleted, the initial GET 404s, and RemoveUserSite must treat that as
-// alreadyAbsent=true (a deleted user trivially has no site membership left
-// to revoke) rather than propagating a hard error.
-func TestRemoveUserSite_UserDeleted_ReturnsTrueNoError(t *testing.T) {
-	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Fatalf("unexpected method %s", r.Method)
-		}
-		w.WriteHeader(http.StatusNotFound)
-	})
+// TestUpdateUserSites_MinimalBody covers Site Grant/Revoke's write path: the
+// PUT body must carry only <sites>, one <site><id>N</id></site> per site.
+func TestUpdateUserSites_MinimalBody(t *testing.T) {
+	var putBody []byte
+	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
-	alreadyAbsent, err := client.RemoveUserSite(context.Background(), 42, 2)
-	if err != nil {
-		t.Fatalf("RemoveUserSite: %v", err)
+	sites := UserSites{{ID: 1, Name: "HQ"}, {ID: 2, Name: "Remote"}}
+	if err := client.UpdateUserSites(context.Background(), 42, sites); err != nil {
+		t.Fatalf("UpdateUserSites: %v", err)
 	}
-	if !alreadyAbsent {
-		t.Error("expected alreadyAbsent=true when the user has been deleted")
+
+	got := string(putBody)
+	want := "<user><sites><site><id>1</id></site><site><id>2</id></site></sites></user>"
+	if got != want {
+		t.Errorf("PUT body = %s, want %s", got, want)
+	}
+}
+
+// TestUpdateUserSites_EmptySlice_EmitsExplicitEmptySitesElement covers the
+// last-site-removal case: an empty slice must still PUT an explicit
+// <sites></sites> element, not omit it.
+func TestUpdateUserSites_EmptySlice_EmitsExplicitEmptySitesElement(t *testing.T) {
+	var putBody []byte
+	client := newTestClient(t, putOnlyHandler(t, &putBody))
+
+	if err := client.UpdateUserSites(context.Background(), 42, UserSites{}); err != nil {
+		t.Fatalf("UpdateUserSites: %v", err)
+	}
+
+	want := "<user><sites></sites></user>"
+	if got := string(putBody); got != want {
+		t.Errorf("PUT body = %s, want %s", got, want)
 	}
 }

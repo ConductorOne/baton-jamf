@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
@@ -110,7 +111,7 @@ func (g *userGroupResourceType) Grants(ctx context.Context, resource *v2.Resourc
 // isUserGroupMember reports whether userID is in users, the membership list
 // returned on a Jamf user group's details.
 func isUserGroupMember(users []jamf.User, userID int) bool {
-	return containsID(users, userID, func(u jamf.User) int { return u.ID })
+	return slices.ContainsFunc(users, func(u jamf.User) bool { return u.ID == userID })
 }
 
 // Grant adds principal (a Jamf user) to the static user group backing
@@ -120,15 +121,7 @@ func isUserGroupMember(users []jamf.User, userID int) bool {
 func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if err := requirePrincipalType(principal.Id.ResourceType, resourceTypeUser, "user group membership", "granted to users"); err != nil {
-		return nil, nil, err
-	}
-
-	groupID, err := parseResourceID("jamf-connector: grant user group member: invalid group id", entitlement.Resource.Id.Resource)
-	if err != nil {
-		return nil, nil, err
-	}
-	userID, err := parseResourceID("jamf-connector: grant user group member: invalid user id", principal.Id.Resource)
+	groupID, userID, err := membershipIDs("grant user group member", resourceTypeUser, entitlement.Resource.Id, principal.Id)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -164,15 +157,7 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	if err := requirePrincipalType(gr.Principal.Id.ResourceType, resourceTypeUser, "user group membership", "revoked for users"); err != nil {
-		return nil, err
-	}
-
-	groupID, err := parseResourceID("jamf-connector: revoke user group member: invalid group id", gr.Entitlement.Resource.Id.Resource)
-	if err != nil {
-		return nil, err
-	}
-	userID, err := parseResourceID("jamf-connector: revoke user group member: invalid user id", gr.Principal.Id.Resource)
+	groupID, userID, err := membershipIDs("revoke user group member", resourceTypeUser, gr.Entitlement.Resource.Id, gr.Principal.Id)
 	if err != nil {
 		return nil, err
 	}
