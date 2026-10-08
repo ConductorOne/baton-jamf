@@ -3,13 +3,17 @@ package connector
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type siteResourceType struct {
@@ -21,7 +25,7 @@ func (g *siteResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 	return g.resourceType
 }
 
-// Create a new connector resource for a Jamf site.
+// siteResource creates a new connector resource for a Jamf site.
 func siteResource(site *jamf.Site, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
 	ret, err := rs.NewResource(
 		site.Name,
@@ -57,13 +61,20 @@ func (g *siteResourceType) List(ctx context.Context, parentId *v2.ResourceId, at
 func (g *siteResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	var rv []*v2.Entitlement
 
-	assigmentOptions := []ent.EntitlementOption{
+	// WithGrantableTo intentionally names only resourceTypeUser, even though
+	// Grants() below emits grants for user, userGroup, userAccount, and group:
+	// site membership is only genuinely multi-valued for user (<sites> is a
+	// real list); for the other three, "site" is a single-valued/exclusive
+	// attribute, so Grant/Revoke provisioning is scoped to user only. Do not
+	// widen this to match Grants() without also adding exclusive-entitlement
+	// handling for the other three principal types.
+	assignmentOptions := []ent.EntitlementOption{
 		ent.WithGrantableTo(resourceTypeUser),
 		ent.WithDescription(fmt.Sprintf("Member of %s Site in Jamf", resource.DisplayName)),
 		ent.WithDisplayName(fmt.Sprintf("%s Site %s", resource.DisplayName, memberEntitlement)),
 	}
 
-	en := ent.NewAssignmentEntitlement(resource, memberEntitlement, assigmentOptions...)
+	en := ent.NewAssignmentEntitlement(resource, memberEntitlement, assignmentOptions...)
 	rv = append(rv, en)
 
 	return rv, nil, nil
@@ -84,7 +95,7 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 			return nil, nil, err
 		}
 		for _, site := range user.Sites {
-			stringId := strconv.Itoa(site.Site.ID)
+			stringId := strconv.Itoa(site.ID)
 			if stringId == resource.Id.Resource {
 				userMembershipGrant := grant.NewGrant(resource, memberEntitlement, ur.Id)
 				rv = append(rv, userMembershipGrant)
@@ -142,6 +153,77 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 	}
 
 	return rv, nil, nil
+}
+
+// Grant adds principal (a Jamf user) to the multi-valued <sites> list of the
+// site backing entitlement's resource. The principal-type guard is defense-
+// in-depth: Grants() emits site grants for four principal types, but only
+// user is genuinely multi-valued/grantable — see the WithGrantableTo note in
+// Entitlements above.
+func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
+	siteID, userID, err := membershipIDs("grant site member", resourceTypeUser, entitlement.Resource.Id, principal.Id)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	user, err := g.client.GetUserDetails(ctx, userID)
+	if err != nil {
+		if jamf.IsNotFoundError(err) {
+			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant site member: user %d not found", userID)
+		}
+		return nil, nil, fmt.Errorf("jamf-connector: grant site member: %w", err)
+	}
+	if slices.ContainsFunc(user.Sites, func(s jamf.BaseType) bool { return s.ID == siteID }) {
+		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+	}
+
+	newSites := append(append(jamf.UserSites{}, user.Sites...), jamf.BaseType{ID: siteID})
+	if err := g.client.UpdateUserSites(ctx, userID, newSites); err != nil {
+		return nil, nil, membershipWriteError("grant site member", "the user or site", err)
+	}
+	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
+}
+
+// Revoke removes gr's principal (a Jamf user) from the <sites> list of the
+// site backing gr's entitlement resource. See Grant for the principal-type
+// guard rationale.
+func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
+	ctx = jamf.WithFreshReads(ctx)
+
+	siteID, userID, err := membershipIDs("revoke site member", resourceTypeUser, gr.Entitlement.Resource.Id, gr.Principal.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	user, err := g.client.GetUserDetails(ctx, userID)
+	if err != nil {
+		if jamf.IsNotFoundError(err) {
+			// The user has been deleted — a deleted user trivially has no
+			// site membership left to revoke.
+			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		}
+		return nil, fmt.Errorf("jamf-connector: revoke site member: %w", err)
+	}
+
+	remaining := make(jamf.UserSites, 0, len(user.Sites))
+	found := false
+	for _, s := range user.Sites {
+		if s.ID == siteID {
+			found = true
+			continue
+		}
+		remaining = append(remaining, s)
+	}
+	if !found {
+		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+	}
+
+	if err := g.client.UpdateUserSites(ctx, userID, remaining); err != nil {
+		return nil, membershipWriteError("revoke site member", "the user or site", err)
+	}
+	return nil, nil
 }
 
 func siteBuilder(client *jamf.Client) *siteResourceType {

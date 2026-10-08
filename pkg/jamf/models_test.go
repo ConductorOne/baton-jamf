@@ -1,6 +1,7 @@
 package jamf
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"strings"
 	"testing"
@@ -68,6 +69,182 @@ func TestPrivileges_Contains(t *testing.T) {
 	}
 	if (*Privileges)(nil).Contains("anything") {
 		t.Error("expected Contains to return false on a nil receiver")
+	}
+}
+
+func TestUserGroupMemberMutation_AdditionsMarshalsUserAdditions(t *testing.T) {
+	body := UserGroupMemberMutation{Additions: &memberUsers{Users: []BaseType{{ID: 1938}}}}
+
+	out, err := xml.Marshal(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := string(out)
+
+	if want := "<user_additions><user><id>1938</id></user></user_additions>"; !strings.Contains(got, want) {
+		t.Errorf("expected output to contain %q, got: %s", want, got)
+	}
+	if strings.Contains(got, "user_deletions") {
+		t.Errorf("expected no <user_deletions> element when Deletions is nil, got: %s", got)
+	}
+}
+
+func TestUserGroupMemberMutation_DeletionsMarshalsUserDeletions(t *testing.T) {
+	body := UserGroupMemberMutation{Deletions: &memberUsers{Users: []BaseType{{ID: 42}}}}
+
+	out, err := xml.Marshal(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := string(out)
+
+	if want := "<user_deletions><user><id>42</id></user></user_deletions>"; !strings.Contains(got, want) {
+		t.Errorf("expected output to contain %q, got: %s", want, got)
+	}
+	if strings.Contains(got, "user_additions") {
+		t.Errorf("expected no <user_additions> element when Additions is nil, got: %s", got)
+	}
+}
+
+func TestUserSitesUpdateBody_MarshalsSitesList(t *testing.T) {
+	body := UserSitesUpdateBody{Sites: []BaseType{{ID: 1}, {ID: 2}}}
+
+	out, err := xml.Marshal(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := string(out)
+
+	if want := "<user><sites><site><id>1</id></site><site><id>2</id></site></sites></user>"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestUserSitesUpdateBody_EmptySitesSendsEmptyWrapper documents (rather than
+// works around) encoding/xml's behavior for a nil slice behind a ">"-chained
+// tag with no omitempty — see the wrapper-emission caveat already documented
+// on Privileges.MarshalXML. This is the desired behavior here: a caller
+// revoking a user's last site must PUT an explicit empty <sites></sites> to
+// actually clear membership, not omit the element and leave the prior value
+// untouched.
+func TestUserSitesUpdateBody_EmptySitesSendsEmptyWrapper(t *testing.T) {
+	body := UserSitesUpdateBody{Sites: []BaseType{}}
+
+	out, err := xml.Marshal(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "<user><sites></sites></user>"; string(out) != want {
+		t.Errorf("got %q, want %q", string(out), want)
+	}
+}
+
+// TestUserSites_UnmarshalJSON_AcceptsFlatAndWrappedShapes covers a live Jamf
+// Pro tenant returning a user's <sites> list as a flat JSON list (each
+// entry's id/name at the top level), while the Classic API's documented
+// shape wraps each entry under a "site" key. UserSites must decode real ids
+// from either shape, plus the empty-list and null cases.
+func TestUserSites_UnmarshalJSON_AcceptsFlatAndWrappedShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want UserSites
+	}{
+		{
+			name: "flat shape (live tenant)",
+			in:   `[{"id":5,"name":"Site A"},{"id":6,"name":"Site B"}]`,
+			want: UserSites{{ID: 5, Name: "Site A"}, {ID: 6, Name: "Site B"}},
+		},
+		{
+			name: "wrapped shape (documented Classic API shape)",
+			in:   `[{"site":{"id":5,"name":"Site A"}}]`,
+			want: UserSites{{ID: 5, Name: "Site A"}},
+		},
+		{
+			name: "empty list",
+			in:   `[]`,
+			want: UserSites{},
+		},
+		{
+			name: "null",
+			in:   `null`,
+			want: UserSites{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got UserSites
+			if err := json.Unmarshal([]byte(tt.in), &got); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %+v, want %+v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("index %d: got %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestComputerAssignedUserUpdate_JSONRoundTrip(t *testing.T) {
+	body := computerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserFields{
+		Username: "jappleseed",
+		Realname: "Johnny Appleseed",
+		Email:    "jappleseed@ex.com",
+		Position: "Engineer",
+		Phone:    "555-1234",
+	}}
+
+	out, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := `{"userAndLocation":{"username":"jappleseed","realname":"Johnny Appleseed","email":"jappleseed@ex.com","position":"Engineer","phone":"555-1234"}}`; string(out) != want {
+		t.Errorf("got %q, want %q", string(out), want)
+	}
+
+	var decoded computerAssignedUserUpdate
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decoded.UserAndLocation.Username != "jappleseed" {
+		t.Errorf("got %q, want %q", decoded.UserAndLocation.Username, "jappleseed")
+	}
+}
+
+func TestComputerAssignedUserUpdate_EmptyFieldsClearEverything(t *testing.T) {
+	body := computerAssignedUserUpdate{UserAndLocation: ComputerAssignedUserFields{}}
+
+	out, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := `{"userAndLocation":{"username":"","realname":"","email":"","position":"","phone":""}}`; string(out) != want {
+		t.Errorf("got %q, want %q", string(out), want)
+	}
+}
+
+func TestMobileDeviceAssignedUserUpdate_JSONRoundTrip(t *testing.T) {
+	body := mobileDeviceAssignedUserUpdate{Location: MobileDeviceLocation{Username: "jappleseed"}}
+
+	out, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := `{"location":{"username":"jappleseed"}}`; string(out) != want {
+		t.Errorf("got %q, want %q", string(out), want)
+	}
+
+	var decoded mobileDeviceAssignedUserUpdate
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if decoded.Location.Username != "jappleseed" {
+		t.Errorf("got %q, want %q", decoded.Location.Username, "jappleseed")
 	}
 }
 

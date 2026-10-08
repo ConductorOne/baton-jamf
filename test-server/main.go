@@ -41,13 +41,19 @@
 //
 // The mock enforces the Classic API's documented content-type contract: GET
 // responses are JSON, but POST/PUT request bodies must be XML — a JSON POST
-// body is rejected with 415, exactly like the real API (see
-// https://developer.jamf.com/jamf-pro/docs/getting-started-2). This is what
-// caught baton-jamf's CreateAccount originally sending JSON bodies.
+// body is rejected with 415, exactly like the real API.
 //
 // managedDevice (computers / mobile devices) is opt-in in the connector and
-// is NOT mocked here — it targets separate v1 inventory endpoints outside
-// the scope of this test server. Do not select it against this mock.
+// is NOT mocked here — it targets separate inventory endpoints outside
+// the scope of this test server (/api/v4/computers-inventory-detail/{id},
+// /api/v2/mobile-devices/{id}). Do not select it against this mock; Managed
+// Device Grant/Revoke has unit-test coverage only
+// (pkg/connector/managedDevice_test.go), not baton-test-against-this-mock
+// coverage.
+//
+// Grant/Revoke for User Groups (PUT .../usergroups/id/{id} with
+// <user_additions>/<user_deletions>) and Sites' `user` principal (PUT
+// .../users/id/{id} with <sites>) are both mocked below.
 package main
 
 import (
@@ -78,17 +84,82 @@ const (
 	siteNameRemote       = "Remote"
 
 	accessLevelFullAccess     = "Full Access"
+	accessLevelGroupAccess    = "Group Access"
 	privilegeSetAdministrator = "Administrator"
 	privilegeSetAuditor       = "Auditor"
 	privilegeSetCustom        = "Custom"
 	enabledValue              = "Enabled"
 
-	privilegeReadAdvancedComputerSearches = "Read Advanced Computer Searches"
+	privilegeReadAdvancedComputerSearches   = "Read Advanced Computer Searches"
+	privilegeUpdateAdvancedComputerSearches = "Update Advanced Computer Searches"
+	privilegeReadUser                       = "Read User"
+	privilegeUpdateUser                     = "Update User"
+
+	// privilegeReadLicenseInformation is the one privilege Jamf always keeps
+	// on every Custom privilege set and never lets a client remove.
+	privilegeReadLicenseInformation = "Read License Information"
+
+	// privilegeReadKnobs is in the Pro privilege catalog but is dropped by
+	// Jamf on write — it's seeded into the catalog only, never into
+	// knownPrivilegeNames, so writing it is silently stripped.
+	privilegeReadKnobs = "Read Knobs"
+
+	// noneSiteID is the Classic API's sentinel for "no site" on a <sites>
+	// write — unlike a genuinely unknown id, it clears the list instead of
+	// triggering a 409.
+	noneSiteID = -1
 )
 
-// Enums declared on the Classic API "account" schema — see
-// https://developer.jamf.com/jamf-pro/reference/createaccountbyid and
-// https://developer.jamf.com/jamf-pro/reference/findaccountsbyid.
+// knownPrivilegeNames is the set of individual privilege names this mock
+// recognizes. Mirrors the real API's "unknown privilege names are silently
+// dropped" behavior: a <privileges> write for a Custom account/group drops
+// anything outside this list (plus privilegeReadLicenseInformation, which is
+// always kept) instead of storing it, letting tests exercise the connector's
+// post-write verification path.
+var knownPrivilegeNames = []string{
+	privilegeReadAdvancedComputerSearches,
+	privilegeUpdateAdvancedComputerSearches,
+	privilegeReadUser,
+	privilegeUpdateUser,
+}
+
+// copiedFullPrivilegeList simulates the real API's privilege-escalation trap:
+// writing privilege_set=Custom with no <privileges> block copies the
+// account/group's previous set's entire expanded privilege list rather than
+// leaving privileges empty. The actual contents are arbitrary — this is not a
+// real expansion of any specific built-in set, just something large and
+// non-empty that a correct connector write must never trigger.
+var copiedFullPrivilegeList = jamf.Privileges{
+	JSSObjects: []string{privilegeReadUser, privilegeUpdateUser, privilegeReadAdvancedComputerSearches, privilegeUpdateAdvancedComputerSearches, privilegeReadLicenseInformation},
+}
+
+// expandedBuiltInPrivileges is a fixed, non-empty privilege list a built-in
+// privilege_set (Administrator, Auditor, Enrollment Only) reads back as.
+// Jamf always expands a built-in set to the privileges it grants rather than
+// returning an empty list — the exact contents are arbitrary here, only
+// "non-empty" matters, so a connector that incorrectly treated a built-in
+// set's privileges as an individual-privilege grant would be caught by tests.
+var expandedBuiltInPrivileges = jamf.Privileges{
+	JSSObjects: []string{privilegeReadUser, privilegeUpdateUser, privilegeReadAdvancedComputerSearches, privilegeReadLicenseInformation},
+}
+
+// privilegesForRead returns the privileges a GET of an account/group holding
+// privilegeSet should report: a built-in set always expands to
+// expandedBuiltInPrivileges; Custom reports exactly what's stored, with
+// privilegeReadLicenseInformation guaranteed present (Jamf never lets it be
+// absent from a Custom set).
+func privilegesForRead(privilegeSet string, stored jamf.Privileges) jamf.Privileges {
+	if privilegeSet != privilegeSetCustom {
+		return expandedBuiltInPrivileges
+	}
+	if stored.Contains(privilegeReadLicenseInformation) {
+		return stored
+	}
+	stored.JSSObjects = append(append([]string{}, stored.JSSObjects...), privilegeReadLicenseInformation)
+	return stored
+}
+
+// Enums declared on the Classic API "account" schema.
 var (
 	validAccessLevels  = []string{"Full Access", "Site Access", "Group Access"}
 	validPrivilegeSets = []string{privilegeSetAdministrator, privilegeSetAuditor, "Enrollment Only", privilegeSetCustom}
@@ -149,9 +220,7 @@ func (s *server) seedData() {
 		{
 			BaseType: jamf.BaseType{ID: 1, Name: "john.appleseed"},
 			FullName: "John Appleseed", Email: "john.appleseed@example.com",
-			Sites: []struct {
-				Site jamf.BaseType `json:"site"`
-			}{{Site: headquarters}},
+			Sites: jamf.UserSites{headquarters},
 		},
 		{BaseType: jamf.BaseType{ID: 2, Name: "jane.doe"}, FullName: "Jane Doe", Email: "jane.doe@example.com"},
 		{BaseType: jamf.BaseType{ID: 3, Name: "carol.smith"}, FullName: "Carol Smith", Email: "carol.smith@example.com"},
@@ -159,9 +228,7 @@ func (s *server) seedData() {
 		{
 			BaseType: jamf.BaseType{ID: 5, Name: "eve.miller"},
 			FullName: "Eve Miller", Email: "eve.miller@example.com",
-			Sites: []struct {
-				Site jamf.BaseType `json:"site"`
-			}{{Site: remote}},
+			Sites: jamf.UserSites{remote},
 		},
 	}
 	for _, u := range users {
@@ -183,7 +250,14 @@ func (s *server) seedData() {
 		Enabled: enabledValue, AccessLevel: accessLevelFullAccess, PrivilegeSet: privilegeSetCustom, Site: remote,
 		Privileges: jamf.Privileges{JSSObjects: []string{privilegeReadAdvancedComputerSearches}},
 	}
-	accounts := []*jamf.UserAccount{admin1, admin2, admin3}
+	// admin4 has Group Access: its rights come entirely from group-admins
+	// membership below, and PrivilegeSet is a stale leftover from before it
+	// was switched to Group Access (see handleUpdateAccountPrivileges).
+	admin4 := &jamf.UserAccount{
+		BaseType: jamf.BaseType{ID: 104, Name: "admin4"}, FullName: "Admin Four", Email: "admin4@example.com",
+		Enabled: enabledValue, AccessLevel: accessLevelGroupAccess, PrivilegeSet: privilegeSetAdministrator, Site: headquarters,
+	}
+	accounts := []*jamf.UserAccount{admin1, admin2, admin3, admin4}
 	for _, a := range accounts {
 		s.accounts[a.ID] = a
 		s.accountList = append(s.accountList, a)
@@ -193,11 +267,12 @@ func (s *server) seedData() {
 	admin1Ref := jamf.BaseType{ID: admin1.ID, Name: admin1.Name}
 	admin2Ref := jamf.BaseType{ID: admin2.ID, Name: admin2.Name}
 	admin3Ref := jamf.BaseType{ID: admin3.ID, Name: admin3.Name}
+	admin4Ref := jamf.BaseType{ID: admin4.ID, Name: admin4.Name}
 
 	groups := []*jamf.Group{
 		{
 			BaseType: jamf.BaseType{ID: 201, Name: "group-admins"}, AccessLevel: accessLevelFullAccess, PrivilegeSet: privilegeSetAdministrator, Site: headquarters,
-			Members: []jamf.BaseType{admin1Ref, admin2Ref},
+			Members: []jamf.BaseType{admin1Ref, admin2Ref, admin4Ref},
 		},
 		{
 			BaseType: jamf.BaseType{ID: 202, Name: "group-auditors"}, AccessLevel: accessLevelFullAccess, PrivilegeSet: privilegeSetAuditor, Site: headquarters,
@@ -232,12 +307,38 @@ func (s *server) seedData() {
 		s.userGroupList = append(s.userGroupList, ug)
 	}
 
+	// privilegeReadKnobs is in the catalog (matching the Pro catalog carrying
+	// names no write path accepts) but deliberately absent from
+	// knownPrivilegeNames, so a write naming it is silently dropped.
 	s.privileges = []string{
 		privilegeReadAdvancedComputerSearches,
-		"Update Advanced Computer Searches",
-		"Read User",
-		"Update User",
+		privilegeUpdateAdvancedComputerSearches,
+		privilegeReadUser,
+		privilegeUpdateUser,
+		privilegeReadKnobs,
 	}
+}
+
+// adminGroupsContainingLocked returns the admin groups accountID belongs to,
+// as the {id,name} refs a Group Access account's GET reports under
+// <groups>. Assumes the caller already holds s.mu.
+func (s *server) adminGroupsContainingLocked(accountID int) []jamf.BaseType {
+	var groups []jamf.BaseType
+	for _, g := range s.groupList {
+		if containsBaseTypeID(g.Members, accountID) {
+			groups = append(groups, jamf.BaseType{ID: g.ID, Name: g.Name})
+		}
+	}
+	return groups
+}
+
+func containsBaseTypeID(items []jamf.BaseType, id int) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
@@ -356,9 +457,15 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, jamf.UserResponse{User: cp})
 
+	case http.MethodPut:
+		// Site Grant/Revoke: AddUserSite/RemoveUserSite PUT the full desired
+		// <sites> list after a read-modify-write in the client. Per Classic
+		// API field-level-merge semantics, only <sites> is touched — every
+		// other field on the user record is left as-is.
+		s.handleUpdateUserSites(w, r, id)
+
 	case http.MethodPost:
-		// The Classic API only accepts XML for POST/PUT bodies (JSON is
-		// GET-response-only) — see https://developer.jamf.com/jamf-pro/docs/getting-started-2.
+		// POST bodies must be XML, not JSON.
 		body, ok := decodeXMLBody[jamf.UserCreateBody](w, r)
 		if !ok {
 			return
@@ -369,8 +476,9 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.mu.Lock()
-		// NOTE: same caveat as the account create path below — 409 here is
-		// unverified against a live Jamf tenant. See CXH-2156.
+		// This 409 (and the account create path below) is unverified: the
+		// duplicate-name POST status has not been confirmed against a live
+		// Jamf tenant.
 		if existing, dup := s.findUserByNameLocked(body.Name); dup {
 			s.mu.Unlock()
 			_ = existing
@@ -389,8 +497,7 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 
 		// createuserbyid declares 201 with no response body schema; the docs
-		// state only that the result includes the created resource's ID —
-		// see https://developer.jamf.com/jamf-pro/reference/createuserbyid.
+		// state only that the result includes the created resource's ID.
 		writeJSON(w, http.StatusCreated, createResponse{ID: id})
 
 	case http.MethodDelete:
@@ -399,6 +506,7 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 		if ok {
 			delete(s.users, id)
 			s.userList = deleteByID(s.userList, id, func(u *jamf.User) int { return u.ID })
+			s.removeUserFromAllUserGroupsLocked(id)
 		}
 		s.mu.Unlock()
 		if !ok {
@@ -410,6 +518,106 @@ func (s *server) handleUserByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// removeUserFromAllUserGroupsLocked removes userID from every user group's
+// member list — a live tenant does this automatically when a directory user
+// is deleted. Assumes the caller already holds s.mu.
+func (s *server) removeUserFromAllUserGroupsLocked(userID int) {
+	for _, ug := range s.userGroupList {
+		ug.Users = deleteByID(ug.Users, userID, func(u jamf.User) int { return u.ID })
+	}
+}
+
+// userSiteRef decodes a single <site> element of a <sites> write.
+type userSiteRef struct {
+	ID int `xml:"id"`
+}
+
+// userSitesPutBody is the write-side counterpart of jamf.UserSitesUpdateBody,
+// with <sites> as a pointer so the handler can tell "omitted" (nil: the
+// field-level merge leaves the user's current site list untouched) apart
+// from "present" (even an empty element: replace it wholesale) — the same
+// distinction groupMembersPutBody makes for <members>.
+type userSitesPutBody struct {
+	XMLName xml.Name `xml:"user"`
+	Sites   *struct {
+		Items []userSiteRef `xml:"site"`
+	} `xml:"sites"`
+}
+
+// handleUpdateUserSites implements the write half of Site Grant/Revoke's
+// read-modify-write: PUT /JSSResource/users/id/{id} carrying only <sites>.
+// There is no distinct "already a member"/"not a member" error status here —
+// AddUserSite/RemoveUserSite absorb both cases client-side before ever
+// issuing this PUT (see pkg/jamf/client.go), so this handler simply replaces
+// the user's Sites wholesale for a known user, delegating validation to
+// resolveUserSitesLocked.
+func (s *server) handleUpdateUserSites(w http.ResponseWriter, r *http.Request, id int) {
+	body, ok := decodeXMLBody[userSitesPutBody](w, r)
+	if !ok {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, ok := s.users[id]
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	if body.Sites == nil {
+		// <sites> omitted entirely — field-level merge leaves it untouched.
+		w.WriteHeader(http.StatusCreated)
+		return
+	}
+
+	newSites, ok := s.resolveUserSitesLocked(body.Sites.Items)
+	if !ok {
+		writeJSONError(w, http.StatusConflict, "unknown or invalid site id")
+		return
+	}
+	u.Sites = newSites
+
+	w.WriteHeader(http.StatusCreated)
+}
+
+// resolveUserSitesLocked validates and dedupes an explicit <sites> write.
+// The sentinel id -1 ("None") is dropped rather than looked up — a list of
+// only -1 entries therefore resolves to an empty (cleared) site list, same
+// as an explicitly empty <sites></sites>. Any other unrecognized or zero id
+// fails the whole write with ok=false, mirroring a live tenant's 409 with
+// nothing applied. Assumes the caller already holds s.mu.
+func (s *server) resolveUserSitesLocked(items []userSiteRef) (jamf.UserSites, bool) {
+	seen := make(map[int]bool, len(items))
+	out := make(jamf.UserSites, 0, len(items))
+	for _, item := range items {
+		if item.ID == noneSiteID {
+			continue
+		}
+		site, found := s.findSiteByIDLocked(item.ID)
+		if !found {
+			return nil, false
+		}
+		if seen[site.ID] {
+			continue
+		}
+		seen[site.ID] = true
+		out = append(out, site.BaseType)
+	}
+	return out, true
+}
+
+// findSiteByIDLocked assumes the caller already holds s.mu.
+func (s *server) findSiteByIDLocked(id int) (jamf.Site, bool) {
+	for _, site := range s.sites {
+		if site.ID == id {
+			return site, true
+		}
+	}
+	return jamf.Site{}, false
 }
 
 // Doc URL: https://developer.jamf.com/jamf-pro/reference/findusersbyname
@@ -492,15 +700,33 @@ func (s *server) handleAccountByID(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		a, ok := s.accounts[id]
 		var cp jamf.UserAccount
+		var groups []jamf.BaseType
 		if ok {
 			cp = *a
+			if a.AccessLevel == accessLevelGroupAccess {
+				groups = s.adminGroupsContainingLocked(a.ID)
+			} else {
+				cp.Privileges = privilegesForRead(a.PrivilegeSet, a.Privileges)
+			}
 		}
 		s.mu.Unlock()
 		if !ok {
 			writeJSONError(w, http.StatusNotFound, "account not found")
 			return
 		}
+		if cp.AccessLevel == accessLevelGroupAccess {
+			// A Group Access account's rights come entirely from its groups:
+			// its GET carries <groups> and omits <privileges> altogether.
+			writeJSON(w, http.StatusOK, groupAccessAccountResponse{Account: groupAccessAccount{
+				BaseType: cp.BaseType, FullName: cp.FullName, Email: cp.Email, Enabled: cp.Enabled,
+				AccessLevel: cp.AccessLevel, PrivilegeSet: cp.PrivilegeSet, Site: cp.Site, Groups: groups,
+			}})
+			return
+		}
 		writeJSON(w, http.StatusOK, jamf.UserAccountResponse{UserAccount: cp})
+
+	case http.MethodPut:
+		s.handleUpdateAccountPrivileges(w, r, id)
 
 	case http.MethodPost:
 		body, ok := decodeXMLBody[jamf.UserAccountCreateBody](w, r)
@@ -528,10 +754,11 @@ func (s *server) handleAccountByID(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.mu.Lock()
-		// NOTE: Jamf does not document a per-endpoint error code for a name
+		// Jamf does not document a per-endpoint error code for a name
 		// collision on createaccountbyid — 409 only appears in the Classic
 		// API Overview's generic response-code table, alongside 400 for a
-		// malformed XML body. Unverified against a live tenant; see CXH-2156.
+		// malformed XML body. This status is not confirmed against a live
+		// tenant.
 		if existing, dup := s.findAccountByNameLocked(body.Name); dup {
 			s.mu.Unlock()
 			_ = existing
@@ -556,8 +783,7 @@ func (s *server) handleAccountByID(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 
 		// createaccountbyid declares 201 with no response body schema; the
-		// docs state only that the result includes the created resource's
-		// ID — see https://developer.jamf.com/jamf-pro/reference/createaccountbyid.
+		// docs state only that the result includes the created resource's ID.
 		writeJSON(w, http.StatusCreated, createResponse{ID: id})
 
 	case http.MethodDelete:
@@ -566,6 +792,7 @@ func (s *server) handleAccountByID(w http.ResponseWriter, r *http.Request) {
 		if ok {
 			delete(s.accounts, id)
 			s.accountList = deleteByID(s.accountList, id, func(a *jamf.UserAccount) int { return a.ID })
+			s.removeAccountFromAllGroupsLocked(id)
 		}
 		s.mu.Unlock()
 		if !ok {
@@ -577,6 +804,160 @@ func (s *server) handleAccountByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// groupAccessAccount is the JSON shape of a Group Access account's GET: it
+// carries the admin groups it belongs to and has no privileges field at all
+// — a Group Access account's rights come from its groups, never its own
+// (possibly stale) privilege_set/privileges.
+type groupAccessAccount struct {
+	jamf.BaseType
+	FullName     string          `json:"full_name"`
+	Email        string          `json:"email"`
+	Enabled      string          `json:"enabled"`
+	AccessLevel  string          `json:"access_level"`
+	PrivilegeSet string          `json:"privilege_set"`
+	Site         jamf.BaseType   `json:"site"`
+	Groups       []jamf.BaseType `json:"groups"`
+}
+
+type groupAccessAccountResponse struct {
+	Account groupAccessAccount `json:"account"`
+}
+
+// removeAccountFromAllGroupsLocked removes accountID from every admin
+// group's member list. Mirrors a live tenant: any successful PUT on a Full
+// or Site Access account drops it from the admin groups it belonged to
+// (membership is inert for those access levels, so nothing is lost), and
+// deleting an account removes it from the groups that listed it. Assumes
+// the caller already holds s.mu.
+func (s *server) removeAccountFromAllGroupsLocked(accountID int) {
+	for _, g := range s.groupList {
+		g.Members = deleteByID(g.Members, accountID, func(m jamf.BaseType) int { return m.ID })
+	}
+}
+
+// accountPrivilegesPutBody decodes PUT /JSSResource/accounts/userid/{id} —
+// the minimal body Role Grant/Revoke sends (pkg/jamf.AccountPrivilegesUpdateBody).
+// Site is included here purely as a defensive 409 guard: the connector never
+// sends it for this endpoint, but the mock should reject it exactly like a
+// live tenant if it ever appears.
+type accountPrivilegesPutBody struct {
+	XMLName      xml.Name         `xml:"account"`
+	Name         string           `xml:"name"`
+	PrivilegeSet string           `xml:"privilege_set"`
+	Privileges   *jamf.Privileges `xml:"privileges"`
+	Site         *jamf.BaseType   `xml:"site"`
+}
+
+// handleUpdateAccountPrivileges implements Role Grant/Revoke for the
+// userAccount principal: PUT /JSSResource/accounts/userid/{id}. A 201
+// response means success; an invalid privilege_set or a zero site ID is
+// rejected with 409. For a Full or Site
+// Access account, a <privileges> block is only applied when the resulting
+// privilege_set is Custom, writing Custom with the block omitted copies a
+// fixed non-empty privilege list rather than leaving privileges empty (see
+// applyPrivilegeSetUpdate), and any successful write drops the account from
+// every admin group it belonged to (that membership is inert for these
+// access levels). A Group Access account instead only has its stored
+// privilege_set changed — <privileges> is ignored and group membership is
+// left alone, since its rights come from its groups, not its own privileges.
+func (s *server) handleUpdateAccountPrivileges(w http.ResponseWriter, r *http.Request, id int) {
+	body, ok := decodeXMLBody[accountPrivilegesPutBody](w, r)
+	if !ok {
+		return
+	}
+
+	if body.Site != nil && body.Site.ID == 0 {
+		writeJSONError(w, http.StatusConflict, "site id 0 is not a valid site")
+		return
+	}
+	if body.PrivilegeSet != "" && !slices.Contains(validPrivilegeSets, body.PrivilegeSet) {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("invalid privilege_set %q", body.PrivilegeSet))
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	a, ok := s.accounts[id]
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, "account not found")
+		return
+	}
+
+	if body.Name != "" {
+		a.Name = body.Name
+	}
+
+	if a.AccessLevel == accessLevelGroupAccess {
+		if body.PrivilegeSet != "" {
+			a.PrivilegeSet = body.PrivilegeSet
+		}
+	} else {
+		applyPrivilegeSetUpdate(&a.PrivilegeSet, &a.Privileges, body.PrivilegeSet, body.Privileges)
+		s.removeAccountFromAllGroupsLocked(a.ID)
+	}
+
+	w.WriteHeader(http.StatusCreated)
+}
+
+// applyPrivilegeSetUpdate applies a PUT's privilege_set/privileges change to
+// an account or group's stored fields in place:
+//
+//   - newSet == "" leaves the current set untouched (field-level merge).
+//   - Explicitly setting privilege_set to Custom with newPrivileges == nil
+//     (the <privileges> element omitted entirely) copies a fixed full
+//     privilege list rather than leaving privileges empty — the
+//     privilege-escalation trap a correct write must always avoid by sending
+//     an explicit, even empty, block whenever it writes Custom.
+//   - Otherwise, a non-nil newPrivileges replaces the stored privileges
+//     wholesale, but only takes effect when the resulting set is Custom —
+//     it's ignored for any other set. Names this mock doesn't recognize are
+//     dropped, and "Read License Information" is always present in the
+//     result, mirroring Jamf never letting it be removed.
+//   - privilege_set omitted and privileges omitted leaves privileges
+//     untouched, regardless of the current stored set.
+func applyPrivilegeSetUpdate(set *string, privileges *jamf.Privileges, newSet string, newPrivileges *jamf.Privileges) {
+	settingCustomWithNoBlock := newSet == privilegeSetCustom && newPrivileges == nil
+
+	if newSet != "" {
+		*set = newSet
+	}
+
+	switch {
+	case settingCustomWithNoBlock:
+		*privileges = copiedFullPrivilegeList
+	case newPrivileges != nil && *set == privilegeSetCustom:
+		*privileges = jamf.Privileges{
+			JSSObjects:    filterKnownPrivileges(newPrivileges.JSSObjects),
+			JSSSettings:   filterKnownPrivileges(newPrivileges.JSSSettings),
+			JSSActions:    filterKnownPrivileges(newPrivileges.JSSActions),
+			Recon:         filterKnownPrivileges(newPrivileges.Recon),
+			CasperAdmin:   filterKnownPrivileges(newPrivileges.CasperAdmin),
+			CasperRemote:  filterKnownPrivileges(newPrivileges.CasperRemote),
+			CasperImaging: filterKnownPrivileges(newPrivileges.CasperImaging),
+		}
+		if !privileges.Contains(privilegeReadLicenseInformation) {
+			privileges.JSSObjects = append(privileges.JSSObjects, privilegeReadLicenseInformation)
+		}
+	}
+}
+
+// filterKnownPrivileges drops any name not in knownPrivilegeNames (and not
+// privilegeReadLicenseInformation, handled separately by the caller),
+// mirroring Jamf silently dropping privilege names it doesn't recognize.
+func filterKnownPrivileges(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if slices.Contains(knownPrivilegeNames, n) || n == privilegeReadLicenseInformation {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // Doc URL: https://developer.jamf.com/jamf-pro/reference/accounts
@@ -616,28 +997,120 @@ func (s *server) handleGroupByID(w http.ResponseWriter, r *http.Request) {
 	if !s.requireBearer(w, r) {
 		return
 	}
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "method must be GET")
-		return
-	}
 	id, err := pathID(r.URL.Path, "/JSSResource/accounts/groupid/")
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
-	s.mu.Lock()
-	g, ok := s.groups[id]
-	var cp jamf.Group
-	if ok {
-		cp = *g
+	switch r.Method {
+	case http.MethodGet:
+		s.mu.Lock()
+		g, ok := s.groups[id]
+		var cp jamf.Group
+		if ok {
+			cp = *g
+			cp.Privileges = privilegesForRead(g.PrivilegeSet, g.Privileges)
+		}
+		s.mu.Unlock()
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "group not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, jamf.GroupResponse{Group: cp})
+
+	case http.MethodPut:
+		s.handleUpdateGroupMembers(w, r, id)
+
+	default:
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
-	s.mu.Unlock()
+}
+
+// groupMembersPutBody decodes PUT /JSSResource/accounts/groupid/{id}. It is a
+// superset of both PUT bodies the connector sends to this endpoint:
+// UpdateGroupPrivileges's minimal privilege-only body (name, privilege_set,
+// privileges) and UpdateGroupMembers's minimal membership-only body (name,
+// members). Site, Members, and Privileges are pointers so the handler can
+// tell "the element was present" (even an empty one) apart from "omitted":
+// omitting <members> keeps the existing list, an explicit empty element
+// clears it; likewise for <privileges> (see applyPrivilegeSetUpdate).
+type groupMembersPutBody struct {
+	XMLName      xml.Name         `xml:"group"`
+	Name         string           `xml:"name"`
+	AccessLevel  string           `xml:"access_level"`
+	PrivilegeSet string           `xml:"privilege_set"`
+	Privileges   *jamf.Privileges `xml:"privileges"`
+	Site         *jamf.BaseType   `xml:"site"`
+	Members      *struct {
+		Users []jamf.BaseType `xml:"user"`
+	} `xml:"members"`
+}
+
+// handleUpdateGroupMembers implements both admin account Group Grant/Revoke
+// (membership changes) and Role Grant/Revoke for the group principal — both
+// PUT /JSSResource/accounts/groupid/{id}. A 201 response means success; an
+// empty/omitted <name> leaves the stored name untouched (field-level merge);
+// omitting <members> keeps the
+// group's existing member list; an explicit (possibly empty) <members>
+// element replaces it wholesale; member ids this mock doesn't recognize are
+// silently dropped rather than rejected, and repeated ids are deduplicated,
+// same as a live tenant; an invalid privilege_set or <site><id>0</id></site>
+// is rejected with 409; and <privileges> follows applyPrivilegeSetUpdate's
+// semantics.
+func (s *server) handleUpdateGroupMembers(w http.ResponseWriter, r *http.Request, id int) {
+	body, ok := decodeXMLBody[groupMembersPutBody](w, r)
+	if !ok {
+		return
+	}
+
+	if body.Site != nil && body.Site.ID == 0 {
+		writeJSONError(w, http.StatusConflict, "site id 0 is not a valid site")
+		return
+	}
+	if body.PrivilegeSet != "" && !slices.Contains(validPrivilegeSets, body.PrivilegeSet) {
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("invalid privilege_set %q", body.PrivilegeSet))
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, ok := s.groups[id]
 	if !ok {
 		writeJSONError(w, http.StatusNotFound, "group not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, jamf.GroupResponse{Group: cp})
+
+	if body.Name != "" {
+		g.Name = body.Name
+	}
+	if body.AccessLevel != "" {
+		g.AccessLevel = body.AccessLevel
+	}
+	applyPrivilegeSetUpdate(&g.PrivilegeSet, &g.Privileges, body.PrivilegeSet, body.Privileges)
+	if body.Site != nil {
+		g.Site = *body.Site
+	}
+
+	if body.Members != nil {
+		seen := make(map[int]bool, len(body.Members.Users))
+		members := make([]jamf.BaseType, 0, len(body.Members.Users))
+		for _, u := range body.Members.Users {
+			account, ok := s.accounts[u.ID]
+			if !ok {
+				continue // unknown member id — silently dropped, same as a live tenant
+			}
+			if seen[account.ID] {
+				continue // duplicate — deduplicated, same as a live tenant
+			}
+			seen[account.ID] = true
+			members = append(members, jamf.BaseType{ID: account.ID, Name: account.Name})
+		}
+		g.Members = members
+	}
+
+	w.WriteHeader(http.StatusCreated)
 }
 
 // ── User groups (/JSSResource/usergroups) ───────────────────────────────────
@@ -666,28 +1139,100 @@ func (s *server) handleUserGroupByID(w http.ResponseWriter, r *http.Request) {
 	if !s.requireBearer(w, r) {
 		return
 	}
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "method must be GET")
-		return
-	}
 	id, err := pathID(r.URL.Path, "/JSSResource/usergroups/id/")
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 
-	s.mu.Lock()
-	g, ok := s.userGroups[id]
-	var cp jamf.UserGroup
-	if ok {
-		cp = *g
+	switch r.Method {
+	case http.MethodGet:
+		s.mu.Lock()
+		g, ok := s.userGroups[id]
+		var cp jamf.UserGroup
+		if ok {
+			cp = *g
+		}
+		s.mu.Unlock()
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "user group not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, jamf.UserGroupResponse{UserGroup: cp})
+
+	case http.MethodPut:
+		s.handleUpdateUserGroupMembers(w, r, id)
+
+	default:
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
-	s.mu.Unlock()
+}
+
+// handleUpdateUserGroupMembers implements User Group Grant/Revoke: PUT
+// /JSSResource/usergroups/id/{id} carrying either <user_additions> or
+// <user_deletions>. Adding an existing member (or adding to a smart group)
+// 201s and changes nothing; adding an unknown user id or removing a
+// non-member 409s with "Unable to match user ... in additions/deletions
+// list" and applies nothing — every id in the list is validated before any
+// mutation happens, so a later invalid id can't leave an earlier valid one
+// partially applied.
+func (s *server) handleUpdateUserGroupMembers(w http.ResponseWriter, r *http.Request, id int) {
+	body, ok := decodeXMLBody[jamf.UserGroupMemberMutation](w, r)
+	if !ok {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	g, ok := s.userGroups[id]
 	if !ok {
 		writeJSONError(w, http.StatusNotFound, "user group not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, jamf.UserGroupResponse{UserGroup: cp})
+
+	switch {
+	case body.Additions != nil:
+		if g.IsSmart {
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		for _, u := range body.Additions.Users {
+			if _, ok := s.users[u.ID]; !ok {
+				writeJSONError(w, http.StatusConflict, fmt.Sprintf("Unable to match user in additions list id=%d", u.ID))
+				return
+			}
+		}
+		for _, u := range body.Additions.Users {
+			if userGroupHasMember(g, u.ID) {
+				continue
+			}
+			g.Users = append(g.Users, *s.users[u.ID])
+		}
+		w.WriteHeader(http.StatusCreated)
+	case body.Deletions != nil:
+		for _, u := range body.Deletions.Users {
+			if !userGroupHasMember(g, u.ID) {
+				writeJSONError(w, http.StatusConflict, fmt.Sprintf("Unable to match user in deletions list id=%d", u.ID))
+				return
+			}
+		}
+		for _, u := range body.Deletions.Users {
+			g.Users = deleteByID(g.Users, u.ID, func(m jamf.User) int { return m.ID })
+		}
+		w.WriteHeader(http.StatusCreated)
+	default:
+		writeJSONError(w, http.StatusBadRequest, "request must set user_additions or user_deletions")
+	}
+}
+
+func userGroupHasMember(g *jamf.UserGroup, userID int) bool {
+	for _, u := range g.Users {
+		if u.ID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // ── Sites & privileges ───────────────────────────────────────────────────────
@@ -725,9 +1270,8 @@ func (s *server) handleListPrivileges(w http.ResponseWriter, r *http.Request) {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // decodeXMLBody enforces the Classic API's documented POST/PUT content-type
-// contract (XML only — see https://developer.jamf.com/jamf-pro/docs/getting-started-2)
-// and decodes the body into T. On any failure it writes the response itself
-// and returns ok=false.
+// contract (XML only) and decodes the body into T. On any failure it writes
+// the response itself and returns ok=false.
 func decodeXMLBody[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 	var zero T
 	contentType := r.Header.Get("Content-Type")
@@ -774,12 +1318,12 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 // errorBody is JSON for every mocked error, including auth and validation
-// failures. The Classic API Overview states error responses are HTML, not
-// JSON — https://developer.jamf.com/jamf-pro/docs/classic-api-overview.
-// Left as JSON: the connector maps errors purely off HTTP status code, via
+// failures. A live Jamf Pro tenant instead returns HTML (or an empty body
+// for an invalid/expired token) for Classic API errors. Left as JSON here:
+// the connector maps errors purely off HTTP status code, via
 // vendor/github.com/conductorone/baton-sdk/pkg/uhttp (GrpcCodeFromHTTPStatus)
 // — it never parses this body — so this divergence has no functional effect
-// on the connector today. Unverified against a live tenant; see CXH-2156.
+// on the connector.
 type errorBody struct {
 	Message string `json:"message"`
 }

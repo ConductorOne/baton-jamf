@@ -35,8 +35,8 @@ func TestResolvePrivileges_NonCustomWithNoPrivileges_OK(t *testing.T) {
 }
 
 // TestResolvePrivileges_NonCustomWithPrivileges_Errors guards against
-// silently discarding an operator's privileges_* input when they leave
-// privilege_set at its default — see PR #28 review feedback.
+// silently discarding privileges_* input when privilege_set is left at its
+// default.
 func TestResolvePrivileges_NonCustomWithPrivileges_Errors(t *testing.T) {
 	profileMap := map[string]interface{}{
 		profileFieldPrivilegesRecon: []interface{}{"Read Advanced Computer Searches"},

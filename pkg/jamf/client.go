@@ -3,6 +3,7 @@ package jamf
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,6 +47,29 @@ type Client struct {
 
 	userName string
 	password string
+}
+
+// freshReadsContextKey marks a context as requiring GET requests to bypass
+// the HTTP client's response cache (default TTL: one hour — see uhttp's
+// gocache.go cacheTTLDefault). Sync reads benefit from that cache and are
+// unaffected; provisioning paths wrap their ctx with WithFreshReads because a
+// stale GET there can produce a wrong idempotency decision or a PUT built
+// from stale data.
+type freshReadsContextKey struct{}
+
+// WithFreshReads returns a context that causes GET requests issued through
+// this client to bypass the response cache. Provisioning entry points
+// (Grant, Revoke, CreateAccount, Delete) wrap their ctx with this at the top
+// of the method; sync code paths (List, Entitlements, Grants) must not, so
+// they keep benefiting from the cache.
+func WithFreshReads(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freshReadsContextKey{}, true)
+}
+
+// wantsFreshReads reports whether ctx was wrapped with WithFreshReads.
+func wantsFreshReads(ctx context.Context) bool {
+	v, _ := ctx.Value(freshReadsContextKey{}).(bool)
+	return v
 }
 
 func NewClient(
@@ -196,7 +220,8 @@ func (c *Client) getBaseUsers(ctx context.Context) ([]BaseType, error) {
 	return target.Users, nil
 }
 
-func (c *Client) getUserDetails(ctx context.Context, userId int) (*User, error) {
+// GetUserDetails returns Jamf user details for a single directory user.
+func (c *Client) GetUserDetails(ctx context.Context, userId int) (*User, error) {
 	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userId))
 	if err != nil {
 		return nil, err
@@ -308,7 +333,7 @@ func (c *Client) GetUsers(ctx context.Context) ([]*User, error) {
 	}
 
 	for _, baseUser := range baseUsers {
-		user, err := c.getUserDetails(ctx, baseUser.ID)
+		user, err := c.GetUserDetails(ctx, baseUser.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -316,6 +341,45 @@ func (c *Client) GetUsers(ctx context.Context) ([]*User, error) {
 	}
 
 	return users, nil
+}
+
+// AddUserGroupMembers adds the given user IDs to a static Jamf user group via
+// the additions verb (PUT .../usergroups/id/{id} <user_group><user_additions>).
+// Atomic — no read-modify-write. Returns a gRPC NotFound error if the group
+// doesn't exist (surfaced via IsNotFoundError).
+func (c *Client) AddUserGroupMembers(ctx context.Context, groupID int, userIDs []int) error {
+	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, groupID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := UserGroupMemberMutation{Additions: &memberUsers{Users: baseTypesFromIDs(userIDs)}}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
+// RemoveUserGroupMembers removes the given user IDs from a static Jamf user
+// group via the deletions verb (<user_group><user_deletions>). Atomic.
+// Returns a gRPC NotFound error if the group doesn't exist (surfaced via
+// IsNotFoundError).
+func (c *Client) RemoveUserGroupMembers(ctx context.Context, groupID int, userIDs []int) error {
+	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, groupID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := UserGroupMemberMutation{Deletions: &memberUsers{Users: baseTypesFromIDs(userIDs)}}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
+// baseTypesFromIDs wraps each id as a BaseType with only ID set, the shape
+// the Classic API's <user_additions>/<user_deletions> verbs expect for each
+// <user> element.
+func baseTypesFromIDs(ids []int) []BaseType {
+	out := make([]BaseType, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, BaseType{ID: id})
+	}
+	return out
 }
 
 // GetUserGroups returns all Jamf user groups.
@@ -448,6 +512,80 @@ func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
 	return c.doRequestWithMethod(ctx, http.MethodDelete, url, nil, nil)
 }
 
+// updatePrivileges backs both UpdateAccountPrivileges and
+// UpdateGroupPrivileges: a minimal PUT carrying <name> and, optionally,
+// <privilege_set>/<privileges>, with root as the XML root element name
+// ("account" or "group") — see privilegesUpdateBody for the body shape and
+// the Custom-write caveat.
+func (c *Client) updatePrivileges(ctx context.Context, path, root string, id int, name, privilegeSet string, privileges *Privileges) error {
+	url, err := c.getUrl(fmt.Sprintf(path, id))
+	if err != nil {
+		return err
+	}
+
+	reqBody := privilegesUpdateBody{
+		XMLName:      xml.Name{Local: root},
+		Name:         name,
+		PrivilegeSet: privilegeSet,
+		Privileges:   privileges,
+	}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
+// UpdateAccountPrivileges updates a Jamf admin account's privilege_set
+// and/or individual privileges. See
+// https://developer.jamf.com/jamf-pro/reference/updateaccountbyid.
+func (c *Client) UpdateAccountPrivileges(ctx context.Context, accountID int, name, privilegeSet string, privileges *Privileges) error {
+	return c.updatePrivileges(ctx, accountUrlPath, "account", accountID, name, privilegeSet, privileges)
+}
+
+// UpdateGroupPrivileges is UpdateAccountPrivileges's counterpart for an
+// admin account group. See
+// https://developer.jamf.com/jamf-pro/reference/updategroupbyid.
+func (c *Client) UpdateGroupPrivileges(ctx context.Context, groupID int, name, privilegeSet string, privileges *Privileges) error {
+	return c.updatePrivileges(ctx, groupUrlPath, "group", groupID, name, privilegeSet, privileges)
+}
+
+// UpdateGroupMembers updates a Jamf access-level group's membership via a
+// minimal PUT carrying only <name> and <members> — see
+// GroupMembersUpdateBody. members is the complete desired list; pass an
+// empty slice to clear the last member. Returns a gRPC NotFound error
+// (IsNotFoundError) if the group doesn't exist. See
+// https://developer.jamf.com/jamf-pro/reference/updategroupbyid.
+func (c *Client) UpdateGroupMembers(ctx context.Context, groupID int, name string, members []BaseType) error {
+	url, err := c.getUrl(fmt.Sprintf(groupUrlPath, groupID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := GroupMembersUpdateBody{
+		Name:    name,
+		Members: &memberUsers{Users: members},
+	}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
+// UpdateUserSites PUTs the full desired <sites> list for a user, leaving
+// the rest of the user record untouched (Classic API field-level merge).
+// Callers own the read-modify-write and idempotency checks (see site.go).
+//
+// Concurrency note: no locking/versioning guard — concurrent calls for the
+// same userID can race and silently drop one side's change; serialize calls
+// per user if that matters.
+func (c *Client) UpdateUserSites(ctx context.Context, userID int, sites UserSites) error {
+	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userID))
+	if err != nil {
+		return err
+	}
+
+	ids := make([]int, 0, len(sites))
+	for _, s := range sites {
+		ids = append(ids, s.ID)
+	}
+	reqBody := UserSitesUpdateBody{Sites: baseTypesFromIDs(ids)}
+	return c.doRequestWithMethod(ctx, http.MethodPut, url, reqBody, nil)
+}
+
 // doRequest performs an authenticated GET request to the Jamf API.
 func (c *Client) doRequest(
 	ctx context.Context,
@@ -457,17 +595,52 @@ func (c *Client) doRequest(
 	return c.doRequestWithMethod(ctx, http.MethodGet, url, nil, target)
 }
 
-// doRequestWithMethod performs an authenticated request to the Jamf API for
-// any HTTP method, optionally sending reqBody as an XML request body (the
-// only format the Classic API accepts for POST/PUT). Passing a nil target
-// skips decoding the response body (used for DELETE and other no-content
-// responses).
+// doRequestWithMethod performs an authenticated request to the Jamf Classic
+// API for any HTTP method, optionally sending reqBody as an XML request body
+// (the only format the Classic API accepts for POST/PUT). Passing a nil
+// target skips decoding the response body (used for DELETE and other
+// no-content responses).
 func (c *Client) doRequestWithMethod(
 	ctx context.Context,
 	method string,
 	url *liburl.URL,
 	reqBody interface{},
 	target interface{},
+) error {
+	// The Classic API only accepts XML for POST/PUT request bodies (JSON is
+	// GET-response-only); see
+	// https://developer.jamf.com/jamf-pro/docs/getting-started-2.
+	return c.doRequestWithMethodAndBodyEncoding(ctx, method, url, reqBody, target, uhttp.WithXMLBody)
+}
+
+// doRequestWithJSONMethod performs an authenticated request to the Jamf Pro
+// API (unlike the Classic API, it accepts JSON request bodies) for any HTTP
+// method, optionally sending reqBody as a JSON request body. Passing a nil
+// target skips decoding the response body.
+func (c *Client) doRequestWithJSONMethod(
+	ctx context.Context,
+	method string,
+	url *liburl.URL,
+	reqBody interface{},
+	target interface{},
+) error {
+	return c.doRequestWithMethodAndBodyEncoding(ctx, method, url, reqBody, target, uhttp.WithJSONBody)
+}
+
+// doRequestWithMethodAndBodyEncoding is the shared implementation behind
+// doRequestWithMethod (XML, Classic API) and doRequestWithJSONMethod (JSON,
+// Pro API) — same auth/retry/decode behavior, differing only in how reqBody
+// is encoded onto the wire.
+//
+// GET requests made with a ctx wrapped by WithFreshReads bypass the HTTP
+// wrapper's response cache (uhttp.WithNoCache) — see WithFreshReads.
+func (c *Client) doRequestWithMethodAndBodyEncoding(
+	ctx context.Context,
+	method string,
+	url *liburl.URL,
+	reqBody interface{},
+	target interface{},
+	bodyEncoding func(interface{}) uhttp.RequestOption,
 ) error {
 	l := ctxzap.Extract(ctx)
 
@@ -486,11 +659,11 @@ GotoRetry:
 			fmt.Sprintf("Bearer %s", c.token),
 		),
 	}
+	if method == http.MethodGet && wantsFreshReads(ctx) {
+		requestOpts = append(requestOpts, uhttp.WithNoCache())
+	}
 	if reqBody != nil {
-		// The Classic API only accepts XML for POST/PUT request bodies (JSON
-		// is GET-response-only); see
-		// https://developer.jamf.com/jamf-pro/docs/getting-started-2.
-		requestOpts = append(requestOpts, uhttp.WithXMLBody(reqBody))
+		requestOpts = append(requestOpts, bodyEncoding(reqBody))
 	}
 
 	request, err := c.wrapper.NewRequest(

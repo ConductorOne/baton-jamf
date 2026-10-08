@@ -2,18 +2,25 @@ package jamf
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	liburl "net/url"
 	"strconv"
 )
 
 const (
-	computersInventoryUrlPath = "/api/v1/computers-inventory"
-	mobileDevicesUrlPath      = "/api/v2/mobile-devices"
+	// v4 is the non-deprecated version of the computers-inventory(-detail)
+	// endpoints.
+	computersInventoryUrlPath      = "/api/v4/computers-inventory"
+	computerInventoryDetailUrlPath = "/api/v4/computers-inventory-detail/%s"
+	mobileDevicesUrlPath           = "/api/v2/mobile-devices"
+	mobileDeviceUrlPath            = "/api/v2/mobile-devices/%s"
+	mobileDeviceDetailUrlPath      = "/api/v2/mobile-devices/%s/detail"
 )
 
-// ComputerInventorySections are the inventory sections the connector requests.
-// The endpoint only populates a section when it is explicitly requested via a
-// `section` query parameter, so mapping relies on these being asked for.
+// ComputerInventorySections are the inventory sections requested from the v4
+// list endpoint, which only returns the sections requested via `section=`
+// (only GENERAL when none is sent).
 var ComputerInventorySections = []string{
 	"GENERAL",
 	"HARDWARE",
@@ -77,4 +84,67 @@ func (c *Client) GetMobileDevices(
 	}
 
 	return &target, nil
+}
+
+// GetComputerInventoryDetail fetches a computer's current inventory detail.
+// Grant and Revoke read it first since the device may have been reassigned
+// since last sync; Grant reports a displaced assignee via GrantReplaced.
+func (c *Client) GetComputerInventoryDetail(ctx context.Context, computerID string) (*ComputerInventory, error) {
+	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
+	if err != nil {
+		return nil, err
+	}
+
+	var target ComputerInventory
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
+	}
+
+	return &target, nil
+}
+
+// GetMobileDeviceDetail fetches a mobile device's detail record, used by
+// Grant and Revoke for the same reassignment check as
+// GetComputerInventoryDetail. Unlike the plain GET endpoint (flat top-level
+// username), the detail response nests it under location.username; the two
+// values agree.
+func (c *Client) GetMobileDeviceDetail(ctx context.Context, deviceID string) (*MobileDeviceDetail, error) {
+	url, err := c.getUrl(fmt.Sprintf(mobileDeviceDetailUrlPath, deviceID))
+	if err != nil {
+		return nil, err
+	}
+
+	var target MobileDeviceDetail
+	if err := c.doRequest(ctx, url, &target); err != nil {
+		return nil, err
+	}
+
+	return &target, nil
+}
+
+// SetComputerAssignedUser sets (Grant) or clears (Revoke, zero-value fields)
+// the assigned user on a computer's inventory record — see
+// ComputerAssignedUserFields for the field semantics.
+func (c *Client) SetComputerAssignedUser(ctx context.Context, computerID string, fields ComputerAssignedUserFields) error {
+	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := computerAssignedUserUpdate{UserAndLocation: fields}
+	return c.doRequestWithJSONMethod(ctx, http.MethodPatch, url, reqBody, nil)
+}
+
+// SetMobileDeviceAssignedUser is the mobile-device equivalent, via
+// location.username — see MobileDeviceLocation for the field semantics. The
+// Classic PUT is deliberately not used here: it writes the device's
+// leftover location values back into the directory user's own record.
+func (c *Client) SetMobileDeviceAssignedUser(ctx context.Context, deviceID string, username string) error {
+	url, err := c.getUrl(fmt.Sprintf(mobileDeviceUrlPath, deviceID))
+	if err != nil {
+		return err
+	}
+
+	reqBody := mobileDeviceAssignedUserUpdate{Location: MobileDeviceLocation{Username: username}}
+	return c.doRequestWithJSONMethod(ctx, http.MethodPatch, url, reqBody, nil)
 }

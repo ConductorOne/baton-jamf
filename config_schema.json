@@ -118,7 +118,7 @@
     {
       "name": "instance-url",
       "displayName": "Instance URL",
-      "description": "URL of your Jamf Pro instance",
+      "description": "Base URL of your Jamf Pro instance, including https:// (for example https://yourcompany.jamfcloud.com)",
       "isRequired": true,
       "stringField": {
         "rules": {

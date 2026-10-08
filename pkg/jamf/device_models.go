@@ -6,15 +6,14 @@ package jamf
 // more fields that are intentionally omitted.
 
 // ComputersInventoryResponse is the paginated envelope returned by
-// GET /api/v1/computers-inventory.
+// GET /api/v4/computers-inventory.
 type ComputersInventoryResponse struct {
 	TotalCount int                 `json:"totalCount"`
 	Results    []ComputerInventory `json:"results"`
 }
 
-// ComputerInventory is a single computer record. The nested sections are only
-// populated when the matching `section` query parameter is requested, so every
-// section is a pointer that may be nil.
+// ComputerInventory is a single computer record. Each section is a pointer
+// since it may be absent from a given response.
 type ComputerInventory struct {
 	ID              string                   `json:"id"`
 	UDID            string                   `json:"udid"`
@@ -61,8 +60,9 @@ type ComputerOperatingSystem struct {
 	Build   string `json:"build"`
 }
 
-// ComputerUserAndLocation holds the USER_AND_LOCATION section. Jamf has used
-// both `email` and `emailAddress` across API versions, so both are captured.
+// ComputerUserAndLocation holds the USER_AND_LOCATION section. v4 only
+// returns `email`; EmailAddress has no v4 key but is kept for EmailAddr's
+// fallback.
 type ComputerUserAndLocation struct {
 	Username     string `json:"username"`
 	Realname     string `json:"realname"`
@@ -141,4 +141,54 @@ type MobileDevice struct {
 	OSBuild         string `json:"osBuild"`
 	WifiMacAddress  string `json:"wifiMacAddress"`
 	PhoneNumber     string `json:"phoneNumber"`
+}
+
+// MobileDeviceDetail is a single mobile-device record from the v2 detail
+// endpoint. Only the location section needed to resolve the device's
+// current assignee is modeled here.
+type MobileDeviceDetail struct {
+	ID       string                `json:"id"`
+	Location *MobileDeviceLocation `json:"location"`
+}
+
+// MobileDeviceLocation holds the `location` section of a mobile-device
+// detail record (read), and doubles as the PATCH body's location payload
+// (write — see SetMobileDeviceAssignedUser): setting Username makes Jamf
+// auto-populate realname/email/position/phone from the directory user, and
+// a nonexistent username is accepted by auto-creating one, so the connector
+// never has (or needs) those fields to send here. "" clears the username and
+// every auto-populated field together; null/{} are silent no-ops, so Revoke
+// must always send an explicit "" rather than omitting the field.
+type MobileDeviceLocation struct {
+	Username string `json:"username"`
+}
+
+// computerAssignedUserUpdate is the PATCH body for
+// /api/v4/computers-inventory-detail/{id} that sets (Grant) or clears
+// (Revoke) the assigned user's identity via userAndLocation.
+type computerAssignedUserUpdate struct {
+	UserAndLocation ComputerAssignedUserFields `json:"userAndLocation"`
+}
+
+// ComputerAssignedUserFields is the assignee-identity subset of a computer's
+// userAndLocation that Grant/Revoke write: username, realname, email,
+// position and phone. "" clears a field, an omitted key is a no-op, and the
+// keys are independent, so all five are always sent as plain strings (no
+// `omitempty`). Grant populates every field from the new assignee's Jamf
+// user record, overwriting whatever the previous assignee left behind since
+// Jamf never auto-populates these for computers; Revoke sends the zero
+// value of this struct to clear all five.
+type ComputerAssignedUserFields struct {
+	Username string `json:"username"`
+	Realname string `json:"realname"`
+	Email    string `json:"email"`
+	Position string `json:"position"`
+	Phone    string `json:"phone"`
+}
+
+// mobileDeviceAssignedUserUpdate is the PATCH body for
+// /api/v2/mobile-devices/{id} that sets (Grant) or clears (Revoke) the
+// assigned user via location.username.
+type mobileDeviceAssignedUserUpdate struct {
+	Location MobileDeviceLocation `json:"location"`
 }

@@ -21,7 +21,7 @@ var (
 	InstanceUrlField = field.StringField(
 		"instance-url",
 		field.WithDisplayName("Instance URL"),
-		field.WithDescription("URL of your Jamf Pro instance"),
+		field.WithDescription("Base URL of your Jamf Pro instance, including https:// (for example https://yourcompany.jamfcloud.com)"),
 		field.WithRequired(true),
 	)
 
