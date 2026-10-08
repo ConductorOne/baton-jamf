@@ -168,8 +168,7 @@ func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 }
 
 // rolePrincipal is the account or group whose role is being changed, as last
-// read from Jamf. Both Grant and Revoke wrap ctx with jamf.WithFreshReads, so a
-// write immediately followed by another getRolePrincipal observes the write.
+// read from Jamf.
 type rolePrincipal struct {
 	resourceType string // resourceTypeUserAccount.Id or resourceTypeGroup.Id
 	id           int

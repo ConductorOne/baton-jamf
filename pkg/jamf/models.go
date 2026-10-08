@@ -372,9 +372,8 @@ type UserGroupMemberMutation struct {
 }
 
 // UserSitesUpdateBody is the PUT body for /users/id/{id} carrying only the
-// <sites> block — per Classic API field-level-merge semantics (client.go
-// doc comment at doRequestWithMethod), sending only this element leaves the
-// rest of the user record (email, full_name, etc.) untouched.
+// <sites> block. A Classic API PUT only changes the elements it sends, so the
+// rest of the user record (email, full_name, etc.) is left untouched.
 type UserSitesUpdateBody struct {
 	XMLName xml.Name   `xml:"user"`
 	Sites   []BaseType `xml:"sites>site"`

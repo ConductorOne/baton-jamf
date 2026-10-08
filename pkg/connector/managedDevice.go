@@ -40,12 +40,15 @@ const (
 	matchKeyUsername = "username"
 )
 
-// assignee is the (username, email) identity the connector tracks and
-// compares a device's assignee against, independent of the jamf package's
-// request/response body shapes.
+// assignee is a device assignee's identity, independent of the jamf
+// package's request/response body shapes. Matching only uses username and
+// email; realname, position and phone are only written by a computer Grant.
 type assignee struct {
 	username string
 	email    string
+	realname string
+	position string
+	phone    string
 }
 
 func (a assignee) empty() bool {
@@ -237,14 +240,13 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 		return nil, nil, err
 	}
 
-	newUser, err := resolvePrincipalUser(ctx, d.client, principal)
+	newAssignee, err := resolvePrincipalUser(ctx, d.client, principal)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: resolve principal identity: %w", err)
 	}
-	if newUser.Username == "" {
+	if newAssignee.username == "" {
 		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: jamf user %s has no username", principal.Id.Resource)
 	}
-	newAssignee := assignee{username: newUser.Username, email: newUser.Email}
 
 	current, err := d.currentAssignedUser(ctx, entitlement.Resource)
 	if err != nil {
@@ -262,7 +264,7 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 	}
 
-	if err := d.setAssignedUser(ctx, entitlement.Resource, newUser); err != nil {
+	if err := d.setAssignedUser(ctx, entitlement.Resource, newAssignee); err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: %w", err)
 	}
 
@@ -336,7 +338,7 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 	// the same way via location.username alone (see
 	// SetMobileDeviceAssignedUser): Jamf drops the auto-populated fields
 	// together with it.
-	if err := d.setAssignedUser(ctx, gr.Entitlement.Resource, jamf.ComputerAssignedUserFields{}); err != nil {
+	if err := d.setAssignedUser(ctx, gr.Entitlement.Resource, assignee{}); err != nil {
 		return nil, fmt.Errorf("jamf-connector: revoke device assigned: %w", err)
 	}
 	return nil, nil
@@ -344,21 +346,25 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 
 // setAssignedUser dispatches to the computer or mobile-device client call
 // based on the device-type prefix deviceObjectID encoded into the resource
-// id at List() time. fields carries the full assignee identity a computer's
-// userAndLocation is written with; mobile devices only ever send
-// fields.Username (see SetMobileDeviceAssignedUser) — Jamf auto-populates
-// the rest for mobile devices, so the connector has no realname/email/
-// position/phone slot to send there.
-func (d *managedDeviceResourceType) setAssignedUser(ctx context.Context, resource *v2.Resource, fields jamf.ComputerAssignedUserFields) error {
+// id at List() time. A computer's userAndLocation is written with every
+// field of a; mobile devices only send a.username (Jamf auto-populates the
+// rest, see SetMobileDeviceAssignedUser). The zero assignee clears the device.
+func (d *managedDeviceResourceType) setAssignedUser(ctx context.Context, resource *v2.Resource, a assignee) error {
 	phase, id, err := parseDeviceObjectID(resource.Id.Resource)
 	if err != nil {
 		return err
 	}
 
 	if phase == devicePhaseComputer {
-		return d.client.SetComputerAssignedUser(ctx, id, fields)
+		return d.client.SetComputerAssignedUser(ctx, id, jamf.ComputerAssignedUserFields{
+			Username: a.username,
+			Realname: a.realname,
+			Email:    a.email,
+			Position: a.position,
+			Phone:    a.phone,
+		})
 	}
-	return d.client.SetMobileDeviceAssignedUser(ctx, id, fields.Username)
+	return d.client.SetMobileDeviceAssignedUser(ctx, id, a.username)
 }
 
 // currentAssignedUser fetches the device's CURRENT assignee directly from
@@ -407,27 +413,24 @@ func parseDeviceObjectID(objectID string) (string, string, error) {
 }
 
 // resolvePrincipalUser resolves a numeric-Jamf-user-id "user" principal's
-// ResourceId to the full set of Jamf user-record fields a computer Grant
-// writes to userAndLocation (username, realname, email, position, phone).
-// Revoke-side matching only reads back .Username/.Email from the result
-// (see principalIdentityForRevoke); the rest is Grant-only.
-func resolvePrincipalUser(ctx context.Context, client *jamf.Client, principal *v2.Resource) (jamf.ComputerAssignedUserFields, error) {
+// ResourceId to the assignee read from the Jamf user record.
+func resolvePrincipalUser(ctx context.Context, client *jamf.Client, principal *v2.Resource) (assignee, error) {
 	userID, err := parseResourceID(principal.Id.Resource, "jamf-connector: invalid user id")
 	if err != nil {
-		return jamf.ComputerAssignedUserFields{}, err
+		return assignee{}, err
 	}
 
 	user, err := client.GetUserDetails(ctx, userID)
 	if err != nil {
-		return jamf.ComputerAssignedUserFields{}, err
+		return assignee{}, err
 	}
 
-	return jamf.ComputerAssignedUserFields{
-		Username: user.LoginName(),
-		Realname: user.FullName,
-		Email:    user.PrimaryEmail(),
-		Position: user.Position,
-		Phone:    user.PhoneNumber,
+	return assignee{
+		username: user.LoginName(),
+		email:    user.PrimaryEmail(),
+		realname: user.FullName,
+		position: user.Position,
+		phone:    user.PhoneNumber,
 	}, nil
 }
 
@@ -505,11 +508,7 @@ func principalIdentityForRevoke(ctx context.Context, client *jamf.Client, gr *v2
 		return assignee{username: value}, nil
 	}
 
-	user, err := resolvePrincipalUser(ctx, client, gr.Principal)
-	if err != nil {
-		return assignee{}, err
-	}
-	return assignee{username: user.Username, email: user.Email}, nil
+	return resolvePrincipalUser(ctx, client, gr.Principal)
 }
 
 func managedDeviceBuilder(client *jamf.Client) *managedDeviceResourceType {
