@@ -158,13 +158,11 @@ baton resources
 - User Groups
 - Roles
 - Sites
-- Managed Devices — opt-in, off by default. Enable it by passing `managedDevice`
-  in `--sync-resource-types`/`$BATON_SYNC_RESOURCE_TYPES` alongside the other
-  resource type IDs you want to keep syncing (e.g.
-  `user,userAccount,group,userGroup,role,site,managedDevice`) — passing this
-  flag replaces the default set rather than adding to it, and listing only
-  `managedDevice` syncs nothing else. Provisioning for devices is only
-  available when `managedDevice` is included in the sync.
+- Managed Devices — opt-in in C1. Self-hosted runs sync it along with every
+  other type unless `--sync-resource-types`/`$BATON_SYNC_RESOURCE_TYPES`
+  leaves it out (e.g. `user,userAccount,group,userGroup,role,site`).
+  Provisioning for devices is only available when `managedDevice` is
+  included in the sync.
 
 Account creation/deletion and Grant/Revoke (see Capabilities above) all
 require `-p`/`$BATON_PROVISIONING`.
