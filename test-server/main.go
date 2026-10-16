@@ -43,13 +43,11 @@
 // responses are JSON, but POST/PUT request bodies must be XML — a JSON POST
 // body is rejected with 415, exactly like the real API.
 //
-// managedDevice (computers / mobile devices) is opt-in in the connector and
-// is NOT mocked here — it targets separate inventory endpoints outside
-// the scope of this test server (/api/v4/computers-inventory-detail/{id},
-// /api/v2/mobile-devices/{id}). Do not select it against this mock; Managed
-// Device Grant/Revoke has unit-test coverage only
-// (pkg/connector/managedDevice_test.go), not baton-test-against-this-mock
-// coverage.
+// Managed devices (computers and mobile devices) are mocked in devices.go:
+// the v4 computers-inventory list/detail/PATCH and the v2 mobile-devices
+// list/detail/PATCH endpoints. Seeded devices: computer 1 (john.appleseed),
+// computer 2 (eve.miller), computer 3 (unassigned), mobile 1 (jane.doe),
+// mobile 2 (unassigned).
 //
 // Grant/Revoke for User Groups (PUT .../usergroups/id/{id} with
 // <user_additions>/<user_deletions>) and Sites' `user` principal (PUT
@@ -189,6 +187,9 @@ type server struct {
 
 	sites      []jamf.Site
 	privileges []string
+
+	computers     []*jamf.ComputerInventory
+	mobileDevices []*mockMobileDevice
 }
 
 func newServer(username, password, token string) *server {
@@ -202,6 +203,7 @@ func newServer(username, password, token string) *server {
 		userGroups: make(map[int]*jamf.UserGroup),
 	}
 	s.seedData()
+	s.seedDevices()
 	return s
 }
 
@@ -1393,6 +1395,11 @@ func run() error {
 	mux.HandleFunc("/JSSResource/usergroups/id/", s.handleUserGroupByID)
 
 	mux.HandleFunc("/JSSResource/sites", s.handleListSites)
+
+	mux.HandleFunc("/api/v4/computers-inventory", s.handleListComputers)
+	mux.HandleFunc("/api/v4/computers-inventory-detail/", s.handleComputerDetail)
+	mux.HandleFunc("/api/v2/mobile-devices", s.handleListMobileDevices)
+	mux.HandleFunc("/api/v2/mobile-devices/", s.handleMobileDevice)
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 

@@ -1,0 +1,2041 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Jamf Pro API (baton-jamf surface)",
+    "version": "1.0.0",
+    "license": {
+      "name": "Proprietary (vendor API; spec describes connector usage only)",
+      "url": "https://developer.jamf.com/"
+    },
+    "description": "Subset of the Jamf Pro Classic (/JSSResource) and Jamf Pro (/api) APIs called by baton-jamf. Classic POST/PUT bodies are XML and responses are requested as JSON (Accept: application/json). Jamf Platform API gateway mode is not covered. Source: client code (pkg/jamf/client.go, device_client.go, models.go, device_models.go); not verified against vendor docs."
+  },
+  "servers": [
+    {
+      "url": "https://{instance}.jamfcloud.com",
+      "description": "Jamf Pro instance URL (configured per tenant)",
+      "variables": {
+        "instance": {
+          "default": "example"
+        }
+      }
+    }
+  ],
+  "tags": [
+    {
+      "name": "classic",
+      "description": "Classic API (XML request bodies, JSON responses)"
+    },
+    {
+      "name": "pro",
+      "description": "Jamf Pro API (JSON)"
+    }
+  ],
+  "paths": {
+    "/JSSResource/users": {
+      "get": {
+        "operationId": "listUsers",
+        "summary": "List users (id and name only)",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BaseType"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/JSSResource/users/id/{id}": {
+      "get": {
+        "operationId": "getUserById",
+        "summary": "Get user by id",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createUser",
+        "summary": "Create user (id must be 0; server assigns the real id)",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Callers treat 409 as already exists.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "XML user body",
+          "content": {
+            "application/xml": {
+              "schema": {
+                "$ref": "#/components/schemas/UserCreateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; response body is not decoded by the connector"
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateUserSitesById",
+        "summary": "Replace the user's sites list",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Classic PUT only changes the elements sent.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "XML user body carrying only <sites>",
+          "content": {
+            "application/xml": {
+              "schema": {
+                "$ref": "#/components/schemas/UserSitesUpdateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; response body is not decoded by the connector"
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteUserById",
+        "summary": "Delete user",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; response body is not decoded by the connector"
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/JSSResource/users/name/{name}": {
+      "get": {
+        "operationId": "getUserByName",
+        "summary": "Get user by login name",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "name",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/JSSResource/accounts": {
+      "get": {
+        "operationId": "listAccounts",
+        "summary": "List admin accounts and groups (id and name only)",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accounts": {
+                      "$ref": "#/components/schemas/BaseAccount"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/JSSResource/accounts/userid/{id}": {
+      "get": {
+        "operationId": "getAccountById",
+        "summary": "Get admin account by id",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "account": {
+                      "$ref": "#/components/schemas/UserAccount"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createAccount",
+        "summary": "Create admin account (id must be 0)",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "XML account body",
+          "content": {
+            "application/xml": {
+              "schema": {
+                "$ref": "#/components/schemas/UserAccountCreateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; response body is not decoded by the connector"
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateAccountPrivilegesById",
+        "summary": "Update an account's name, privilege_set and privileges",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "privileges is sent only when privilege_set is Custom; an empty <privileges> element must be sent explicitly for Custom with no privileges.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "XML account body",
+          "content": {
+            "application/xml": {
+              "schema": {
+                "$ref": "#/components/schemas/PrivilegesUpdateAccountBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; response body is not decoded by the connector"
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAccountById",
+        "summary": "Delete admin account",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success; response body is not decoded by the connector"
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/JSSResource/accounts/username/{name}": {
+      "get": {
+        "operationId": "getAccountByUsername",
+        "summary": "Get admin account by username",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "name",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "account": {
+                      "$ref": "#/components/schemas/UserAccount"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/JSSResource/accounts/groupid/{id}": {
+      "get": {
+        "operationId": "getAccountGroupById",
+        "summary": "Get admin account group by id",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "group": {
+                      "$ref": "#/components/schemas/Group"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateAccountGroupById",
+        "summary": "Update a group's privileges or membership",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "members is the complete desired list; an empty <members> element clears membership.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "XML group body. Privilege changes send name+privilege_set+privileges; membership changes send name+members (never both).",
+          "content": {
+            "application/xml": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PrivilegesUpdateGroupBody"
+                  },
+                  {
+                    "$ref": "#/components/schemas/GroupMembersUpdateBody"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; response body is not decoded by the connector"
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/JSSResource/usergroups": {
+      "get": {
+        "operationId": "listUserGroups",
+        "summary": "List user groups (id and name only)",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_groups": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/UserGroup"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/JSSResource/usergroups/id/{id}": {
+      "get": {
+        "operationId": "getUserGroupById",
+        "summary": "Get user group by id",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_group": {
+                      "$ref": "#/components/schemas/UserGroup"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateUserGroupMembersById",
+        "summary": "Add or remove users in a static user group",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "XML user_group body; exactly one of user_additions/user_deletions",
+          "content": {
+            "application/xml": {
+              "schema": {
+                "$ref": "#/components/schemas/UserGroupMemberMutation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; response body is not decoded by the connector"
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/JSSResource/sites": {
+      "get": {
+        "operationId": "listSites",
+        "summary": "List sites",
+        "tags": [
+          "classic"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sites": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BaseType"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/token": {
+      "post": {
+        "operationId": "createBearerToken",
+        "summary": "Create a bearer token from basic credentials",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "basicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/api/v1/auth": {
+      "get": {
+        "operationId": "getAuthDetails",
+        "summary": "Get details of the current token's account",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenDetails"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/keep-alive": {
+      "post": {
+        "operationId": "keepAliveToken",
+        "summary": "Invalidate the current token and issue a new one",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Called when more than 5 minutes passed since the last token refresh.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/api/v1/api-role-privileges": {
+      "get": {
+        "operationId": "listApiRolePrivileges",
+        "summary": "List all Jamf Pro API role privilege names",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivilegesResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/api/v4/computers-inventory": {
+      "get": {
+        "operationId": "listComputersInventory",
+        "summary": "List computers inventory (one page)",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "section",
+            "in": "query",
+            "required": false,
+            "style": "form",
+            "explode": true,
+            "description": "Inventory section; repeated. The connector always sends GENERAL, HARDWARE, OPERATING_SYSTEM, USER_AND_LOCATION, DISK_ENCRYPTION and SECURITY; only GENERAL is returned when omitted.",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "GENERAL",
+                  "HARDWARE",
+                  "OPERATING_SYSTEM",
+                  "USER_AND_LOCATION",
+                  "DISK_ENCRYPTION",
+                  "SECURITY"
+                ]
+              },
+              "default": [
+                "GENERAL",
+                "HARDWARE",
+                "OPERATING_SYSTEM",
+                "USER_AND_LOCATION",
+                "DISK_ENCRYPTION",
+                "SECURITY"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "Zero-indexed page number. The connector requests page 0 first and increments until (page+1)*page-size >= totalCount.",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "page-size",
+            "in": "query",
+            "required": false,
+            "description": "Page size; set by the connector on every call.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputersInventoryResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/api/v4/computers-inventory-detail/{id}": {
+      "get": {
+        "operationId": "getComputerInventoryDetail",
+        "summary": "Get a computer's inventory detail",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputerInventory"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "setComputerAssignedUser",
+        "summary": "Set or clear the assigned user on a computer",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "JSON body; all five keys always sent, empty string clears",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComputerAssignedUserUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; response body is not decoded by the connector"
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/api/v2/mobile-devices": {
+      "get": {
+        "operationId": "listMobileDevices",
+        "summary": "List mobile devices (one page)",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "Zero-indexed page number. The connector requests page 0 first and increments until (page+1)*page-size >= totalCount.",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "page-size",
+            "in": "query",
+            "required": false,
+            "description": "Page size; set by the connector on every call.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileDevicesResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/api/v2/mobile-devices/{id}/detail": {
+      "get": {
+        "operationId": "getMobileDeviceDetail",
+        "summary": "Get a mobile device's detail (location only modeled)",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MobileDeviceDetail"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/api/v2/mobile-devices/{id}": {
+      "patch": {
+        "operationId": "setMobileDeviceAssignedUser",
+        "summary": "Set or clear the assigned user on a mobile device",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "JSON body; empty username string clears the assignee",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MobileDeviceAssignedUserUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success; response body is not decoded by the connector"
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "basicAuth": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "Used only for POST /api/v1/auth/token"
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Token from /api/v1/auth/token; sent via Authorization header"
+      }
+    },
+    "schemas": {
+      "BaseType": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "xml": {
+          "name": "user"
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "full_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "email_address": {
+            "type": "string",
+            "description": "Fallback when email is empty"
+          },
+          "username": {
+            "type": "string",
+            "description": "Login name; connector falls back to name when empty"
+          },
+          "position": {
+            "type": "string"
+          },
+          "phone_number": {
+            "type": "string",
+            "description": "Classic key for phone (not 'phone')"
+          },
+          "sites": {
+            "type": "array",
+            "description": "Live tenants return a flat list of {id,name}; the documented Classic shape wraps each entry as {site:{id,name}}. The connector accepts both.",
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/BaseType"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "site": {
+                      "$ref": "#/components/schemas/BaseType"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "BaseAccount": {
+        "type": "object",
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/User"
+            }
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Group"
+            }
+          }
+        }
+      },
+      "UserAccount": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "full_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "email_address": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "string",
+            "description": "String value (e.g. Enabled/Disabled)"
+          },
+          "access_level": {
+            "type": "string"
+          },
+          "privilege_set": {
+            "type": "string"
+          },
+          "privileges": {
+            "$ref": "#/components/schemas/Privileges"
+          },
+          "site": {
+            "$ref": "#/components/schemas/BaseType"
+          }
+        }
+      },
+      "Group": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "access_level": {
+            "type": "string"
+          },
+          "privilege_set": {
+            "type": "string",
+            "enum": [
+              "Administrator",
+              "Auditor",
+              "Enrollment Only",
+              "Custom"
+            ]
+          },
+          "privileges": {
+            "$ref": "#/components/schemas/Privileges"
+          },
+          "site": {
+            "$ref": "#/components/schemas/BaseType"
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BaseType"
+            }
+          }
+        }
+      },
+      "Privileges": {
+        "type": "object",
+        "properties": {
+          "jss_objects": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "xml": {
+                "name": "privilege"
+              }
+            },
+            "xml": {
+              "name": "jss_objects",
+              "wrapped": true
+            }
+          },
+          "jss_settings": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "xml": {
+                "name": "privilege"
+              }
+            },
+            "xml": {
+              "name": "jss_settings",
+              "wrapped": true
+            }
+          },
+          "jss_actions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "xml": {
+                "name": "privilege"
+              }
+            },
+            "xml": {
+              "name": "jss_actions",
+              "wrapped": true
+            }
+          },
+          "recon": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "xml": {
+                "name": "privilege"
+              }
+            },
+            "xml": {
+              "name": "recon",
+              "wrapped": true
+            }
+          },
+          "casper_admin": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "xml": {
+                "name": "privilege"
+              }
+            },
+            "xml": {
+              "name": "casper_admin",
+              "wrapped": true
+            }
+          },
+          "casper_remote": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "xml": {
+                "name": "privilege"
+              }
+            },
+            "xml": {
+              "name": "casper_remote",
+              "wrapped": true
+            }
+          },
+          "casper_imaging": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "xml": {
+                "name": "privilege"
+              }
+            },
+            "xml": {
+              "name": "casper_imaging",
+              "wrapped": true
+            }
+          }
+        }
+      },
+      "UserGroup": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "is_smart": {
+            "type": "boolean"
+          },
+          "site": {
+            "$ref": "#/components/schemas/BaseType"
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/User"
+            }
+          }
+        }
+      },
+      "TokenResponse": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "expires": {
+            "type": "string"
+          }
+        }
+      },
+      "TokenDetails": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/TokenAccount"
+          },
+          "sites": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "authenticationType": {
+            "type": "string"
+          }
+        }
+      },
+      "TokenAccount": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "realName": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "multiSiteAdmin": {
+            "type": "boolean"
+          },
+          "accessLevel": {
+            "type": "string"
+          },
+          "privilegeSet": {
+            "type": "string"
+          },
+          "currentSiteId": {
+            "type": "string"
+          }
+        }
+      },
+      "PrivilegesResponse": {
+        "type": "object",
+        "properties": {
+          "privileges": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "UserCreateBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "full_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "xml": {
+          "name": "user"
+        }
+      },
+      "UserSitesUpdateBody": {
+        "type": "object",
+        "properties": {
+          "sites": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BaseType"
+            },
+            "xml": {
+              "wrapped": true,
+              "name": "sites"
+            }
+          }
+        },
+        "xml": {
+          "name": "user"
+        },
+        "description": "Each element is <site><id>..</id></site>."
+      },
+      "UserAccountCreateBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string",
+            "format": "password"
+          },
+          "full_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "string"
+          },
+          "access_level": {
+            "type": "string"
+          },
+          "privilege_set": {
+            "type": "string"
+          },
+          "privileges": {
+            "$ref": "#/components/schemas/Privileges"
+          }
+        },
+        "required": [
+          "name",
+          "password"
+        ],
+        "xml": {
+          "name": "account"
+        }
+      },
+      "PrivilegesUpdateAccountBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "privilege_set": {
+            "type": "string"
+          },
+          "privileges": {
+            "$ref": "#/components/schemas/Privileges"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "xml": {
+          "name": "account"
+        }
+      },
+      "PrivilegesUpdateGroupBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "privilege_set": {
+            "type": "string"
+          },
+          "privileges": {
+            "$ref": "#/components/schemas/Privileges"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "xml": {
+          "name": "group"
+        }
+      },
+      "GroupMembersUpdateBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "members": {
+            "type": "object",
+            "properties": {
+              "user": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BaseType"
+                }
+              }
+            },
+            "xml": {
+              "name": "members"
+            }
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "xml": {
+          "name": "group"
+        }
+      },
+      "UserGroupMemberMutation": {
+        "type": "object",
+        "properties": {
+          "user_additions": {
+            "type": "object",
+            "properties": {
+              "user": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BaseType"
+                }
+              }
+            },
+            "xml": {
+              "name": "user_additions"
+            }
+          },
+          "user_deletions": {
+            "type": "object",
+            "properties": {
+              "user": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/BaseType"
+                }
+              }
+            },
+            "xml": {
+              "name": "user_deletions"
+            }
+          }
+        },
+        "xml": {
+          "name": "user_group"
+        }
+      },
+      "ComputersInventoryResponse": {
+        "type": "object",
+        "properties": {
+          "totalCount": {
+            "type": "integer"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ComputerInventory"
+            }
+          }
+        }
+      },
+      "ComputerInventory": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "udid": {
+            "type": "string"
+          },
+          "general": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "lastEnrolledDate": {
+                "type": "string"
+              },
+              "supervised": {
+                "type": "boolean"
+              },
+              "mdmCapable": {
+                "type": "object",
+                "properties": {
+                  "capable": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "remoteManagement": {
+                "type": "object",
+                "properties": {
+                  "managed": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "site": {
+                "$ref": "#/components/schemas/NamedRef"
+              }
+            }
+          },
+          "hardware": {
+            "type": "object",
+            "properties": {
+              "make": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "modelIdentifier": {
+                "type": "string"
+              },
+              "serialNumber": {
+                "type": "string"
+              }
+            }
+          },
+          "operatingSystem": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              },
+              "build": {
+                "type": "string"
+              }
+            }
+          },
+          "userAndLocation": {
+            "type": "object",
+            "properties": {
+              "username": {
+                "type": "string"
+              },
+              "realname": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "emailAddress": {
+                "type": "string",
+                "description": "No v4 key; kept as connector fallback"
+              },
+              "position": {
+                "type": "string"
+              },
+              "phone": {
+                "type": "string"
+              },
+              "departmentId": {
+                "type": "string"
+              },
+              "buildingId": {
+                "type": "string"
+              },
+              "room": {
+                "type": "string"
+              }
+            }
+          },
+          "diskEncryption": {
+            "type": "object",
+            "properties": {
+              "bootPartitionEncryptionDetails": {
+                "type": "object",
+                "properties": {
+                  "partitionName": {
+                    "type": "string"
+                  },
+                  "partitionFileVault2State": {
+                    "type": "string",
+                    "description": "Enum string, e.g. ENCRYPTED / NOT_ENCRYPTED / DECRYPTED; full value set unproven"
+                  }
+                }
+              }
+            }
+          },
+          "security": {
+            "type": "object",
+            "properties": {
+              "sipStatus": {
+                "type": "string"
+              },
+              "gatekeeperStatus": {
+                "type": "string"
+              },
+              "activationLockEnabled": {
+                "type": "boolean"
+              },
+              "recoveryLockEnabled": {
+                "type": "boolean"
+              },
+              "firewallEnabled": {
+                "type": "boolean"
+              },
+              "secureBootLevel": {
+                "type": "string"
+              },
+              "externalBootLevel": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "description": "Sections other than id/udid are present only when requested via section."
+      },
+      "NamedRef": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "ComputerAssignedUserUpdate": {
+        "type": "object",
+        "properties": {
+          "userAndLocation": {
+            "type": "object",
+            "properties": {
+              "username": {
+                "type": "string"
+              },
+              "realname": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              },
+              "position": {
+                "type": "string"
+              },
+              "phone": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "username",
+              "realname",
+              "email",
+              "position",
+              "phone"
+            ]
+          }
+        },
+        "required": [
+          "userAndLocation"
+        ]
+      },
+      "MobileDevicesResponse": {
+        "type": "object",
+        "properties": {
+          "totalCount": {
+            "type": "integer"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MobileDevice"
+            }
+          }
+        }
+      },
+      "MobileDevice": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "serialNumber": {
+            "type": "string"
+          },
+          "udid": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "modelIdentifier": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "managed": {
+            "type": "boolean"
+          },
+          "supervised": {
+            "type": "boolean"
+          },
+          "osVersion": {
+            "type": "string"
+          },
+          "osBuild": {
+            "type": "string"
+          },
+          "wifiMacAddress": {
+            "type": "string"
+          },
+          "phoneNumber": {
+            "type": "string"
+          }
+        }
+      },
+      "MobileDeviceDetail": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "location": {
+            "type": "object",
+            "properties": {
+              "username": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "MobileDeviceAssignedUserUpdate": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "object",
+            "properties": {
+              "username": {
+                "type": "string",
+                "description": "Empty string clears the assignee and auto-populated fields; null/{} are silent no-ops"
+              }
+            },
+            "required": [
+              "username"
+            ]
+          }
+        },
+        "required": [
+          "location"
+        ]
+      }
+    }
+  }
+}

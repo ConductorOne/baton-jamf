@@ -42,3 +42,92 @@ jobs:
         uses: guyarb/golang-test-annotations@v0.5.1
         with:
           test-results: test.json
+  integration-test:
+    runs-on: ubuntu-latest
+    env:
+      BATON_LOG_LEVEL: debug
+      # The mock's default credentials and seeded fixtures (test-server/main.go
+      # and test-server/devices.go), not a real tenant.
+      BATON_USERNAME: test-user
+      BATON_PASSWORD: test-pass
+      BATON_INSTANCE_URL: http://localhost:8090
+      BATON_SYNC_RESOURCE_TYPES: user,group,userAccount,site,userGroup,role,managedDevice
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build baton-jamf
+        run: go build -o baton-jamf ./cmd/baton-jamf
+      - name: Build test server
+        run: go build -o test-server-bin ./test-server
+      - name: Start test server
+        run: ./test-server-bin &
+      - name: Wait for test server
+        run: |
+          for i in $(seq 1 10); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8090/JSSResource/sites)" = "401" ] && exit 0
+            sleep 1
+          done
+          echo "Test server failed to start"; exit 1
+      - name: Run sync
+        run: ./baton-jamf
+      - name: Grant/Revoke admin group
+        uses: ConductorOne/github-workflows/actions/sync-test@v4
+        with:
+          connector: ./baton-jamf
+          baton-entitlement: group:202:member
+          baton-principal: '104'
+          baton-principal-type: userAccount
+          required-secrets: BATON_USERNAME,BATON_PASSWORD
+      - name: Grant/Revoke user group
+        uses: ConductorOne/github-workflows/actions/sync-test@v4
+        with:
+          connector: ./baton-jamf
+          baton-entitlement: userGroup:301:member
+          baton-principal: '3'
+          baton-principal-type: user
+          required-secrets: BATON_USERNAME,BATON_PASSWORD
+      - name: Grant/Revoke site
+        uses: ConductorOne/github-workflows/actions/sync-test@v4
+        with:
+          connector: ./baton-jamf
+          baton-entitlement: site:1:member
+          baton-principal: '3'
+          baton-principal-type: user
+          required-secrets: BATON_USERNAME,BATON_PASSWORD
+      - name: Grant/Revoke role
+        uses: ConductorOne/github-workflows/actions/sync-test@v4
+        with:
+          connector: ./baton-jamf
+          baton-entitlement: 'role:Update User:member'
+          baton-principal: '103'
+          baton-principal-type: userAccount
+          required-secrets: BATON_USERNAME,BATON_PASSWORD
+      # sync-test re-grants after revoking, but a device's assigned
+      # entitlement only exists while the device has an assignee, so devices
+      # run grant, re-grant, revoke and re-revoke without the final re-grant.
+      - name: Install baton
+        uses: ConductorOne/github-workflows/actions/get-baton@v4
+      - name: Grant/Revoke managed devices
+        run: |
+          set -euo pipefail
+          grants() {
+            baton grants --entitlement="$1" --output-format=json \
+              | jq "[.grants // [] | .[] | select(.principal.id.resource == \"$2\")]"
+          }
+          for ent in managedDevice:computer:2:assigned managedDevice:mobile:1:assigned; do
+            ./baton-jamf --grant-entitlement="$ent" --grant-principal=3 --grant-principal-type=user
+            ./baton-jamf --grant-entitlement="$ent" --grant-principal=3 --grant-principal-type=user
+            ./baton-jamf
+            grant_id=$(grants "$ent" 3 | jq --raw-output --exit-status '.[0].grant.id')
+            ./baton-jamf --revoke-grant="$grant_id"
+            ./baton-jamf --revoke-grant="$grant_id"
+            ./baton-jamf
+            grants "$ent" 3 | jq --exit-status 'length == 0'
+          done
+      - name: Stop test server
+        if: always()
+        run: pkill -f test-server-bin || true
