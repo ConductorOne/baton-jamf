@@ -14,7 +14,7 @@ This document provides information needed to set up and use the connector.
 | **User Group** | Directory user group (static or smart), with membership. |
 | **Role** | Static privilege sets (Administrator, Auditor, Enrollment Only) plus custom privileges surfaced via the Jamf API privileges endpoint. Membership reflects which groups/accounts hold each privilege. |
 | **Site** | Jamf Pro site. Membership reflects which users, user groups, accounts, and groups are scoped to that site. |
-| **Managed Device** | Computers and mobile devices from Jamf Pro inventory. **Opt-in** — off by default, must be explicitly selected via `--sync-resource-types managedDevice`. Requires the **Read Computers** and **Read Mobile Devices** Jamf API privileges when enabled. |
+| **Managed Device** | Computers and mobile devices from Jamf Pro inventory. **Opt-in** in C1 — off until the Managed Device resource type is selected in the sync configuration. Requires the **Read Computers** and **Read Mobile Devices** Jamf API privileges when enabled. |
 
 ### 2. Can the connector provision any resources? If so, which ones?
 
@@ -36,7 +36,7 @@ Only the configured target advertises account creation; Delete works for both ty
 
 ### 3. Managed Devices is opt-in
 
-Managed Devices is off by default so existing connectors keep working after upgrading. Self-hosted, set `BATON_SYNC_RESOURCE_TYPES` (or `--sync-resource-types`) to `user,userAccount,group,userGroup,role,site,managedDevice` to sync everything including devices — this flag replaces the default sync set rather than adding to it, so listing only `managedDevice` syncs nothing else. Provisioning for devices is only available when `managedDevice` is included in the sync.
+Managed Devices is off by default in C1 so existing connectors keep working after upgrading. Self-hosted runs sync it with every other type; to skip it, set `BATON_SYNC_RESOURCE_TYPES` (or `--sync-resource-types`) to `user,userAccount,group,userGroup,role,site`. Provisioning for devices is only available when `managedDevice` is included in the sync.
 
 ## Connector Credentials
 
