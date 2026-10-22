@@ -4,6 +4,11 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/field"
 )
 
+const (
+	UsernamePasswordGroup = "username-password"
+	APIClientGroup        = "api-client"
+)
+
 var (
 	UsernameField = field.StringField(
 		"username",
@@ -22,6 +27,21 @@ var (
 		"instance-url",
 		field.WithDisplayName("Instance URL"),
 		field.WithDescription("Base URL of your Jamf Pro instance, including https:// (for example https://yourcompany.jamfcloud.com)"),
+		field.WithRequired(true),
+	)
+
+	// The SDK already owns client-id and client-secret for ConductorOne credentials.
+	ClientIDField = field.StringField(
+		"jamf-client-id",
+		field.WithDisplayName("API Client ID"),
+		field.WithDescription("Client ID of a Jamf Pro API client"),
+		field.WithRequired(true),
+	)
+	ClientSecretField = field.StringField(
+		"jamf-client-secret",
+		field.WithDisplayName("API Client Secret"),
+		field.WithDescription("Client secret of a Jamf Pro API client"),
+		field.WithIsSecret(true),
 		field.WithRequired(true),
 	)
 
@@ -51,6 +71,8 @@ var (
 		PasswordField,
 		InstanceUrlField,
 		CreateAccountResourceTypeField,
+		ClientIDField,
+		ClientSecretField,
 	}
 
 	// FieldRelationships defines relationships between the fields listed in
@@ -65,4 +87,19 @@ var Config = field.NewConfiguration(
 	field.WithConnectorDisplayName("Jamf"),
 	field.WithHelpUrl("/docs/baton/jamf"),
 	field.WithIconUrl("/static/app-icons/jamf.svg"),
+	field.WithFieldGroups([]field.SchemaFieldGroup{
+		{
+			Name:        UsernamePasswordGroup,
+			DisplayName: "Username and password",
+			HelpText:    "Authenticate as a local Jamf Pro account.",
+			Fields:      []field.SchemaField{UsernameField, PasswordField, InstanceUrlField, CreateAccountResourceTypeField},
+			Default:     true,
+		},
+		{
+			Name:        APIClientGroup,
+			DisplayName: "API client",
+			HelpText:    "Authenticate with a Jamf Pro API client and the API roles assigned to it.",
+			Fields:      []field.SchemaField{ClientIDField, ClientSecretField, InstanceUrlField, CreateAccountResourceTypeField},
+		},
+	}),
 )

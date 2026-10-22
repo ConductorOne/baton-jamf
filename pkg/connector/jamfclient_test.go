@@ -7,6 +7,7 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
+	"golang.org/x/oauth2"
 )
 
 // newTestJamfClient spins up an httptest.Server driven by handler and returns
@@ -20,5 +21,9 @@ func newTestJamfClient(t *testing.T, handler http.HandlerFunc) *jamf.Client {
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	return jamf.NewClient(uhttp.NewBaseHttpClient(server.Client()), "user", "pass", "test-token", server.URL)
+	client, err := jamf.NewClient(uhttp.NewBaseHttpClient(server.Client()), server.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return client
 }
