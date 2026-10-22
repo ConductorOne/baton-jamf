@@ -13,6 +13,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"golang.org/x/oauth2"
 )
 
 var (
@@ -90,26 +91,29 @@ func (j *Jamf) userAccountProvisioningActive() bool {
 	return j.accountProvisioningTarget == resourceTypeUserAccount.Id
 }
 
-func New(ctx context.Context, cc *cfg.Jamf, _ *cli.ConnectorOpts) (connectorbuilder.ConnectorBuilderV2, []connectorbuilder.Opt, error) {
+func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorbuilder.ConnectorBuilderV2, []connectorbuilder.Opt, error) {
 	httpClient, err := uhttp.NewClient(ctx, uhttp.WithLogger(true, ctxzap.Extract(ctx)))
 	if err != nil {
 		return nil, nil, err
 	}
 
-	client := jamf.NewClient(
-		uhttp.NewBaseHttpClient(httpClient),
-		cc.Username,
-		cc.Password,
-		"",
-		cc.InstanceUrl,
-	)
+	wrapper := uhttp.NewBaseHttpClient(httpClient)
 
-	token, err := client.CreateBearerToken(ctx, cc.Username, cc.Password)
-	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: failed to get token: %w", err)
+	var tokenSource oauth2.TokenSource
+	switch opts.SelectedAuthMethod {
+	case cfg.APIClientGroup:
+		tokenSource, err = jamf.NewAPIClientTokenSource(wrapper, cc.InstanceUrl, cc.JamfClientId, cc.JamfClientSecret)
+	default:
+		tokenSource, err = jamf.NewBasicTokenSource(wrapper, cc.InstanceUrl, cc.Username, cc.Password)
 	}
-	client.SetBearerToken(token)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: failed to create token source: %w", err)
+	}
 
+	client, err := jamf.NewClient(wrapper, cc.InstanceUrl, tokenSource)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: failed to create client: %w", err)
+	}
 	accountProvisioningTarget := cc.CreateAccountResourceType
 	if accountProvisioningTarget == "" {
 		accountProvisioningTarget = resourceTypeUser.Id

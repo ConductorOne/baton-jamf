@@ -8,11 +8,12 @@ import (
 	"io"
 	"net/http"
 	liburl "net/url"
-	"time"
+	"strings"
 
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
+	"golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -30,8 +31,10 @@ const (
 	userUrlPath            = "/JSSResource/users/id/%d"
 	userNameUrlPath        = "/JSSResource/users/name/%s"
 	usersUrlPath           = "/JSSResource/users"
-	keepAliveUrlPath       = "/api/v1/auth/keep-alive"
+	oauthTokenUrlPath      = "/api/v1/oauth/token" //nolint:gosec // not a token
 	privilegesUrlPath      = "/api/v1/api-role-privileges"
+
+	classicAPIPathPrefix = "/JSSResource/"
 
 	// newResourceID is the Jamf Classic API sentinel used in the URL path when
 	// creating a new user or account — the server assigns the real ID and
@@ -40,13 +43,9 @@ const (
 )
 
 type Client struct {
-	wrapper       *uhttp.BaseHttpClient
-	token         string
-	instanceURL   string
-	lastKeepAlive time.Time
-
-	userName string
-	password string
+	wrapper     *uhttp.BaseHttpClient
+	instanceURL string
+	tokenSource oauth2.TokenSource
 }
 
 // freshReadsContextKey marks a context as requiring GET requests to bypass
@@ -72,26 +71,25 @@ func wantsFreshReads(ctx context.Context) bool {
 	return v
 }
 
-func NewClient(
-	wrapper *uhttp.BaseHttpClient,
-	userName string,
-	password string,
-	token string,
-	instanceURL string,
-) *Client {
-	return &Client{
-		wrapper:       wrapper,
-		token:         token,
-		instanceURL:   instanceURL,
-		lastKeepAlive: time.Now(),
-		userName:      userName,
-		password:      password,
+// NewClient validates instanceURL and returns a client that authenticates with tokenSource.
+func NewClient(wrapper *uhttp.BaseHttpClient, instanceURL string, tokenSource oauth2.TokenSource) (*Client, error) {
+	if err := validateInstanceURL(instanceURL); err != nil {
+		return nil, err
 	}
+	return &Client{
+		wrapper:     wrapper,
+		instanceURL: instanceURL,
+		tokenSource: tokenSource,
+	}, nil
 }
 
-func (c *Client) SetBearerToken(token string) {
-	c.lastKeepAlive = time.Now()
-	c.token = token
+// validateInstanceURL fails fast on a URL without a scheme or host instead of an obscure error mid-sync.
+func validateInstanceURL(instanceURL string) error {
+	parsed, err := liburl.Parse(instanceURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return status.Errorf(codes.InvalidArgument, "invalid instance URL %q: it must look like https://yourcompany.jamfcloud.com", instanceURL)
+	}
+	return nil
 }
 
 func (c *Client) getUrl(path string) (*liburl.URL, error) {
@@ -100,95 +98,6 @@ func (c *Client) getUrl(path string) (*liburl.URL, error) {
 		return nil, err
 	}
 	return liburl.Parse(urlString)
-}
-
-func (c *Client) keepAliveToken(
-	ctx context.Context,
-) error {
-	l := ctxzap.Extract(ctx)
-
-	if c.token == "" {
-		return fmt.Errorf("token is empty")
-	}
-
-	if time.Since(c.lastKeepAlive) < 5*time.Minute {
-		return nil
-	}
-
-	l.Debug("Refreshing token")
-
-	url, err := c.getUrl(keepAliveUrlPath)
-	if err != nil {
-		return err
-	}
-
-	request, err := c.wrapper.NewRequest(
-		ctx,
-		http.MethodPost,
-		url,
-		uhttp.WithAcceptJSONHeader(),
-		uhttp.WithContentTypeJSONHeader(),
-		uhttp.WithHeader(
-			"Authorization",
-			fmt.Sprintf("Bearer %s", c.token),
-		),
-	)
-	if err != nil {
-		return err
-	}
-
-	var target TokenResponse
-	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(&target))
-	if err != nil {
-		return err
-	}
-	err = response.Body.Close()
-	if err != nil {
-		return err
-	}
-
-	c.token = target.Token
-	c.lastKeepAlive = time.Now()
-
-	return nil
-}
-
-// CreateBearerToken creates bearer token needed to use the Jamf API.
-func (c *Client) CreateBearerToken(
-	ctx context.Context,
-	username string,
-	password string,
-) (string, error) {
-	l := ctxzap.Extract(ctx)
-
-	l.Debug("Creating bearer token")
-	url, err := c.getUrl(tokenUrlPath)
-	if err != nil {
-		return "", err
-	}
-
-	request, err := c.wrapper.NewRequest(
-		ctx,
-		http.MethodPost,
-		url,
-		uhttp.WithAcceptJSONHeader(),
-		uhttp.WithContentTypeJSONHeader(),
-	)
-	if err != nil {
-		return "", err
-	}
-	request.SetBasicAuth(username, password)
-
-	var target TokenResponse
-	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(&target))
-	if err != nil {
-		return "", err
-	}
-	err = response.Body.Close()
-	if err != nil {
-		return "", err
-	}
-	return target.Token, nil
 }
 
 // GetTokenDetails gets authorization details associated with the current api token.
@@ -629,7 +538,7 @@ func (c *Client) doRequestWithJSONMethod(
 
 // doRequestWithMethodAndBodyEncoding is the shared implementation behind
 // doRequestWithMethod (XML, Classic API) and doRequestWithJSONMethod (JSON,
-// Pro API) — same auth/retry/decode behavior, differing only in how reqBody
+// Pro API) — same auth/decode behavior, differing only in how reqBody
 // is encoded onto the wire.
 //
 // GET requests made with a ctx wrapped by WithFreshReads bypass the HTTP
@@ -644,20 +553,18 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 ) error {
 	l := ctxzap.Extract(ctx)
 
-	err := c.keepAliveToken(ctx)
+	token, err := c.tokenSource.Token()
 	if err != nil {
-		return err
+		// A token endpoint 404 is a wrong instance URL; as NotFound, Revoke and Delete would report success.
+		if status.Code(err) == codes.NotFound {
+			return uhttp.WrapErrors(codes.InvalidArgument, "jamf token endpoint not found: check the instance URL", err)
+		}
+		return fmt.Errorf("failed to get a Jamf token: %w", err)
 	}
 
-	firstTry := true
-
-GotoRetry:
 	requestOpts := []uhttp.RequestOption{
 		uhttp.WithAcceptJSONHeader(),
-		uhttp.WithHeader(
-			"Authorization",
-			fmt.Sprintf("Bearer %s", c.token),
-		),
+		uhttp.WithBearerToken(token.AccessToken),
 	}
 	if method == http.MethodGet && wantsFreshReads(ctx) {
 		requestOpts = append(requestOpts, uhttp.WithNoCache())
@@ -683,18 +590,10 @@ GotoRetry:
 		// (CreateAccount already-exists, Delete not-found), so logging at
 		// Error would misrepresent expected idempotent outcomes as failures.
 		l.Debug("failed to perform request", zap.Error(err))
-		if status.Code(err) == codes.Unauthenticated && firstTry {
-			l.Debug("retrying request with new token")
-			token, err := c.CreateBearerToken(ctx, c.userName, c.password)
-			if err != nil {
-				return err
-			}
-
-			c.SetBearerToken(token)
-			firstTry = false
-
-			l.Debug("retrying request with new token")
-			goto GotoRetry
+		// Jamf's Classic API answers a missing privilege with 401; a revoked token looks the same.
+		if status.Code(err) == codes.Unauthenticated && strings.Contains(url.Path, classicAPIPathPrefix) {
+			return uhttp.WrapErrors(codes.PermissionDenied,
+				fmt.Sprintf("jamf rejected %s %s with 401: the account or API client likely lacks the Jamf privilege this operation needs, or its token was revoked", method, url.Path), err)
 		}
 		return err
 	}
@@ -710,17 +609,11 @@ GotoRetry:
 	}
 	err = json.Unmarshal(body, target)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal json response: %w. status code: %d. body %v", err, response.StatusCode, logBody(body, 2048))
+		return fmt.Errorf("failed to unmarshal json response: %w. status code: %d. content type: %q. body omitted (%d bytes)",
+			err, response.StatusCode, response.Header.Get("Content-Type"), len(body))
 	}
 
 	return nil
-}
-
-func logBody(body []byte, size int) string {
-	if len(body) > size {
-		return string(body[:size]) + " ..."
-	}
-	return string(body)
 }
 
 func (c *Client) GetPrivileges(ctx context.Context) (*PrivilegesResponse, error) {
