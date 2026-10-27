@@ -2,9 +2,9 @@ package jamf
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	liburl "net/url"
+	"sync"
 	"time"
 
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
@@ -12,8 +12,32 @@ import (
 	"golang.org/x/oauth2/clientcredentials"
 )
 
+// TokenSource reuses a Jamf token until it is about to expire. Renew drops it when Jamf rejects it earlier.
+type TokenSource struct {
+	newCache func() oauth2.TokenSource
+	mu       sync.Mutex
+	cache    oauth2.TokenSource
+}
+
+func newTokenSource(newCache func() oauth2.TokenSource) *TokenSource {
+	return &TokenSource{newCache: newCache, cache: newCache()}
+}
+
+func (s *TokenSource) Token() (*oauth2.Token, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cache.Token()
+}
+
+// Renew drops the cached token, so the next Token call gets a new one from Jamf.
+func (s *TokenSource) Renew() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cache = s.newCache()
+}
+
 // NewBasicTokenSource mints bearer tokens with a local Jamf Pro account's username and password.
-func NewBasicTokenSource(wrapper *uhttp.BaseHttpClient, instanceURL, username, password string) (oauth2.TokenSource, error) {
+func NewBasicTokenSource(wrapper *uhttp.BaseHttpClient, instanceURL, username, password string) (*TokenSource, error) {
 	tokenURL, err := tokenEndpoint(instanceURL, tokenUrlPath)
 	if err != nil {
 		return nil, err
@@ -24,12 +48,15 @@ func NewBasicTokenSource(wrapper *uhttp.BaseHttpClient, instanceURL, username, p
 		username: username,
 		password: password,
 	}
-	// The expiry comes from Jamf's clock, so renew a minute early to absorb clock skew.
-	return oauth2.ReuseTokenSourceWithExpiry(nil, source, time.Minute), nil
+	return newTokenSource(func() oauth2.TokenSource {
+		// The expiry comes from Jamf's clock, so renew a minute early to absorb clock skew.
+		return oauth2.ReuseTokenSourceWithExpiry(nil, source, time.Minute)
+	}), nil
 }
 
-// NewAPIClientTokenSource exchanges a Jamf Pro API client's ID and secret for access tokens.
-func NewAPIClientTokenSource(wrapper *uhttp.BaseHttpClient, instanceURL, clientID, clientSecret string) (oauth2.TokenSource, error) {
+// NewAPIClientTokenSource exchanges a Jamf Pro API client's ID and secret for access tokens via
+// POST /api/v1/oauth/token: https://developer.jamf.com/jamf-pro/docs/client-credentials
+func NewAPIClientTokenSource(wrapper *uhttp.BaseHttpClient, instanceURL, clientID, clientSecret string) (*TokenSource, error) {
 	tokenURL, err := tokenEndpoint(instanceURL, oauthTokenUrlPath)
 	if err != nil {
 		return nil, err
@@ -42,7 +69,9 @@ func NewAPIClientTokenSource(wrapper *uhttp.BaseHttpClient, instanceURL, clientI
 	}
 	// clientcredentials keeps this ctx for every refresh, so it must never be cancelled.
 	tokenCtx := context.WithValue(context.Background(), oauth2.HTTPClient, wrapper.HttpClient)
-	return uhttp.NewClassifyingTokenSource(config.TokenSource(tokenCtx)), nil
+	return newTokenSource(func() oauth2.TokenSource {
+		return uhttp.NewClassifyingTokenSource(config.TokenSource(tokenCtx))
+	}), nil
 }
 
 // tokenEndpoint validates instanceURL before any credentials are sent to it.
@@ -64,7 +93,8 @@ type basicTokenSource struct {
 	password string
 }
 
-// Token runs outside any request ctx because the token is shared across requests.
+// Token mints a token via POST /api/v1/auth/token: https://developer.jamf.com/jamf-pro/reference/post_v1-auth-token
+// It runs outside any request ctx because the token is shared across requests.
 func (s *basicTokenSource) Token() (*oauth2.Token, error) {
 	request, err := s.wrapper.NewRequest(
 		context.Background(),
@@ -89,7 +119,8 @@ func (s *basicTokenSource) Token() (*oauth2.Token, error) {
 
 	expiry, err := time.Parse(time.RFC3339, target.Expires)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse token expiry %q: %w", target.Expires, err)
+		// Jamf's schema doesn't guarantee expires; assume less than its 20-minute default lifetime.
+		expiry = time.Now().Add(15 * time.Minute)
 	}
 	return &oauth2.Token{AccessToken: target.Token, TokenType: "Bearer", Expiry: expiry}, nil
 }

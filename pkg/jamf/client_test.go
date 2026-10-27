@@ -24,7 +24,10 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	client, err := NewClient(uhttp.NewBaseHttpClient(server.Client()), server.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+	tokenSource := newTokenSource(func() oauth2.TokenSource {
+		return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
+	})
+	client, err := NewClient(uhttp.NewBaseHttpClient(server.Client()), server.URL, tokenSource)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

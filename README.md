@@ -24,6 +24,8 @@ Pick one method with `--auth-method`:
 - `username-password` (default): a local Jamf Pro account, set with `--username` and `--password`. The connector exchanges them for a short-lived bearer token and requests a new one shortly before it expires.
 - `api-client`: a Jamf Pro API client, set with `--jamf-client-id` and `--jamf-client-secret`. Assign the client API roles that carry the privileges below.
 
+Each method's flags are required only when that method is selected.
+
 ## Required Jamf privileges
 
 The Administrator privilege set covers everything. For least privilege, grant:

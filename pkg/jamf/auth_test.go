@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
-	"golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -55,15 +55,18 @@ func writeTestJSON(t *testing.T, writer http.ResponseWriter, body any) {
 	}
 }
 
-type tokenSourceConstructor func(wrapper *uhttp.BaseHttpClient, instanceURL, id, secret string) (oauth2.TokenSource, error)
+type tokenSourceConstructor func(wrapper *uhttp.BaseHttpClient, instanceURL, id, secret string) (*TokenSource, error)
 
-func newAuthTestClient(t *testing.T, mux *http.ServeMux, newTokenSource tokenSourceConstructor, id, secret string) *Client {
+func newAuthTestClient(t *testing.T, mux *http.ServeMux, constructor tokenSourceConstructor, id, secret string) *Client {
 	t.Helper()
-	server := httptest.NewServer(mux)
+	server := httptest.NewUnstartedServer(mux)
+	// Jamf Cloud speaks HTTP/2, which doesn't rewind a resent request body.
+	server.EnableHTTP2 = true
+	server.StartTLS()
 	t.Cleanup(server.Close)
 
 	wrapper := uhttp.NewBaseHttpClient(server.Client())
-	tokenSource, err := newTokenSource(wrapper, server.URL, id, secret)
+	tokenSource, err := constructor(wrapper, server.URL, id, secret)
 	if err != nil {
 		t.Fatalf("token source: %v", err)
 	}
@@ -123,16 +126,61 @@ func TestBasicAuth_ConcurrentRequestsShareOneToken(t *testing.T) {
 	}
 }
 
+// A token Jamf rejects before its expiry is replaced, and the request is resent once with its body.
+func TestDoRequest_RejectedTokenIsRenewed(t *testing.T) {
+	var mints atomic.Int32
+	var bodiesMutex sync.Mutex
+	var bodies []string
+	mux := http.NewServeMux()
+	mux.HandleFunc(tokenUrlPath, basicTokenHandler(t, &mints, 20*time.Minute))
+	mux.HandleFunc("/JSSResource/users/id/42", func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		bodiesMutex.Lock()
+		bodies = append(bodies, string(body))
+		bodiesMutex.Unlock()
+		if request.Header.Get("Authorization") != "Bearer token-2" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writer.WriteHeader(http.StatusCreated)
+	})
+	client := newAuthTestClient(t, mux, NewBasicTokenSource, "user", "pass")
+
+	if err := client.UpdateUserSites(context.Background(), 42, nil); err != nil {
+		t.Fatalf("UpdateUserSites: %v", err)
+	}
+	if got := mints.Load(); got != 2 {
+		t.Errorf("token mints = %d, want 2", got)
+	}
+	bodiesMutex.Lock()
+	defer bodiesMutex.Unlock()
+	if len(bodies) != 2 || bodies[0] == "" || bodies[1] != bodies[0] {
+		t.Errorf("request bodies = %q, want the same non-empty body twice", bodies)
+	}
+}
+
 // A zero expiry would make oauth2 reuse the token forever.
-func TestBasicAuth_UnparseableExpiryFails(t *testing.T) {
+func TestBasicAuth_UnparseableExpiryFallsBack(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(tokenUrlPath, func(writer http.ResponseWriter, request *http.Request) {
 		writeTestJSON(t, writer, TokenResponse{Token: "token-1", Expires: "soon"})
 	})
-	client := newAuthTestClient(t, mux, NewBasicTokenSource, "user", "pass")
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	tokenSource, err := NewBasicTokenSource(uhttp.NewBaseHttpClient(server.Client()), server.URL, "user", "pass")
+	if err != nil {
+		t.Fatalf("NewBasicTokenSource: %v", err)
+	}
 
-	if _, err := client.GetTokenDetails(context.Background()); err == nil || !strings.Contains(err.Error(), "token expiry") {
-		t.Fatalf("GetTokenDetails error = %v, want a token expiry parse error", err)
+	token, err := tokenSource.Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if expiresIn := time.Until(token.Expiry); expiresIn < 14*time.Minute || expiresIn > 15*time.Minute {
+		t.Errorf("token expires in %v, want about 15m", expiresIn)
 	}
 }
 
@@ -170,13 +218,13 @@ func TestAPIClientAuth_SendsCredentialsInForm(t *testing.T) {
 // A token endpoint 404 must not read as NotFound, or Revoke and Delete would report success.
 func TestAuth_TokenErrors(t *testing.T) {
 	cases := []struct {
-		name           string
-		tokenPath      string
-		newTokenSource tokenSourceConstructor
-		statusCode     int
-		body           string
-		want           codes.Code
-		wantMessage    string
+		name        string
+		tokenPath   string
+		constructor tokenSourceConstructor
+		statusCode  int
+		body        string
+		want        codes.Code
+		wantMessage string
 	}{
 		{"username-password rejected", tokenUrlPath, NewBasicTokenSource, http.StatusUnauthorized, `{"error":"invalid_client"}`, codes.Unauthenticated, "failed to get a Jamf token"},
 		{"api-client rejected", oauthTokenUrlPath, NewAPIClientTokenSource, http.StatusUnauthorized, `{"error":"invalid_client"}`, codes.Unauthenticated, "failed to get a Jamf token"},
@@ -185,15 +233,17 @@ func TestAuth_TokenErrors(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			var tokenRequests atomic.Int32
 			mux := http.NewServeMux()
 			mux.HandleFunc(testCase.tokenPath, func(writer http.ResponseWriter, request *http.Request) {
+				tokenRequests.Add(1)
 				writer.Header().Set("Content-Type", "application/json")
 				writer.WriteHeader(testCase.statusCode)
 				if _, err := writer.Write([]byte(testCase.body)); err != nil {
 					t.Errorf("write response: %v", err)
 				}
 			})
-			client := newAuthTestClient(t, mux, testCase.newTokenSource, "id", "wrong")
+			client := newAuthTestClient(t, mux, testCase.constructor, "id", "wrong")
 
 			_, err := client.GetTokenDetails(context.Background())
 			if got := status.Code(err); got != testCase.want {
@@ -202,11 +252,15 @@ func TestAuth_TokenErrors(t *testing.T) {
 			if !strings.Contains(err.Error(), testCase.wantMessage) {
 				t.Errorf("error %q does not contain %q", err, testCase.wantMessage)
 			}
+			// A retry would repeat a rejected login, which can lock the account.
+			if got := tokenRequests.Load(); got != 1 {
+				t.Errorf("token requests = %d, want 1", got)
+			}
 		})
 	}
 }
 
-// Only the Classic API uses 401 for a missing privilege, and no 401 triggers a new login.
+// A 401 renews the token and retries once; only the Classic API then reports a missing privilege.
 func TestDoRequest_401Mapping(t *testing.T) {
 	cases := []struct {
 		name string
@@ -232,10 +286,11 @@ func TestDoRequest_401Mapping(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			var mints atomic.Int32
+			var mints, hits atomic.Int32
 			mux := http.NewServeMux()
 			mux.HandleFunc(tokenUrlPath, basicTokenHandler(t, &mints, 20*time.Minute))
 			mux.HandleFunc(testCase.path, func(writer http.ResponseWriter, request *http.Request) {
+				hits.Add(1)
 				writer.WriteHeader(http.StatusUnauthorized)
 			})
 			client := newAuthTestClient(t, mux, NewBasicTokenSource, "user", "pass")
@@ -244,8 +299,42 @@ func TestDoRequest_401Mapping(t *testing.T) {
 			if got := status.Code(err); got != testCase.want {
 				t.Fatalf("code = %v, want %v (err: %v)", got, testCase.want, err)
 			}
-			if got := mints.Load(); got != 1 {
-				t.Errorf("token mints = %d, want 1", got)
+			if gotMints, gotHits := mints.Load(), hits.Load(); gotMints != 2 || gotHits != 2 {
+				t.Errorf("token mints = %d and requests = %d, want 2 and 2", gotMints, gotHits)
+			}
+		})
+	}
+}
+
+// When the renewed login fails, the client reports the login error, not the request's 401.
+func TestDoRequest_RenewFailure(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		want       codes.Code
+	}{
+		{"token endpoint missing", http.StatusNotFound, codes.InvalidArgument},
+		{"credentials rejected", http.StatusUnauthorized, codes.Unauthenticated},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var mints atomic.Int32
+			mux := http.NewServeMux()
+			mux.HandleFunc(tokenUrlPath, func(writer http.ResponseWriter, request *http.Request) {
+				if mints.Add(1) > 1 {
+					writer.WriteHeader(testCase.statusCode)
+					return
+				}
+				writeTestJSON(t, writer, TokenResponse{Token: "token-1", Expires: time.Now().Add(20 * time.Minute).UTC().Format(time.RFC3339)})
+			})
+			mux.HandleFunc("/JSSResource/users/id/7", func(writer http.ResponseWriter, request *http.Request) {
+				writer.WriteHeader(http.StatusUnauthorized)
+			})
+			client := newAuthTestClient(t, mux, NewBasicTokenSource, "user", "pass")
+
+			err := client.UpdateUserSites(context.Background(), 7, nil)
+			if got := status.Code(err); got != testCase.want {
+				t.Fatalf("code = %v, want %v (err: %v)", got, testCase.want, err)
 			}
 		})
 	}
@@ -277,7 +366,7 @@ func TestConstructors_ValidateInstanceURL(t *testing.T) {
 	wrapper := uhttp.NewBaseHttpClient(http.DefaultClient)
 	constructors := map[string]func(instanceURL string) error{
 		"NewClient": func(instanceURL string) error {
-			_, err := NewClient(wrapper, instanceURL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "token"}))
+			_, err := NewClient(wrapper, instanceURL, nil)
 			return err
 		},
 		"NewBasicTokenSource": func(instanceURL string) error {
@@ -295,7 +384,9 @@ func TestConstructors_ValidateInstanceURL(t *testing.T) {
 	}{
 		{"https://yourcompany.jamfcloud.com", true},
 		{"https://jamf.example.com:8443/", true},
-		{"http://yourcompany.jamfcloud.com", true},
+		{"http://yourcompany.jamfcloud.com", false},
+		{"http://localhost:8090", true},
+		{"http://127.0.0.1:8090", true},
 		{"yourcompany.jamfcloud.com", false},
 		{"ftp://yourcompany.jamfcloud.com", false},
 		{"", false},

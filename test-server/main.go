@@ -1,6 +1,6 @@
 // Package main implements a mock Jamf Pro server (Classic API + the token
-// endpoints under /api/v1/auth) for testing the baton-jamf connector without
-// a real Jamf Pro tenant.
+// endpoints /api/v1/auth/token and /api/v1/oauth/token) for testing the
+// baton-jamf connector without a real Jamf Pro tenant.
 //
 // Environment Variables:
 //   - PORT:          Server port (default: 8090, use 0 for a random port)

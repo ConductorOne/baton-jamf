@@ -13,7 +13,6 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"golang.org/x/oauth2"
 )
 
 var (
@@ -97,9 +96,12 @@ func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorb
 		return nil, nil, err
 	}
 
-	wrapper := uhttp.NewBaseHttpClient(httpClient)
+	wrapper, err := uhttp.NewBaseHttpClientWithContext(ctx, httpClient)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: failed to create HTTP client: %w", err)
+	}
 
-	var tokenSource oauth2.TokenSource
+	var tokenSource *jamf.TokenSource
 	switch opts.SelectedAuthMethod {
 	case cfg.APIClientGroup:
 		tokenSource, err = jamf.NewAPIClientTokenSource(wrapper, cc.InstanceUrl, cc.JamfClientId, cc.JamfClientSecret)

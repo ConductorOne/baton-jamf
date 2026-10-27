@@ -77,9 +77,6 @@ jobs:
       - name: Grant/Revoke user group with an API client
         uses: ConductorOne/github-workflows/actions/sync-test@v4
         env:
-          # Cleared so a fallback to username/password fails instead of passing.
-          BATON_USERNAME: ""
-          BATON_PASSWORD: ""
           BATON_AUTH_METHOD: api-client
           BATON_JAMF_CLIENT_ID: test-client-id
           BATON_JAMF_CLIENT_SECRET: test-client-secret

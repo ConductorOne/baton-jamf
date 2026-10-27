@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	liburl "net/url"
 	"strings"
@@ -45,7 +46,7 @@ const (
 type Client struct {
 	wrapper     *uhttp.BaseHttpClient
 	instanceURL string
-	tokenSource oauth2.TokenSource
+	tokenSource *TokenSource
 }
 
 // freshReadsContextKey marks a context as requiring GET requests to bypass
@@ -72,7 +73,7 @@ func wantsFreshReads(ctx context.Context) bool {
 }
 
 // NewClient validates instanceURL and returns a client that authenticates with tokenSource.
-func NewClient(wrapper *uhttp.BaseHttpClient, instanceURL string, tokenSource oauth2.TokenSource) (*Client, error) {
+func NewClient(wrapper *uhttp.BaseHttpClient, instanceURL string, tokenSource *TokenSource) (*Client, error) {
 	if err := validateInstanceURL(instanceURL); err != nil {
 		return nil, err
 	}
@@ -86,10 +87,20 @@ func NewClient(wrapper *uhttp.BaseHttpClient, instanceURL string, tokenSource oa
 // validateInstanceURL fails fast on a URL without a scheme or host instead of an obscure error mid-sync.
 func validateInstanceURL(instanceURL string) error {
 	parsed, err := liburl.Parse(instanceURL)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+	if err != nil || parsed.Host == "" || !allowedScheme(parsed) {
 		return status.Errorf(codes.InvalidArgument, "invalid instance URL %q: it must look like https://yourcompany.jamfcloud.com", instanceURL)
 	}
 	return nil
+}
+
+// allowedScheme accepts https, and plain http only on the local machine, so credentials never cross the network in clear text.
+func allowedScheme(parsed *liburl.URL) bool {
+	if parsed.Scheme == "https" {
+		return true
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	return parsed.Scheme == "http" && (host == "localhost" || (ip != nil && ip.IsLoopback()))
 }
 
 func (c *Client) getUrl(path string) (*liburl.URL, error) {
@@ -538,7 +549,7 @@ func (c *Client) doRequestWithJSONMethod(
 
 // doRequestWithMethodAndBodyEncoding is the shared implementation behind
 // doRequestWithMethod (XML, Classic API) and doRequestWithJSONMethod (JSON,
-// Pro API) — same auth/decode behavior, differing only in how reqBody
+// Pro API) — same auth/retry/decode behavior, differing only in how reqBody
 // is encoded onto the wire.
 //
 // GET requests made with a ctx wrapped by WithFreshReads bypass the HTTP
@@ -553,13 +564,9 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 ) error {
 	l := ctxzap.Extract(ctx)
 
-	token, err := c.tokenSource.Token()
+	token, err := c.token()
 	if err != nil {
-		// A token endpoint 404 is a wrong instance URL; as NotFound, Revoke and Delete would report success.
-		if status.Code(err) == codes.NotFound {
-			return uhttp.WrapErrors(codes.InvalidArgument, "jamf token endpoint not found: check the instance URL", err)
-		}
-		return fmt.Errorf("failed to get a Jamf token: %w", err)
+		return err
 	}
 
 	requestOpts := []uhttp.RequestOption{
@@ -583,6 +590,10 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 		return err
 	}
 	response, err := c.wrapper.Do(request)
+	if response != nil && response.StatusCode == http.StatusUnauthorized {
+		// Jamf can reject a token before it expires, so get a new one and retry once.
+		response, err = c.retryWithNewToken(request)
+	}
 	if err != nil {
 		// uhttp already logs the underlying HTTP failure at the appropriate
 		// level (Warn for 4xx, Error for 5xx) — this is just a debug trace of
@@ -590,10 +601,10 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 		// (CreateAccount already-exists, Delete not-found), so logging at
 		// Error would misrepresent expected idempotent outcomes as failures.
 		l.Debug("failed to perform request", zap.Error(err))
-		// Jamf's Classic API answers a missing privilege with 401; a revoked token looks the same.
-		if status.Code(err) == codes.Unauthenticated && strings.Contains(url.Path, classicAPIPathPrefix) {
+		// With a fresh token, a Classic API 401 means a missing privilege.
+		if response != nil && response.StatusCode == http.StatusUnauthorized && strings.Contains(url.Path, classicAPIPathPrefix) {
 			return uhttp.WrapErrors(codes.PermissionDenied,
-				fmt.Sprintf("jamf rejected %s %s with 401: the account or API client likely lacks the Jamf privilege this operation needs, or its token was revoked", method, url.Path), err)
+				fmt.Sprintf("jamf rejected %s %s with 401: the account or API client lacks the Jamf privilege this operation needs", method, url.Path), err)
 		}
 		return err
 	}
@@ -614,6 +625,37 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 	}
 
 	return nil
+}
+
+func (c *Client) token() (*oauth2.Token, error) {
+	token, err := c.tokenSource.Token()
+	if err != nil {
+		// A token endpoint 404 is a wrong instance URL; as NotFound, Revoke and Delete would report success.
+		if status.Code(err) == codes.NotFound {
+			return nil, uhttp.WrapErrors(codes.InvalidArgument, "jamf token endpoint not found: check the instance URL", err)
+		}
+		return nil, fmt.Errorf("failed to get a Jamf token: %w", err)
+	}
+	return token, nil
+}
+
+// retryWithNewToken resends a request Jamf rejected, with a token minted after dropping the cached one.
+func (c *Client) retryWithNewToken(request *http.Request) (*http.Response, error) {
+	c.tokenSource.Renew()
+	token, err := c.token()
+	if err != nil {
+		return nil, err
+	}
+
+	retry := request.Clone(request.Context())
+	// Clone shares the body the first attempt already read, and HTTP/2 doesn't rewind it.
+	if request.GetBody != nil {
+		if retry.Body, err = request.GetBody(); err != nil {
+			return nil, fmt.Errorf("failed to rewind request body: %w", err)
+		}
+	}
+	retry.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	return c.wrapper.Do(retry)
 }
 
 func (c *Client) GetPrivileges(ctx context.Context) (*PrivilegesResponse, error) {
