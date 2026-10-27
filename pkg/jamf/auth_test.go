@@ -97,11 +97,18 @@ func TestBasicAuth_ExpiredTokenIsReMinted(t *testing.T) {
 	}
 }
 
-func TestBasicAuth_ConcurrentRequestsShareOneToken(t *testing.T) {
+// Concurrent requests share the first token, and share one new token after Jamf rejects it.
+func TestBasicAuth_ConcurrentRequestsShareTokens(t *testing.T) {
 	var mints atomic.Int32
 	mux := http.NewServeMux()
 	mux.HandleFunc(tokenUrlPath, basicTokenHandler(t, &mints, 20*time.Minute))
-	mux.HandleFunc("/JSSResource/users/id/42", bearerHandler(t, &mints, UserResponse{}))
+	mux.HandleFunc("/JSSResource/users/id/42", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer token-2" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		writeTestJSON(t, writer, UserResponse{})
+	})
 	client := newAuthTestClient(t, mux, NewBasicTokenSource, "user", "pass")
 	ctx := WithFreshReads(context.Background())
 
@@ -121,8 +128,8 @@ func TestBasicAuth_ConcurrentRequestsShareOneToken(t *testing.T) {
 	for err := range errs {
 		t.Errorf("GetUserDetails: %v", err)
 	}
-	if got := mints.Load(); got != 1 {
-		t.Errorf("token mints = %d, want 1", got)
+	if got := mints.Load(); got != 2 {
+		t.Errorf("token mints = %d, want 2", got)
 	}
 }
 
@@ -260,28 +267,47 @@ func TestAuth_TokenErrors(t *testing.T) {
 	}
 }
 
-// A 401 renews the token and retries once; only the Classic API then reports a missing privilege.
+// The bodies are what a Jamf Pro trial returned: a JSON 401 renews the token and retries once,
+// while the Classic API's HTML 401 is a missing privilege right away.
 func TestDoRequest_401Mapping(t *testing.T) {
 	cases := []struct {
-		name string
-		path string
-		call func(client *Client) error
-		want codes.Code
+		name        string
+		path        string
+		contentType string
+		body        string
+		call        func(client *Client) error
+		want        codes.Code
+		wantCalls   int32
 	}{
 		{
-			name: "classic API",
-			path: "/JSSResource/users/id/7",
-			call: func(client *Client) error { return client.UpdateUserSites(context.Background(), 7, nil) },
-			want: codes.PermissionDenied,
+			name:        "classic API privilege page",
+			path:        "/JSSResource/users/id/7",
+			contentType: "text/html;charset=utf-8",
+			body:        "<html><head><title>Status page</title></head><body><p>Unauthorized</p></body></html>",
+			call:        func(client *Client) error { return client.UpdateUserSites(context.Background(), 7, nil) },
+			want:        codes.PermissionDenied,
+			wantCalls:   1,
 		},
 		{
-			name: "pro API",
-			path: authUrlPath,
+			name:        "classic API rejected token",
+			path:        "/JSSResource/users/id/7",
+			contentType: "application/json;charset=utf-8",
+			body:        `{"httpStatus":401,"errors":[{"code":"INVALID_TOKEN","description":"Unauthorized"}]}`,
+			call:        func(client *Client) error { return client.UpdateUserSites(context.Background(), 7, nil) },
+			want:        codes.Unauthenticated,
+			wantCalls:   2,
+		},
+		{
+			name:        "pro API HTML 401",
+			path:        authUrlPath,
+			contentType: "text/html;charset=utf-8",
+			body:        "<html><head><title>Status page</title></head><body><p>Unauthorized</p></body></html>",
 			call: func(client *Client) error {
 				_, err := client.GetTokenDetails(context.Background())
 				return err
 			},
-			want: codes.Unauthenticated,
+			want:      codes.Unauthenticated,
+			wantCalls: 2,
 		},
 	}
 	for _, testCase := range cases {
@@ -291,7 +317,11 @@ func TestDoRequest_401Mapping(t *testing.T) {
 			mux.HandleFunc(tokenUrlPath, basicTokenHandler(t, &mints, 20*time.Minute))
 			mux.HandleFunc(testCase.path, func(writer http.ResponseWriter, request *http.Request) {
 				hits.Add(1)
+				writer.Header().Set("Content-Type", testCase.contentType)
 				writer.WriteHeader(http.StatusUnauthorized)
+				if _, err := writer.Write([]byte(testCase.body)); err != nil {
+					t.Errorf("write response: %v", err)
+				}
 			})
 			client := newAuthTestClient(t, mux, NewBasicTokenSource, "user", "pass")
 
@@ -299,8 +329,8 @@ func TestDoRequest_401Mapping(t *testing.T) {
 			if got := status.Code(err); got != testCase.want {
 				t.Fatalf("code = %v, want %v (err: %v)", got, testCase.want, err)
 			}
-			if gotMints, gotHits := mints.Load(), hits.Load(); gotMints != 2 || gotHits != 2 {
-				t.Errorf("token mints = %d and requests = %d, want 2 and 2", gotMints, gotHits)
+			if gotMints, gotHits := mints.Load(), hits.Load(); gotMints != testCase.wantCalls || gotHits != testCase.wantCalls {
+				t.Errorf("token mints = %d and requests = %d, want %d each", gotMints, gotHits, testCase.wantCalls)
 			}
 		})
 	}
@@ -309,12 +339,13 @@ func TestDoRequest_401Mapping(t *testing.T) {
 // When the renewed login fails, the client reports the login error, not the request's 401.
 func TestDoRequest_RenewFailure(t *testing.T) {
 	cases := []struct {
-		name       string
-		statusCode int
-		want       codes.Code
+		name        string
+		statusCode  int
+		want        codes.Code
+		wantMessage string
 	}{
-		{"token endpoint missing", http.StatusNotFound, codes.InvalidArgument},
-		{"credentials rejected", http.StatusUnauthorized, codes.Unauthenticated},
+		{"token endpoint missing", http.StatusNotFound, codes.InvalidArgument, "check the instance URL"},
+		{"credentials rejected", http.StatusUnauthorized, codes.Unauthenticated, "failed to get a Jamf token"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -335,6 +366,9 @@ func TestDoRequest_RenewFailure(t *testing.T) {
 			err := client.UpdateUserSites(context.Background(), 7, nil)
 			if got := status.Code(err); got != testCase.want {
 				t.Fatalf("code = %v, want %v (err: %v)", got, testCase.want, err)
+			}
+			if !strings.Contains(err.Error(), testCase.wantMessage) {
+				t.Errorf("error %q does not contain %q", err, testCase.wantMessage)
 			}
 		})
 	}

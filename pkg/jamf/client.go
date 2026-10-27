@@ -590,9 +590,9 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 		return err
 	}
 	response, err := c.wrapper.Do(request)
-	if response != nil && response.StatusCode == http.StatusUnauthorized {
+	if response != nil && response.StatusCode == http.StatusUnauthorized && !missingPrivilege(response, url.Path) {
 		// Jamf can reject a token before it expires, so get a new one and retry once.
-		response, err = c.retryWithNewToken(request)
+		response, err = c.retryWithNewToken(request, token.AccessToken)
 	}
 	if err != nil {
 		// uhttp already logs the underlying HTTP failure at the appropriate
@@ -601,8 +601,7 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 		// (CreateAccount already-exists, Delete not-found), so logging at
 		// Error would misrepresent expected idempotent outcomes as failures.
 		l.Debug("failed to perform request", zap.Error(err))
-		// With a fresh token, a Classic API 401 means a missing privilege.
-		if response != nil && response.StatusCode == http.StatusUnauthorized && strings.Contains(url.Path, classicAPIPathPrefix) {
+		if missingPrivilege(response, url.Path) {
 			return uhttp.WrapErrors(codes.PermissionDenied,
 				fmt.Sprintf("jamf rejected %s %s with 401: the account or API client lacks the Jamf privilege this operation needs", method, url.Path), err)
 		}
@@ -639,9 +638,17 @@ func (c *Client) token() (*oauth2.Token, error) {
 	return token, nil
 }
 
-// retryWithNewToken resends a request Jamf rejected, with a token minted after dropping the cached one.
-func (c *Client) retryWithNewToken(request *http.Request) (*http.Response, error) {
-	c.tokenSource.Renew()
+// missingPrivilege reports the Classic API's answer to a missing privilege: a 401 with an HTML status page.
+// A rejected token gets a JSON 401 instead, and the Jamf Pro API answers a missing privilege with 403.
+func missingPrivilege(response *http.Response, path string) bool {
+	return response != nil && response.StatusCode == http.StatusUnauthorized &&
+		strings.Contains(path, classicAPIPathPrefix) &&
+		strings.HasPrefix(response.Header.Get("Content-Type"), "text/html")
+}
+
+// retryWithNewToken drops the rejected token and resends the request with a new one.
+func (c *Client) retryWithNewToken(request *http.Request, rejected string) (*http.Response, error) {
+	c.tokenSource.Renew(rejected)
 	token, err := c.token()
 	if err != nil {
 		return nil, err

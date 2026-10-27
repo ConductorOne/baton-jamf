@@ -14,9 +14,10 @@ import (
 
 // TokenSource reuses a Jamf token until it is about to expire. Renew drops it when Jamf rejects it earlier.
 type TokenSource struct {
-	newCache func() oauth2.TokenSource
-	mu       sync.Mutex
-	cache    oauth2.TokenSource
+	newCache        func() oauth2.TokenSource
+	mu              sync.Mutex
+	cache           oauth2.TokenSource
+	lastAccessToken string
 }
 
 func newTokenSource(newCache func() oauth2.TokenSource) *TokenSource {
@@ -26,14 +27,21 @@ func newTokenSource(newCache func() oauth2.TokenSource) *TokenSource {
 func (s *TokenSource) Token() (*oauth2.Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.cache.Token()
+	token, err := s.cache.Token()
+	if err != nil {
+		return nil, err
+	}
+	s.lastAccessToken = token.AccessToken
+	return token, nil
 }
 
-// Renew drops the cached token, so the next Token call gets a new one from Jamf.
-func (s *TokenSource) Renew() {
+// Renew drops the cached token only if it is still the rejected one, so concurrent 401s get one new token, not one each.
+func (s *TokenSource) Renew(rejected string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cache = s.newCache()
+	if s.lastAccessToken == rejected {
+		s.cache = s.newCache()
+	}
 }
 
 // NewBasicTokenSource mints bearer tokens with a local Jamf Pro account's username and password.
