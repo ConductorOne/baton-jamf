@@ -44,18 +44,22 @@ Managed Devices is off by default in C1 so existing connectors keep working afte
 
 | Credential | Required | Description |
 |------------|----------|-------------|
-| **Username** | Yes | Username of a Jamf Pro user (or service account) with sufficient privileges. |
-| **Password** | Yes | Password for the above username. Exchanged for a short-lived Bearer token (`POST /api/v1/auth/token`); the connector keeps the username and password in memory for the life of the process to re-authenticate (keep-alive, or a fresh login) whenever the token expires. |
+| **Username** | With `username-password` (default) | Username of a Jamf Pro user (or service account) with sufficient privileges. |
+| **Password** | With `username-password` (default) | Password for the above username. Exchanged for a short-lived Bearer token (`POST /api/v1/auth/token`); the connector keeps the username and password in memory for the life of the process and requests a new token shortly before the current one expires. |
+| **API Client ID** | With `api-client` | Client ID of a Jamf Pro API client. |
+| **API Client Secret** | With `api-client` | Client secret of the above API client. Exchanged for a short-lived access token (`POST /api/v1/oauth/token`), renewed the same way. |
 | **Instance URL** | Yes | Base URL of the Jamf Pro instance (e.g. `https://your-org.jamfcloud.com`). |
 | **Account Provisioning Target** | No | `user` (default) or `userAccount` — which account type `CreateAccount` is allowed to create. See the provisioning note above. |
 
 ### 2. How are these credentials obtained?
 
-Create (or designate) a Jamf Pro user account with the **Administrator** privilege set and **Full Access** access level. See [Creating a Jamf Pro User Account](https://learn.jamf.com/bundle/jamf-pro-documentation-current/page/Jamf_Pro_User_Accounts_and_Groups.html#ariaid-title3). No API key or OAuth app is needed — the connector authenticates with plain username/password against the Jamf Pro token endpoint.
+For `username-password`, create (or designate) a Jamf Pro user account with the **Administrator** privilege set and **Full Access** access level. See [Creating a Jamf Pro User Account](https://learn.jamf.com/bundle/jamf-pro-documentation-current/page/Jamf_Pro_User_Accounts_and_Groups.html#ariaid-title3).
+
+For `api-client`, create an API role with the required privileges and an API client that holds it under **Settings** > **System** > **API roles and clients**, then generate its client secret. See [API Roles and Clients](https://learn.jamf.com/bundle/jamf-pro-documentation-current/page/API_Roles_and_Clients.html).
 
 ### 3. Authentication
 
-The connector signs in as a local Jamf Pro user account, not a Jamf API client (client ID/secret) — API clients are not supported. A local account can still authenticate to the API even when SSO is enabled for the Jamf Pro server.
+The connector signs in either as a local Jamf Pro user account (`username-password`, the default) or as a Jamf Pro API client (`api-client`), selected with `--auth-method`. A local account can still authenticate to the API even when SSO is enabled for the Jamf Pro server; an API client needs no user account.
 
 See the "Jamf account privileges" section of the README / connector docs page for the least-privilege Jamf privileges required per capability.
 
@@ -66,7 +70,7 @@ See the "Jamf account privileges" section of the README / connector docs page fo
 None identified — every endpoint below is part of standard Jamf Pro, not gated behind a separate add-on or tier. The connector uses both the Classic API (`/JSSResource/*`) and the Jamf Pro API (`/api/*`):
 
 - Classic API: `/JSSResource/users`, `/JSSResource/accounts`, `/JSSResource/usergroups`, `/JSSResource/sites` (and their `/id/{id}` and create/update/delete variants) — see the links below.
-- Jamf Pro API: `POST /api/v1/auth/token` and `POST /api/v1/auth/keep-alive` (authentication), `GET /api/v1/api-role-privileges` (Role sync), `GET /api/v4/computers-inventory` and `PATCH /api/v4/computers-inventory-detail/{id}` (Managed Device computers), `GET`/`PATCH /api/v2/mobile-devices[/{id}]` (Managed Device mobile devices).
+- Jamf Pro API: `POST /api/v1/auth/token` or `POST /api/v1/oauth/token` (authentication), `GET /api/v1/auth` (validation), `GET /api/v1/api-role-privileges` (Role sync), `GET /api/v4/computers-inventory` and `PATCH /api/v4/computers-inventory-detail/{id}` (Managed Device computers), `GET`/`PATCH /api/v2/mobile-devices[/{id}]` (Managed Device mobile devices).
 
 ### Classic API content-type contract
 
@@ -78,7 +82,7 @@ The Jamf Pro Classic API only accepts **XML** for POST/PUT request bodies — JS
 - [Create User by ID](https://developer.jamf.com/jamf-pro/reference/createuserbyid)
 - [Create Account by ID](https://developer.jamf.com/jamf-pro/reference/createaccountbyid)
 - [Create bearer token](https://developer.jamf.com/jamf-pro/reference/post_v1-auth-token)
-- [Refresh token (keep-alive)](https://developer.jamf.com/jamf-pro/reference/post_v1-auth-keep-alive)
+- [Obtain an access token using an API client](https://developer.jamf.com/jamf-pro/reference/postoauthtoken)
 - [API role privileges catalog](https://developer.jamf.com/jamf-pro/reference/get_v1-api-role-privileges)
 - [Computers inventory (v4)](https://developer.jamf.com/jamf-pro/reference/get_v4-computers-inventory)
 - [Computers inventory detail PATCH (v4)](https://developer.jamf.com/jamf-pro/reference/patch_v4-computers-inventory-detail-id)

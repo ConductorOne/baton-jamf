@@ -17,13 +17,22 @@ Account creation/deletion and Grant/Revoke all require `-p`/`$BATON_PROVISIONING
 
 Tested with Jamf Pro 11.32.1. Managed Devices use the Jamf Pro API v4 computers-inventory and v2 mobile-devices endpoints.
 
+## Authentication
+
+Pick one method with `--auth-method`:
+
+- `username-password` (default): a local Jamf Pro account, set with `--username` and `--password`. The connector exchanges them for a short-lived bearer token and requests a new one shortly before it expires.
+- `api-client`: a Jamf Pro API client, set with `--jamf-client-id` and `--jamf-client-secret`. Assign the client API roles that carry the privileges below.
+
+Each method's flags are required only when that method is selected.
+
 ## Required Jamf privileges
 
 The Administrator privilege set covers everything. For least privilege, grant:
 
 | Task | Privilege |
 |---|---|
-| Startup, config validation, token refresh | None — any enabled local Jamf Pro account (every `Custom` set also keeps `Read License Information`) |
+| Startup, config validation, token refresh | None — any enabled local Jamf Pro account or API client (every `Custom` set also keeps `Read License Information`) |
 | Sync users | `Read User` |
 | Sync user accounts and groups | `Read Accounts` |
 | Sync user groups | `Read Static User Groups`, `Read Smart User Groups` (Smart is only needed when smart groups exist — it's checked per group) |
@@ -40,7 +49,7 @@ The Administrator privilege set covers everything. For least privilege, grant:
 
 `Read Accounts`/`Create Accounts`/`Update Accounts`/`Delete Accounts` cover both admin user accounts and admin groups — Jamf has no separate privilege for account groups. Every write path reads the object first, so each `Update` privilege above needs its `Read` counterpart too.
 
-Jamf reports a denied write differently depending on which API it uses. The Classic API (`/JSSResource` — Users, Accounts, Static User Groups) answers a missing privilege with HTTP 401, indistinguishable from an invalid or expired token. The Jamf Pro API (`/api/v1`, `/api/v2`, `/api/v4` — the roles catalog, Computers, Mobile Devices) answers with HTTP 403, reported as a permission error.
+Jamf reports a missing privilege differently depending on which API it uses: the Classic API (`/JSSResource` — Users, Accounts, Static User Groups) answers with HTTP 401, and the Jamf Pro API (`/api/v1`, `/api/v2`, `/api/v4` — the roles catalog, Computers, Mobile Devices) with HTTP 403. The connector reports both as a permission error.
 
 Group Grant/Revoke adds or removes a `userAccount` from an admin account
 group's member list. A group with no members cannot receive its first member
@@ -88,8 +97,8 @@ Custom and discards those individual privileges. Group Access accounts are
 not supported for Role Grant/Revoke — their rights come from their groups, so
 assign the role to the group instead. Changing a Full or Site Access
 account's role removes it from any admin group it belonged to (that
-membership granted it nothing). A write rejected by the connector's own Jamf
-account shows up as a 401 authentication error from Jamf.
+membership granted it nothing). A write rejected for the connector's own Jamf
+account is reported as a permission error.
 
 ## Jamf Pro console admin account creation (`userAccount`)
 
@@ -190,12 +199,15 @@ Available Commands:
   help               Help about any command
 
 Flags:
+      --auth-method string                  ($BATON_AUTH_METHOD)
       --client-id string                    The client ID used to authenticate with ConductorOne ($BATON_CLIENT_ID)
       --client-secret string                The client secret used to authenticate with ConductorOne ($BATON_CLIENT_SECRET)
       --create-account-resource-type string Which Jamf account type C1 should create when provisioning accounts. 'user' (default) creates directory users; 'userAccount' creates Jamf Pro console admin accounts. Only one type can be created at a time per connector instance. ($BATON_CREATE_ACCOUNT_RESOURCE_TYPE) (default "user")
   -f, --file string                         The path to the c1z file to sync with ($BATON_FILE) (default "sync.c1z")
   -h, --help                                help for baton-jamf
       --instance-url string                 required: Base URL of your Jamf Pro instance, including https:// (for example https://yourcompany.jamfcloud.com) ($BATON_INSTANCE_URL)
+      --jamf-client-id string               required: Client ID of a Jamf Pro API client ($BATON_JAMF_CLIENT_ID)
+      --jamf-client-secret string           required: Client secret of a Jamf Pro API client ($BATON_JAMF_CLIENT_SECRET)
       --log-format string                   The output format for logs: json, console ($BATON_LOG_FORMAT) (default "json")
       --log-level string                    The log level: debug, info, warn, error ($BATON_LOG_LEVEL) (default "info")
       --password string                     required: Password for your Jamf Pro instance ($BATON_PASSWORD)

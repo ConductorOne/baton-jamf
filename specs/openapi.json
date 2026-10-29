@@ -63,7 +63,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -108,7 +108,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       },
@@ -151,7 +151,7 @@
             "description": "Success; response body is not decoded by the connector"
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       },
@@ -194,7 +194,7 @@
             "description": "Success; response body is not decoded by the connector"
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       },
@@ -225,7 +225,7 @@
             "description": "Success; response body is not decoded by the connector"
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -270,7 +270,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -304,7 +304,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -349,7 +349,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       },
@@ -391,7 +391,7 @@
             "description": "Success; response body is not decoded by the connector"
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       },
@@ -434,7 +434,7 @@
             "description": "Success; response body is not decoded by the connector"
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       },
@@ -465,7 +465,7 @@
             "description": "Success; response body is not decoded by the connector"
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -510,7 +510,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -555,7 +555,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       },
@@ -605,7 +605,7 @@
             "description": "Success; response body is not decoded by the connector"
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -642,7 +642,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -687,7 +687,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       },
@@ -729,7 +729,7 @@
             "description": "Success; response body is not decoded by the connector"
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -766,7 +766,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -795,7 +795,42 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 is reported as Unauthenticated; a 404 is reported as InvalidArgument, since it means a wrong instance URL)"
+          }
+        }
+      }
+    },
+    "/api/v1/oauth/token": {
+      "post": {
+        "operationId": "createAPIClientToken",
+        "summary": "Exchange an API client's ID and secret for an access token",
+        "tags": [
+          "pro"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/OAuthTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthTokenResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (rejected client credentials are reported as Unauthenticated; a 404 is reported as InvalidArgument, since it means a wrong instance URL)"
           }
         }
       }
@@ -824,37 +859,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
-          }
-        }
-      }
-    },
-    "/api/v1/auth/keep-alive": {
-      "post": {
-        "operationId": "keepAliveToken",
-        "summary": "Invalidate the current token and issue a new one",
-        "tags": [
-          "pro"
-        ],
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "description": "Called when more than 5 minutes passed since the last token refresh.",
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TokenResponse"
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -883,7 +888,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -963,7 +968,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -1003,7 +1008,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       },
@@ -1045,7 +1050,7 @@
             "description": "Success; response body is not decoded by the connector"
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -1095,7 +1100,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -1135,7 +1140,7 @@
             }
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -1179,7 +1184,7 @@
             "description": "Success; response body is not decoded by the connector"
           },
           "4XX": {
-            "description": "Error (401 triggers one token re-creation and retry; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
           }
         }
       }
@@ -1195,7 +1200,7 @@
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Token from /api/v1/auth/token; sent via Authorization header"
+        "description": "Token from /api/v1/auth/token or /api/v1/oauth/token; sent via Authorization header"
       }
     },
     "schemas": {
@@ -1478,7 +1483,44 @@
             "type": "string"
           },
           "expires": {
+            "type": "string",
+            "description": "Parsed as RFC 3339; if it doesn't parse, the connector assumes the token lasts 15 minutes"
+          }
+        }
+      },
+      "OAuthTokenRequest": {
+        "type": "object",
+        "required": [
+          "grant_type",
+          "client_id",
+          "client_secret"
+        ],
+        "properties": {
+          "grant_type": {
+            "type": "string",
+            "enum": [
+              "client_credentials"
+            ]
+          },
+          "client_id": {
             "type": "string"
+          },
+          "client_secret": {
+            "type": "string"
+          }
+        }
+      },
+      "OAuthTokenResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "token_type": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer"
           }
         }
       },

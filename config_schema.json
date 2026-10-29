@@ -139,9 +139,57 @@
           ]
         }
       }
+    },
+    {
+      "name": "jamf-client-id",
+      "displayName": "API Client ID",
+      "description": "Client ID of a Jamf Pro API client",
+      "isRequired": true,
+      "stringField": {
+        "rules": {
+          "isRequired": true
+        }
+      }
+    },
+    {
+      "name": "jamf-client-secret",
+      "displayName": "API Client Secret",
+      "description": "Client secret of a Jamf Pro API client",
+      "isRequired": true,
+      "isSecret": true,
+      "stringField": {
+        "rules": {
+          "isRequired": true
+        }
+      }
     }
   ],
   "displayName": "Jamf",
   "helpUrl": "/docs/baton/jamf",
-  "iconUrl": "/static/app-icons/jamf.svg"
+  "iconUrl": "/static/app-icons/jamf.svg",
+  "fieldGroups": [
+    {
+      "name": "username-password",
+      "displayName": "Username and password",
+      "helpText": "Authenticate as a local Jamf Pro account.",
+      "fields": [
+        "username",
+        "password",
+        "instance-url",
+        "create-account-resource-type"
+      ],
+      "default": true
+    },
+    {
+      "name": "api-client",
+      "displayName": "API client",
+      "helpText": "Authenticate with a Jamf Pro API client and the API roles assigned to it.",
+      "fields": [
+        "jamf-client-id",
+        "jamf-client-secret",
+        "instance-url",
+        "create-account-resource-type"
+      ]
+    }
+  ]
 }

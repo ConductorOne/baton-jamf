@@ -74,6 +74,18 @@ jobs:
           echo "Test server failed to start"; exit 1
       - name: Run sync
         run: ./baton-jamf
+      - name: Grant/Revoke user group with an API client
+        uses: ConductorOne/github-workflows/actions/sync-test@v4
+        env:
+          BATON_AUTH_METHOD: api-client
+          BATON_JAMF_CLIENT_ID: test-client-id
+          BATON_JAMF_CLIENT_SECRET: test-client-secret
+        with:
+          connector: ./baton-jamf
+          baton-entitlement: userGroup:303:member
+          baton-principal: '3'
+          baton-principal-type: user
+          required-secrets: BATON_JAMF_CLIENT_ID,BATON_JAMF_CLIENT_SECRET
       - name: Grant/Revoke admin group
         uses: ConductorOne/github-workflows/actions/sync-test@v4
         with:

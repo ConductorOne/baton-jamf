@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
+	"golang.org/x/oauth2"
 )
 
 // newTestClient spins up an httptest.Server driven by handler and returns a
@@ -23,7 +24,14 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	return NewClient(uhttp.NewBaseHttpClient(server.Client()), "user", "pass", "test-token", server.URL)
+	tokenSource := newTokenSource(func() oauth2.TokenSource {
+		return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"})
+	})
+	client, err := NewClient(uhttp.NewBaseHttpClient(server.Client()), server.URL, tokenSource)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return client
 }
 
 // putOnlyHandler serves a bare PUT-capturing handler, failing the test if

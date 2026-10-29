@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,8 +18,25 @@ import (
 // the test ends.
 func newTestJamfClient(t *testing.T, handler http.HandlerFunc) *jamf.Client {
 	t.Helper()
-	server := httptest.NewServer(handler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/auth/token", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(writer).Encode(jamf.TokenResponse{Token: "test-token", Expires: "2100-01-01T00:00:00Z"}); err != nil {
+			t.Errorf("encode token response: %v", err)
+		}
+	})
+	mux.Handle("/", handler)
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	return jamf.NewClient(uhttp.NewBaseHttpClient(server.Client()), "user", "pass", "test-token", server.URL)
+	wrapper := uhttp.NewBaseHttpClient(server.Client())
+	tokenSource, err := jamf.NewBasicTokenSource(wrapper, server.URL, "user", "pass")
+	if err != nil {
+		t.Fatalf("NewBasicTokenSource: %v", err)
+	}
+	client, err := jamf.NewClient(wrapper, server.URL, tokenSource)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return client
 }

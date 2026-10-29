@@ -6,13 +6,15 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	liburl "net/url"
-	"time"
+	"strings"
 
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
+	"golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -30,8 +32,10 @@ const (
 	userUrlPath            = "/JSSResource/users/id/%d"
 	userNameUrlPath        = "/JSSResource/users/name/%s"
 	usersUrlPath           = "/JSSResource/users"
-	keepAliveUrlPath       = "/api/v1/auth/keep-alive"
+	oauthTokenUrlPath      = "/api/v1/oauth/token" //nolint:gosec // not a token
 	privilegesUrlPath      = "/api/v1/api-role-privileges"
+
+	classicAPIPathPrefix = "/JSSResource/"
 
 	// newResourceID is the Jamf Classic API sentinel used in the URL path when
 	// creating a new user or account — the server assigns the real ID and
@@ -40,13 +44,9 @@ const (
 )
 
 type Client struct {
-	wrapper       *uhttp.BaseHttpClient
-	token         string
-	instanceURL   string
-	lastKeepAlive time.Time
-
-	userName string
-	password string
+	wrapper     *uhttp.BaseHttpClient
+	instanceURL string
+	tokenSource *TokenSource
 }
 
 // freshReadsContextKey marks a context as requiring GET requests to bypass
@@ -72,26 +72,35 @@ func wantsFreshReads(ctx context.Context) bool {
 	return v
 }
 
-func NewClient(
-	wrapper *uhttp.BaseHttpClient,
-	userName string,
-	password string,
-	token string,
-	instanceURL string,
-) *Client {
-	return &Client{
-		wrapper:       wrapper,
-		token:         token,
-		instanceURL:   instanceURL,
-		lastKeepAlive: time.Now(),
-		userName:      userName,
-		password:      password,
+// NewClient validates instanceURL and returns a client that authenticates with tokenSource.
+func NewClient(wrapper *uhttp.BaseHttpClient, instanceURL string, tokenSource *TokenSource) (*Client, error) {
+	if err := validateInstanceURL(instanceURL); err != nil {
+		return nil, err
 	}
+	return &Client{
+		wrapper:     wrapper,
+		instanceURL: instanceURL,
+		tokenSource: tokenSource,
+	}, nil
 }
 
-func (c *Client) SetBearerToken(token string) {
-	c.lastKeepAlive = time.Now()
-	c.token = token
+// validateInstanceURL fails fast on a URL without a scheme or host instead of an obscure error mid-sync.
+func validateInstanceURL(instanceURL string) error {
+	parsed, err := liburl.Parse(instanceURL)
+	if err != nil || parsed.Host == "" || !allowedScheme(parsed) {
+		return status.Errorf(codes.InvalidArgument, "invalid instance URL %q: it must look like https://yourcompany.jamfcloud.com", instanceURL)
+	}
+	return nil
+}
+
+// allowedScheme accepts https, and plain http only on the local machine, so credentials never cross the network in clear text.
+func allowedScheme(parsed *liburl.URL) bool {
+	if parsed.Scheme == "https" {
+		return true
+	}
+	host := parsed.Hostname()
+	ip := net.ParseIP(host)
+	return parsed.Scheme == "http" && (host == "localhost" || (ip != nil && ip.IsLoopback()))
 }
 
 func (c *Client) getUrl(path string) (*liburl.URL, error) {
@@ -100,95 +109,6 @@ func (c *Client) getUrl(path string) (*liburl.URL, error) {
 		return nil, err
 	}
 	return liburl.Parse(urlString)
-}
-
-func (c *Client) keepAliveToken(
-	ctx context.Context,
-) error {
-	l := ctxzap.Extract(ctx)
-
-	if c.token == "" {
-		return fmt.Errorf("token is empty")
-	}
-
-	if time.Since(c.lastKeepAlive) < 5*time.Minute {
-		return nil
-	}
-
-	l.Debug("Refreshing token")
-
-	url, err := c.getUrl(keepAliveUrlPath)
-	if err != nil {
-		return err
-	}
-
-	request, err := c.wrapper.NewRequest(
-		ctx,
-		http.MethodPost,
-		url,
-		uhttp.WithAcceptJSONHeader(),
-		uhttp.WithContentTypeJSONHeader(),
-		uhttp.WithHeader(
-			"Authorization",
-			fmt.Sprintf("Bearer %s", c.token),
-		),
-	)
-	if err != nil {
-		return err
-	}
-
-	var target TokenResponse
-	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(&target))
-	if err != nil {
-		return err
-	}
-	err = response.Body.Close()
-	if err != nil {
-		return err
-	}
-
-	c.token = target.Token
-	c.lastKeepAlive = time.Now()
-
-	return nil
-}
-
-// CreateBearerToken creates bearer token needed to use the Jamf API.
-func (c *Client) CreateBearerToken(
-	ctx context.Context,
-	username string,
-	password string,
-) (string, error) {
-	l := ctxzap.Extract(ctx)
-
-	l.Debug("Creating bearer token")
-	url, err := c.getUrl(tokenUrlPath)
-	if err != nil {
-		return "", err
-	}
-
-	request, err := c.wrapper.NewRequest(
-		ctx,
-		http.MethodPost,
-		url,
-		uhttp.WithAcceptJSONHeader(),
-		uhttp.WithContentTypeJSONHeader(),
-	)
-	if err != nil {
-		return "", err
-	}
-	request.SetBasicAuth(username, password)
-
-	var target TokenResponse
-	response, err := c.wrapper.Do(request, uhttp.WithJSONResponse(&target))
-	if err != nil {
-		return "", err
-	}
-	err = response.Body.Close()
-	if err != nil {
-		return "", err
-	}
-	return target.Token, nil
 }
 
 // GetTokenDetails gets authorization details associated with the current api token.
@@ -644,20 +564,14 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 ) error {
 	l := ctxzap.Extract(ctx)
 
-	err := c.keepAliveToken(ctx)
+	token, err := c.token()
 	if err != nil {
 		return err
 	}
 
-	firstTry := true
-
-GotoRetry:
 	requestOpts := []uhttp.RequestOption{
 		uhttp.WithAcceptJSONHeader(),
-		uhttp.WithHeader(
-			"Authorization",
-			fmt.Sprintf("Bearer %s", c.token),
-		),
+		uhttp.WithBearerToken(token.AccessToken),
 	}
 	if method == http.MethodGet && wantsFreshReads(ctx) {
 		requestOpts = append(requestOpts, uhttp.WithNoCache())
@@ -676,6 +590,10 @@ GotoRetry:
 		return err
 	}
 	response, err := c.wrapper.Do(request)
+	if response != nil && response.StatusCode == http.StatusUnauthorized && !missingPrivilege(response, url.Path) {
+		// Jamf can reject a token before it expires, so get a new one and retry once.
+		response, err = c.retryWithNewToken(request, token.AccessToken)
+	}
 	if err != nil {
 		// uhttp already logs the underlying HTTP failure at the appropriate
 		// level (Warn for 4xx, Error for 5xx) — this is just a debug trace of
@@ -683,18 +601,9 @@ GotoRetry:
 		// (CreateAccount already-exists, Delete not-found), so logging at
 		// Error would misrepresent expected idempotent outcomes as failures.
 		l.Debug("failed to perform request", zap.Error(err))
-		if status.Code(err) == codes.Unauthenticated && firstTry {
-			l.Debug("retrying request with new token")
-			token, err := c.CreateBearerToken(ctx, c.userName, c.password)
-			if err != nil {
-				return err
-			}
-
-			c.SetBearerToken(token)
-			firstTry = false
-
-			l.Debug("retrying request with new token")
-			goto GotoRetry
+		if missingPrivilege(response, url.Path) {
+			return uhttp.WrapErrors(codes.PermissionDenied,
+				fmt.Sprintf("jamf rejected %s %s with 401: the account or API client lacks the Jamf privilege this operation needs", method, url.Path), err)
 		}
 		return err
 	}
@@ -710,17 +619,50 @@ GotoRetry:
 	}
 	err = json.Unmarshal(body, target)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal json response: %w. status code: %d. body %v", err, response.StatusCode, logBody(body, 2048))
+		return fmt.Errorf("failed to unmarshal json response: %w. status code: %d. content type: %q. body omitted (%d bytes)",
+			err, response.StatusCode, response.Header.Get("Content-Type"), len(body))
 	}
 
 	return nil
 }
 
-func logBody(body []byte, size int) string {
-	if len(body) > size {
-		return string(body[:size]) + " ..."
+func (c *Client) token() (*oauth2.Token, error) {
+	token, err := c.tokenSource.Token()
+	if err != nil {
+		// A token endpoint 404 is a wrong instance URL; as NotFound, Revoke and Delete would report success.
+		if status.Code(err) == codes.NotFound {
+			return nil, uhttp.WrapErrors(codes.InvalidArgument, "jamf token endpoint not found: check the instance URL", err)
+		}
+		return nil, fmt.Errorf("failed to get a Jamf token: %w", err)
 	}
-	return string(body)
+	return token, nil
+}
+
+// missingPrivilege reports the Classic API's answer to a missing privilege: a 401 with an HTML status page.
+// A rejected token gets a JSON 401 instead, and the Jamf Pro API answers a missing privilege with 403.
+func missingPrivilege(response *http.Response, path string) bool {
+	return response != nil && response.StatusCode == http.StatusUnauthorized &&
+		strings.Contains(path, classicAPIPathPrefix) &&
+		strings.HasPrefix(response.Header.Get("Content-Type"), "text/html")
+}
+
+// retryWithNewToken drops the rejected token and resends the request with a new one.
+func (c *Client) retryWithNewToken(request *http.Request, rejected string) (*http.Response, error) {
+	c.tokenSource.Renew(rejected)
+	token, err := c.token()
+	if err != nil {
+		return nil, err
+	}
+
+	retry := request.Clone(request.Context())
+	// Clone shares the body the first attempt already read, and HTTP/2 doesn't rewind it.
+	if request.GetBody != nil {
+		if retry.Body, err = request.GetBody(); err != nil {
+			return nil, fmt.Errorf("failed to rewind request body: %w", err)
+		}
+	}
+	retry.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	return c.wrapper.Do(retry)
 }
 
 func (c *Client) GetPrivileges(ctx context.Context) (*PrivilegesResponse, error) {

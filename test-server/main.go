@@ -1,12 +1,14 @@
 // Package main implements a mock Jamf Pro server (Classic API + the token
-// endpoints under /api/v1/auth) for testing the baton-jamf connector without
-// a real Jamf Pro tenant.
+// endpoints /api/v1/auth/token and /api/v1/oauth/token) for testing the
+// baton-jamf connector without a real Jamf Pro tenant.
 //
 // Environment Variables:
 //   - PORT:          Server port (default: 8090, use 0 for a random port)
 //   - JAMF_USERNAME: Username the connector must authenticate with (default: "test-user")
 //   - JAMF_PASSWORD: Password the connector must authenticate with (default: "test-pass")
-//   - JAMF_TOKEN:    Bearer token minted by /api/v1/auth/token (default: "test-bearer-token")
+//   - JAMF_TOKEN:    Bearer token minted by /api/v1/auth/token and /api/v1/oauth/token (default: "test-bearer-token")
+//   - JAMF_CLIENT_ID:     API client ID for /api/v1/oauth/token (default: "test-client-id")
+//   - JAMF_CLIENT_SECRET: API client secret for /api/v1/oauth/token (default: "test-client-secret")
 //
 // JAMF_-prefixed (rather than bare USERNAME/PASSWORD/TOKEN) to avoid
 // colliding with ambient shell/system environment variables of the same name.
@@ -77,6 +79,9 @@ const (
 	defaultUsername = "test-user"
 	defaultPassword = "test-pass"
 	defaultToken    = "test-bearer-token"
+
+	defaultClientID     = "test-client-id"
+	defaultClientSecret = "test-client-secret"
 
 	siteNameHeadquarters = "Headquarters"
 	siteNameRemote       = "Remote"
@@ -167,9 +172,11 @@ var (
 type server struct {
 	mu sync.Mutex
 
-	username string
-	password string
-	token    string
+	username     string
+	password     string
+	token        string
+	clientID     string
+	clientSecret string
 
 	users      map[int]*jamf.User
 	userList   []*jamf.User
@@ -192,15 +199,17 @@ type server struct {
 	mobileDevices []*mockMobileDevice
 }
 
-func newServer(username, password, token string) *server {
+func newServer(username, password, token, clientID, clientSecret string) *server {
 	s := &server{
-		username:   username,
-		password:   password,
-		token:      token,
-		users:      make(map[int]*jamf.User),
-		accounts:   make(map[int]*jamf.UserAccount),
-		groups:     make(map[int]*jamf.Group),
-		userGroups: make(map[int]*jamf.UserGroup),
+		username:     username,
+		password:     password,
+		token:        token,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		users:        make(map[int]*jamf.User),
+		accounts:     make(map[int]*jamf.UserAccount),
+		groups:       make(map[int]*jamf.Group),
+		userGroups:   make(map[int]*jamf.UserGroup),
 	}
 	s.seedData()
 	s.seedDevices()
@@ -363,19 +372,30 @@ func (s *server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Doc URL: https://developer.jamf.com/jamf-pro/reference/post_v1-auth-keep-alive
-func (s *server) handleKeepAlive(w http.ResponseWriter, r *http.Request) {
-	if !s.requireBearer(w, r) {
-		return
-	}
+// oauthTokenResponse is the OAuth 2.0 client credentials response.
+type oauthTokenResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int    `json:"expires_in"`
+}
+
+// Doc URL: https://developer.jamf.com/jamf-pro/reference/postoauthtoken
+func (s *server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method must be POST")
 		return
 	}
-	writeJSON(w, http.StatusOK, jamf.TokenResponse{
-		Token:   s.token,
-		Expires: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-	})
+	if err := r.ParseForm(); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid form body")
+		return
+	}
+	if r.PostForm.Get("grant_type") != "client_credentials" ||
+		r.PostForm.Get("client_id") != s.clientID ||
+		r.PostForm.Get("client_secret") != s.clientSecret {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_client"})
+		return
+	}
+	writeJSON(w, http.StatusOK, oauthTokenResponse{AccessToken: s.token, TokenType: "Bearer", ExpiresIn: 1200})
 }
 
 // Doc URL: https://developer.jamf.com/jamf-pro/reference/get_v1-auth
@@ -1366,6 +1386,14 @@ func run() error {
 	if token == "" {
 		token = defaultToken
 	}
+	clientID := os.Getenv("JAMF_CLIENT_ID")
+	if clientID == "" {
+		clientID = defaultClientID
+	}
+	clientSecret := os.Getenv("JAMF_CLIENT_SECRET")
+	if clientSecret == "" {
+		clientSecret = defaultClientSecret
+	}
 
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", ":"+port)
 	if err != nil {
@@ -1374,11 +1402,11 @@ func run() error {
 	port = strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
 	baseURL := "http://localhost:" + port
 
-	s := newServer(username, password, token)
+	s := newServer(username, password, token, clientID, clientSecret)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/auth/token", s.handleCreateToken)
-	mux.HandleFunc("/api/v1/auth/keep-alive", s.handleKeepAlive)
+	mux.HandleFunc("/api/v1/oauth/token", s.handleOAuthToken)
 	mux.HandleFunc("/api/v1/auth", s.handleTokenDetails)
 	mux.HandleFunc("/api/v1/api-role-privileges", s.handleListPrivileges)
 
