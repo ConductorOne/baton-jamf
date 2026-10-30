@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	liburl "net/url"
+	"strconv"
 	"strings"
 
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
@@ -20,20 +21,29 @@ import (
 )
 
 const (
-	accountUrlPath         = "/JSSResource/accounts/userid/%d"
-	accountUsernameUrlPath = "/JSSResource/accounts/username/%s"
-	accountsUrlPath        = "/JSSResource/accounts"
-	authUrlPath            = "/api/v1/auth"
-	groupUrlPath           = "/JSSResource/accounts/groupid/%d"
-	sitesUrlPath           = "/JSSResource/sites"
-	tokenUrlPath           = "/api/v1/auth/token" //nolint:golint,gosec // not a token
-	userGroupUrlPath       = "/JSSResource/usergroups/id/%d"
-	userGroupsUrlPath      = "/JSSResource/usergroups"
-	userUrlPath            = "/JSSResource/users/id/%d"
-	userNameUrlPath        = "/JSSResource/users/name/%s"
-	usersUrlPath           = "/JSSResource/users"
-	oauthTokenUrlPath      = "/api/v1/oauth/token" //nolint:gosec // not a token
-	privilegesUrlPath      = "/api/v1/api-role-privileges"
+	accountUrlPath         = "/JSSResource/accounts/userid/%d"   // https://developer.jamf.com/jamf-pro/reference/findaccountsbyid
+	accountUsernameUrlPath = "/JSSResource/accounts/username/%s" // https://developer.jamf.com/jamf-pro/reference/findaccountsbyname
+	accountsUrlPath        = "/JSSResource/accounts"             // https://developer.jamf.com/jamf-pro/reference/findaccounts
+	authUrlPath            = "/api/v1/auth"                      // https://developer.jamf.com/jamf-pro/reference/get_v1-auth
+	groupUrlPath           = "/JSSResource/accounts/groupid/%d"  // https://developer.jamf.com/jamf-pro/reference/findgroupsbyid
+	sitesUrlPath           = "/JSSResource/sites"                // https://developer.jamf.com/jamf-pro/reference/findsites
+	tokenUrlPath           = "/api/v1/auth/token"                //nolint:golint,gosec // not a token, https://developer.jamf.com/jamf-pro/reference/post_v1-auth-token
+	userGroupUrlPath       = "/JSSResource/usergroups/id/%d"     // https://developer.jamf.com/jamf-pro/reference/findusergroupsbyid
+	userGroupsUrlPath      = "/JSSResource/usergroups"           // https://developer.jamf.com/jamf-pro/reference/findusergroups
+	userUrlPath            = "/JSSResource/users/id/%d"          // https://developer.jamf.com/jamf-pro/reference/findusersbyid
+	userNameUrlPath        = "/JSSResource/users/name/%s"        // https://developer.jamf.com/jamf-pro/reference/findusersbyname
+	oauthTokenUrlPath      = "/api/v1/oauth/token"               //nolint:gosec // not a token, https://developer.jamf.com/jamf-pro/docs/client-credentials
+	privilegesUrlPath      = "/api/v1/api-role-privileges"       // https://developer.jamf.com/jamf-pro/reference/get_v1-api-role-privileges
+	proUsersUrlPath        = "/api/v1/users"                     // https://developer.jamf.com/jamf-pro/reference/get_v1-users
+	proAccountsUrlPath     = "/api/v1/accounts"                  // https://developer.jamf.com/jamf-pro/reference/get_v1-accounts
+	siteObjectsUrlPath     = "/api/v1/sites/%d/objects"          // https://developer.jamf.com/jamf-pro/reference/get_v1-sites-id-objects
+
+	// UsersPageSize is the documented maximum page-size of GET /api/v1/users.
+	UsersPageSize = 1000
+	// AccountsPageSize is the documented default page-size of GET /api/v1/accounts; no maximum is documented.
+	AccountsPageSize = 100
+	// SiteObjectsPageSize is the page-size used for GET /api/v1/sites/{id}/objects; no maximum is documented.
+	SiteObjectsPageSize = 1000
 
 	classicAPIPathPrefix = "/JSSResource/"
 
@@ -126,20 +136,6 @@ func (c *Client) GetTokenDetails(ctx context.Context) (*TokenDetails, error) {
 	return &target, nil
 }
 
-func (c *Client) getBaseUsers(ctx context.Context) ([]BaseType, error) {
-	url, err := c.getUrl(usersUrlPath)
-	if err != nil {
-		return nil, err
-	}
-
-	var target UsersResponse
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
-	}
-
-	return target.Users, nil
-}
-
 // GetUserDetails returns Jamf user details for a single directory user.
 func (c *Client) GetUserDetails(ctx context.Context, userId int) (*User, error) {
 	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userId))
@@ -155,7 +151,9 @@ func (c *Client) GetUserDetails(ctx context.Context, userId int) (*User, error) 
 	return &target.User, nil
 }
 
-func (c *Client) getBaseAccounts(ctx context.Context) (*BaseAccount, error) {
+// GetBaseAccounts returns the Classic admin accounts (users and groups, id and name only).
+// GET /JSSResource/accounts, not paginated, needs the Read Accounts privilege.
+func (c *Client) GetBaseAccounts(ctx context.Context) (*BaseAccount, error) {
 	url, err := c.getUrl(accountsUrlPath)
 	if err != nil {
 		return nil, err
@@ -184,7 +182,7 @@ func (c *Client) GetGroupDetails(ctx context.Context, groupId int) (*Group, erro
 	return &target.Group, nil
 }
 
-// GetUserAccountDetails returns Jamf user account details.
+// GetUserAccountDetails returns Jamf user account details; a 404 (IsNotFoundError) means the account does not exist.
 func (c *Client) GetUserAccountDetails(ctx context.Context, userId int) (*UserAccount, error) {
 	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, userId))
 	if err != nil {
@@ -214,7 +212,9 @@ func (c *Client) GetSites(ctx context.Context) (*[]Site, error) {
 	return &target.Sites, nil
 }
 
-func (c *Client) getBaseUserGroups(ctx context.Context) ([]UserGroup, error) {
+// GetBaseUserGroups returns the Classic user groups (id and name only).
+// GET /JSSResource/usergroups, not paginated, needs the Read Static User Groups privilege.
+func (c *Client) GetBaseUserGroups(ctx context.Context) ([]UserGroup, error) {
 	url, err := c.getUrl(userGroupsUrlPath)
 	if err != nil {
 		return nil, err
@@ -244,23 +244,125 @@ func (c *Client) GetUserGroupDetails(ctx context.Context, userGroupId int) (*Use
 	return &target.UserGroup, nil
 }
 
-// GetUsers returns all Jamf users.
-func (c *Client) GetUsers(ctx context.Context) ([]*User, error) {
-	var users []*User
-	baseUsers, err := c.getBaseUsers(ctx)
+// GetProUsers returns one page of users ordered by id and the next page token, "" after the last page.
+// GET /api/v1/users, needs the Read User privilege.
+func (c *Client) GetProUsers(ctx context.Context, pageToken string, pageSize int) ([]ProUser, string, error) {
+	page, err := parsePageToken(pageToken)
+	if err != nil {
+		return nil, "", err
+	}
+
+	url, err := c.getUrl(proUsersUrlPath)
+	if err != nil {
+		return nil, "", err
+	}
+	query := liburl.Values{}
+	query.Set("page", strconv.Itoa(page))
+	query.Set("page-size", strconv.Itoa(pageSize))
+	query.Set("sort", "id:asc")
+	url.RawQuery = query.Encode()
+
+	var response ProUsersResponse
+	if err := c.doRequest(ctx, url, &response); err != nil {
+		return nil, "", proEndpointError(proUsersUrlPath, err)
+	}
+
+	nextPage := nextPageToken(page, pageSize, len(response.Results), response.TotalCount)
+	return response.Results, nextPage, nil
+}
+
+// rsqlValueEscaper escapes a value placed inside a double-quoted RSQL string.
+var rsqlValueEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+// GetProUsersByUsernameOrEmail returns up to UsersPageSize users, ordered by id, whose username or email equals
+// any of values. GET /api/v1/users with an RSQL filter, needs the Read User privilege.
+// RSQL treats `*` as a wildcard, so the caller must re-check each match.
+func (c *Client) GetProUsersByUsernameOrEmail(ctx context.Context, values []string) ([]ProUser, error) {
+	url, err := c.getUrl(proUsersUrlPath)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, baseUser := range baseUsers {
-		user, err := c.GetUserDetails(ctx, baseUser.ID)
-		if err != nil {
-			return nil, err
-		}
-		users = append(users, user)
+	terms := make([]string, 0, len(values)*2)
+	for _, value := range values {
+		quoted := `"` + rsqlValueEscaper.Replace(value) + `"`
+		terms = append(terms, "username=="+quoted, "email=="+quoted)
+	}
+	query := liburl.Values{}
+	query.Set("filter", strings.Join(terms, ","))
+	query.Set("page", "0")
+	query.Set("page-size", strconv.Itoa(UsersPageSize))
+	query.Set("sort", "id:asc")
+	url.RawQuery = query.Encode()
+
+	var response ProUsersResponse
+	if err := c.doRequest(ctx, url, &response); err != nil {
+		return nil, proEndpointError(proUsersUrlPath, err)
 	}
 
-	return users, nil
+	return response.Results, nil
+}
+
+// GetProAccounts returns one page of admin accounts ordered by id and the next page token, "" after the last page.
+// filter is an optional RSQL expression. GET /api/v1/accounts, needs the Read Accounts privilege.
+func (c *Client) GetProAccounts(ctx context.Context, filter, pageToken string, pageSize int) ([]ProAccount, string, error) {
+	page, err := parsePageToken(pageToken)
+	if err != nil {
+		return nil, "", err
+	}
+
+	url, err := c.getUrl(proAccountsUrlPath)
+	if err != nil {
+		return nil, "", err
+	}
+	query := liburl.Values{}
+	if filter != "" {
+		query.Set("filter", filter)
+	}
+	query.Set("page", strconv.Itoa(page))
+	query.Set("page-size", strconv.Itoa(pageSize))
+	query.Set("sort", "id:asc")
+	url.RawQuery = query.Encode()
+
+	var response ProAccountsResponse
+	if err := c.doRequest(ctx, url, &response); err != nil {
+		return nil, "", proEndpointError(proAccountsUrlPath, err)
+	}
+
+	nextPage := nextPageToken(page, pageSize, len(response.Results), response.TotalCount)
+	return response.Results, nextPage, nil
+}
+
+// GetSiteObjects returns one page of the site's objects of objectType (for example "User") and the next page
+// token, "" after the last page. GET /api/v1/sites/{id}/objects, needs the Read Sites privilege.
+// An unknown site answers an empty list, so a 404 means the instance lacks the endpoint.
+func (c *Client) GetSiteObjects(ctx context.Context, siteID int, objectType, pageToken string) ([]SiteObject, string, error) {
+	page, err := parsePageToken(pageToken)
+	if err != nil {
+		return nil, "", err
+	}
+
+	url, err := c.getUrl(fmt.Sprintf(siteObjectsUrlPath, siteID))
+	if err != nil {
+		return nil, "", err
+	}
+	query := liburl.Values{}
+	query.Set("filter", `objectType=="`+rsqlValueEscaper.Replace(objectType)+`"`)
+	query.Set("page", strconv.Itoa(page))
+	query.Set("page-size", strconv.Itoa(SiteObjectsPageSize))
+	query.Set("sort", "objectId:asc")
+	url.RawQuery = query.Encode()
+
+	var objects []SiteObject
+	if err := c.doRequest(ctx, url, &objects); err != nil {
+		return nil, "", proEndpointError(url.Path, err)
+	}
+
+	// The response has no total count: a full page may be followed by another.
+	if len(objects) == SiteObjectsPageSize {
+		return objects, strconv.Itoa(page + 1), nil
+	}
+	return objects, "", nil
 }
 
 // AddUserGroupMembers adds the given user IDs to a static Jamf user group via
@@ -300,55 +402,6 @@ func baseTypesFromIDs(ids []int) []BaseType {
 		out = append(out, BaseType{ID: id})
 	}
 	return out
-}
-
-// GetUserGroups returns all Jamf user groups.
-func (c *Client) GetUserGroups(ctx context.Context) ([]*UserGroup, error) {
-	var userGroups []*UserGroup
-	baseUserGroup, err := c.getBaseUserGroups(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, userGroup := range baseUserGroup {
-		userGroupInfo, err := c.GetUserGroupDetails(ctx, userGroup.ID)
-		if err != nil {
-			return nil, err
-		}
-		userGroups = append(userGroups, userGroupInfo)
-	}
-
-	return userGroups, nil
-}
-
-// GetAccounts returns all Jamf accounts.
-// TODO(marcos): The Jamf API doesn't have pagination, but this method could
-// benefit from parallelization.
-func (c *Client) GetAccounts(ctx context.Context) ([]*UserAccount, []*Group, error) {
-	var userAccounts []*UserAccount
-	var groups []*Group
-	baseAccounts, err := c.getBaseAccounts(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	for _, user := range baseAccounts.Users {
-		userAccountInfo, err := c.GetUserAccountDetails(ctx, user.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		userAccounts = append(userAccounts, userAccountInfo)
-	}
-
-	for _, group := range baseAccounts.Groups {
-		groupInfo, err := c.GetGroupDetails(ctx, group.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		groups = append(groups, groupInfo)
-	}
-
-	return userAccounts, groups, nil
 }
 
 // GetUserByName returns the Jamf user with the given username (login name).
@@ -673,7 +726,7 @@ func (c *Client) GetPrivileges(ctx context.Context) (*PrivilegesResponse, error)
 
 	var target PrivilegesResponse
 	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+		return nil, proEndpointError(privilegesUrlPath, err)
 	}
 
 	return &target, nil

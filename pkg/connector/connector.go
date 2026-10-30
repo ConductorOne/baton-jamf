@@ -15,58 +15,6 @@ import (
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 )
 
-var (
-	resourceTypeUser = &v2.ResourceType{
-		Id:          "user",
-		DisplayName: "User",
-		Traits: []v2.ResourceType_Trait{
-			v2.ResourceType_TRAIT_USER,
-		},
-		Annotations: annotationsForUserResourceType(),
-	}
-	resourceTypeGroup = &v2.ResourceType{
-		Id:          "group",
-		DisplayName: "Group",
-		Traits: []v2.ResourceType_Trait{
-			v2.ResourceType_TRAIT_GROUP,
-		},
-	}
-	resourceTypeUserAccount = &v2.ResourceType{
-		Id:          "userAccount",
-		DisplayName: "User Account",
-		Traits: []v2.ResourceType_Trait{
-			v2.ResourceType_TRAIT_USER,
-		},
-		Annotations: annotationsForUserResourceType(),
-	}
-	resourceTypeSite = &v2.ResourceType{
-		Id:          "site",
-		DisplayName: "Site",
-	}
-	resourceTypeUserGroup = &v2.ResourceType{
-		Id:          "userGroup",
-		DisplayName: "User Group",
-		Traits: []v2.ResourceType_Trait{
-			v2.ResourceType_TRAIT_GROUP,
-		},
-	}
-	resourceTypeRole = &v2.ResourceType{
-		Id:          "role",
-		DisplayName: "Role",
-		Traits: []v2.ResourceType_Trait{
-			v2.ResourceType_TRAIT_ROLE,
-		},
-	}
-	resourceTypeManagedDevice = &v2.ResourceType{
-		Id:          "managedDevice",
-		DisplayName: "Managed Device",
-		Traits: []v2.ResourceType_Trait{
-			v2.ResourceType_TRAIT_MANAGED_DEVICE,
-		},
-		Annotations: annotationsForManagedDeviceResourceType(),
-	}
-)
-
 type Jamf struct {
 	client *jamf.Client
 
@@ -76,6 +24,12 @@ type Jamf struct {
 	// connector instance; Delete is not gated by this and works for both
 	// types regardless of the configured target.
 	accountProvisioningTarget string
+
+	// Whether the sync includes each type: the grants that point at it, and the reads they need, depend on that.
+	syncRoles          bool
+	syncSites          bool
+	syncUserAccounts   bool
+	syncManagedDevices bool
 }
 
 // userProvisioningActive treats an empty accountProvisioningTarget as "user"
@@ -121,7 +75,14 @@ func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorb
 		accountProvisioningTarget = resourceTypeUser.Id
 	}
 
-	return &Jamf{client: client, accountProvisioningTarget: accountProvisioningTarget}, nil, nil
+	return &Jamf{
+		client:                    client,
+		accountProvisioningTarget: accountProvisioningTarget,
+		syncRoles:                 opts.WillSyncResourceType(resourceTypeRole.Id),
+		syncSites:                 opts.WillSyncResourceType(resourceTypeSite.Id),
+		syncUserAccounts:          opts.WillSyncResourceType(resourceTypeUserAccount.Id),
+		syncManagedDevices:        opts.WillSyncResourceType(resourceTypeManagedDevice.Id),
+	}, nil, nil
 }
 
 func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
@@ -148,11 +109,11 @@ func (j *Jamf) Validate(ctx context.Context) (annotations.Annotations, error) {
 func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncerV2 {
 	return []connectorbuilder.ResourceSyncerV2{
 		j.userSyncer(),
-		groupBuilder(j.client),
+		groupBuilder(j.client, j.syncRoles, j.syncSites),
 		j.userAccountSyncer(),
 		userGroupBuilder(j.client),
 		siteBuilder(j.client),
-		roleBuilder(j.client),
+		roleBuilder(j.client, j.syncUserAccounts),
 		managedDeviceBuilder(j.client),
 	}
 }
@@ -171,7 +132,7 @@ func (j *Jamf) accountCreationSchema() *v2.ConnectorAccountCreationSchema {
 // provisionableUserType for why only ever registering one target as an
 // AccountManagerV2 matters.
 func (j *Jamf) userSyncer() connectorbuilder.ResourceSyncerV2 {
-	base := userBuilder(j.client)
+	base := userBuilder(j.client, j.syncManagedDevices)
 	if j.userProvisioningActive() {
 		return &provisionableUserType{base}
 	}

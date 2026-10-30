@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -12,7 +14,6 @@ import (
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
-	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -294,57 +295,56 @@ func TestSiteRevoke_Conflict_ReturnsFailedPrecondition(t *testing.T) {
 	}
 }
 
-// TestSiteGrants_UserWithTwoSites_EmitsGrantForEachSite covers sync's Grants
-// method: a user belonging to two sites must produce a grant from each
-// site's Grants() call, not just the first (regression coverage for the
-// flat-vs-wrapped <sites> decoding bug).
-func TestSiteGrants_UserWithTwoSites_EmitsGrantForEachSite(t *testing.T) {
-	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"users": []map[string]any{{"id": 42, "name": "jappleseed"}},
-			})
-		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users/id/42":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"user": map[string]any{
-					"id": 42, "name": "jappleseed",
-					"sites": []map[string]any{{"id": 1, "name": "HQ"}, {"id": 2, "name": "Remote"}},
-				},
-			})
-		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/usergroups":
-			_ = json.NewEncoder(w).Encode(map[string]any{"user_groups": []any{}})
-		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/accounts":
-			_ = json.NewEncoder(w).Encode(map[string]any{"accounts": map[string]any{"users": []any{}, "groups": []any{}}})
-		default:
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
-		}
-	})
-	s := siteBuilder(client)
+// Site grants walk the site's users, then its user groups, then the accounts assigned to it, one page per call.
+func TestSiteGrants_WalksUsersUserGroupsThenAdmins(t *testing.T) {
+	siteAuditor := testAccount(7, privilegeSetAuditor)
+	siteAuditor.Site = jamf.BaseType{ID: 1}
+	siteCustom := testAccount(8, privilegeSetCustom)
+	siteCustom.Site = jamf.BaseType{ID: 1}
+	otherSiteAuditor := testAccount(9, privilegeSetAuditor)
+	otherSiteAuditor.Site = jamf.BaseType{ID: 2}
+	noSiteAuditor := testAccount(10, privilegeSetAuditor)
 
-	site1, err := siteResource(&jamf.Site{BaseType: jamf.BaseType{ID: 1, Name: "HQ"}}, nil)
-	if err != nil {
-		t.Fatalf("siteResource: %v", err)
+	userIDs := idRange(1, jamf.SiteObjectsPageSize+50) // a full page and a short one
+	userGroupIDs := idRange(500, 30)
+	fixture := newAdminFixture(t, []jamf.UserAccount{siteAuditor, siteCustom, otherSiteAuditor, noSiteAuditor}, nil)
+	fixture.siteObjects = map[string][]int{
+		"1/User":       userIDs,
+		"1/User Group": userGroupIDs,
+		"2/User":       {999},
 	}
-	site2, err := siteResource(&jamf.Site{BaseType: jamf.BaseType{ID: 2, Name: "Remote"}}, nil)
+	builder := siteBuilder(fixture.client())
+	site, err := siteResource(&jamf.Site{BaseType: jamf.BaseType{ID: 1, Name: "Site 1"}}, nil)
 	if err != nil {
 		t.Fatalf("siteResource: %v", err)
 	}
 
-	grants1, _, err := s.Grants(context.Background(), site1, rs.SyncOpAttrs{})
-	if err != nil {
-		t.Fatalf("Grants(site 1): %v", err)
+	grants, calls := collectGrants(t, builder.Grants, site, newMemorySessionStore())
+
+	// Two user pages, one user group page, one admin page.
+	if calls != 4 {
+		t.Errorf("Grants calls = %d, want 4", calls)
 	}
-	if len(grants1) != 1 {
-		t.Fatalf("want 1 grant for site 1, got %d", len(grants1))
+	if got := fixture.requestCount("/api/v1/sites/1/objects"); got != 3 {
+		t.Errorf("site objects requests = %d, want 3", got)
+	}
+	if got := fixture.accountsRequestsSeen(); len(got) != 1 || got[0].filter != "siteId==1" {
+		t.Errorf("accounts requests = %v, want one with filter siteId==1", got)
+	}
+	if got := fixture.requestCount("/JSSResource"); got != 0 {
+		t.Errorf("Classic requests = %d, want 0", got)
 	}
 
-	grants2, _, err := s.Grants(context.Background(), site2, rs.SyncOpAttrs{})
-	if err != nil {
-		t.Fatalf("Grants(site 2): %v", err)
+	var want []string
+	for _, userID := range userIDs {
+		want = append(want, "user:"+strconv.Itoa(userID))
 	}
-	if len(grants2) != 1 {
-		t.Fatalf("want 1 grant for site 2, got %d", len(grants2))
+	for _, userGroupID := range userGroupIDs {
+		want = append(want, "userGroup:"+strconv.Itoa(userGroupID))
+	}
+	want = append(want, "userAccount:7", "userAccount:8")
+	slices.Sort(want)
+	if got := grantPrincipals(t, grants); !slices.Equal(got, want) {
+		t.Errorf("principals = %v, want %v", got, want)
 	}
 }

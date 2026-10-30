@@ -460,10 +460,11 @@ func parsePaging(w http.ResponseWriter, r *http.Request) (int, int, bool) {
 }
 
 func pageOf[T any](items []T, page, pageSize int) []T {
-	start := page * pageSize
-	if start >= len(items) {
+	// Compare page counts, not page*pageSize, so a huge page cannot overflow.
+	if pageSize <= 0 || page >= ceilDiv(len(items), pageSize) {
 		return nil
 	}
+	start := page * pageSize
 	return items[start:min(start+pageSize, len(items))]
 }
 

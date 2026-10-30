@@ -91,9 +91,9 @@ The **Administrator** privilege set covers everything. For least privilege, gran
 | Sync users | `Read User` |
 | Sync user accounts and groups | `Read Accounts` |
 | Sync user groups | `Read Static User Groups`, `Read Smart User Groups` (Smart is only needed when smart groups exist — it's checked per group) |
-| Sync sites | `Read Sites`, `Read User`, `Read Static User Groups`, `Read Smart User Groups`, `Read Accounts` (site grants are built by reading users, user groups and accounts) |
+| Sync sites | `Read Sites`, `Read Accounts` |
 | Sync roles | `Read API Roles`, `Read Accounts` |
-| Sync managed devices (opt-in) | `Read Computers`, `Read Mobile Devices`, `Read User` (needed even if `user` isn't synced) |
+| Sync managed devices (opt-in) | `Read Computers`, `Read Mobile Devices` |
 | Create/delete users | `Create User` and `Read User` (the connector reads the user back after creating); `Delete User` |
 | Create/delete user accounts | `Create Accounts` and `Read Accounts`; `Delete Accounts` |
 | Group Grant/Revoke (`userAccount` principal) | `Read Accounts`, `Update Accounts` |
@@ -104,7 +104,7 @@ The **Administrator** privilege set covers everything. For least privilege, gran
 
 `Read Accounts`/`Create Accounts`/`Update Accounts`/`Delete Accounts` cover both admin user accounts and admin groups — Jamf has no separate privilege for account groups. Every write path reads the object first, so each `Update` privilege above needs its `Read` counterpart too.
 
-Jamf reports a missing privilege differently depending on which API it uses: the Classic API (`/JSSResource` — Users, Accounts, Static User Groups) answers with HTTP 401, and the Jamf Pro API (`/api/v1`, `/api/v2`, `/api/v4` — the roles catalog, Computers, Mobile Devices) with HTTP 403. The connector reports both as a permission error.
+Jamf reports a missing privilege differently depending on which API it uses: the Classic API (`/JSSResource` — User Groups, admin groups, Sites, and user and account details and writes) answers with HTTP 401, and the Jamf Pro API (`/api/v1`, `/api/v2`, `/api/v4` — the users and accounts lists, site objects, the roles catalog, Computers, Mobile Devices) with HTTP 403. The connector reports both as a permission error.
 
 ## Configure the Jamf connector
 

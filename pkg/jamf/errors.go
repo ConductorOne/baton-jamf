@@ -1,6 +1,9 @@
 package jamf
 
 import (
+	"fmt"
+
+	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -20,4 +23,13 @@ func IsNotFoundError(err error) bool {
 // operation's semantics make "already exists" the sole realistic cause.
 func IsAlreadyExistsError(err error) bool {
 	return status.Code(err) == codes.AlreadyExists
+}
+
+// proEndpointError turns a 404 from a Jamf Pro API list endpoint into FailedPrecondition:
+// the instance lacks the endpoint, and NotFound would make the SDK skip the sync action.
+func proEndpointError(path string, err error) error {
+	if IsNotFoundError(err) {
+		return uhttp.WrapErrors(codes.FailedPrecondition, fmt.Sprintf("jamf pro api %s is not available on this Jamf Pro version", path), err)
+	}
+	return err
 }
