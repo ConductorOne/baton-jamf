@@ -4,13 +4,17 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -18,9 +22,12 @@ import (
 )
 
 type roleResourceType struct {
-	resourceType *v2.ResourceType
-	client       *jamf.Client
+	resourceType     *v2.ResourceType
+	client           *jamf.Client
+	syncUserAccounts bool
 }
+
+var _ connectorbuilder.TypeScopedGrantsSyncer = (*roleResourceType)(nil)
 
 func (o *roleResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 	return o.resourceType
@@ -43,6 +50,14 @@ func roleResource(ctx context.Context, role string, parentResourceID *v2.Resourc
 		"role_id":   role,
 	}
 
+	description := fmt.Sprintf("Individual privilege %q — only grantable while the principal's privilege set is %q", role, privilegeSetCustom)
+	if slices.Contains(privilegeSets, role) {
+		description = fmt.Sprintf(
+			"Privilege set of %s — granting this overwrites the principal's current privilege set; revoking moves the principal to %q with only the %q privilege",
+			role, privilegeSetCustom, privilegeReadLicenseInformation,
+		)
+	}
+
 	ret, err := resource.NewRoleResource(
 		role,
 		resourceTypeRole,
@@ -50,6 +65,7 @@ func roleResource(ctx context.Context, role string, parentResourceID *v2.Resourc
 		nil,
 		resource.WithParentResourceID(parentResourceID),
 		resource.WithResourceProfile(profile),
+		resource.WithDescription(description),
 	)
 	if err != nil {
 		return nil, err
@@ -68,12 +84,13 @@ func (o *roleResourceType) List(ctx context.Context, parentId *v2.ResourceId, at
 		rv = append(rv, rr)
 	}
 
-	res, err := o.client.GetPrivileges(ctx)
+	// Also stores the catalog the grants read, so Jamf is asked once per sync.
+	privileges, err := privilegeCatalog(ctx, attrs.Session, o.client)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("jamf-connector: list privileges: %w", err)
 	}
 
-	for _, privilege := range res.Privileges {
+	for _, privilege := range privileges {
 		rr, err := roleResource(ctx, privilege, parentId)
 		if err != nil {
 			return nil, nil, err
@@ -84,87 +101,142 @@ func (o *roleResourceType) List(ctx context.Context, parentId *v2.ResourceId, at
 	return rv, nil, nil
 }
 
-// Entitlements declares every Role resource — the three built-in privilege
-// sets and every individual privilege — as grantable to both userAccount and
-// group principals. Grant/Revoke (below) are the source of truth for the
-// actual rules (a privilege set is always grantable; an individual privilege
-// is only meaningfully grantable while the principal's privilege_set is
-// Custom) — this declaration is deliberately permissive so the platform can
-// always attempt a grant and get back a precise, actionable error instead of
-// never offering the option at all. Custom itself is not a Role resource —
-// see List — so it is never declared grantable here either.
-func (o *roleResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ resource.SyncOpAttrs) ([]*v2.Entitlement, *resource.SyncOpResults, error) {
-	description := fmt.Sprintf("Individual privilege %q — only grantable while the principal's privilege set is %q", resource.DisplayName, privilegeSetCustom)
-	if slices.Contains(privilegeSets, resource.Id.Resource) {
-		description = fmt.Sprintf(
-			"Privilege set of %s — granting this overwrites the principal's current privilege set; revoking moves the principal to %q with only the %q privilege",
-			resource.DisplayName, privilegeSetCustom, privilegeReadLicenseInformation,
-		)
+// Entitlements is unused: StaticEntitlements declares the member entitlement.
+func (o *roleResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ resource.SyncOpAttrs) ([]*v2.Entitlement, *resource.SyncOpResults, error) {
+	return nil, nil, nil
+}
+
+// Grantable to both even where Jamf refuses the grant, so Grant answers with an actionable error.
+func (o *roleResourceType) StaticEntitlements(_ context.Context, _ resource.SyncOpAttrs) ([]*v2.Entitlement, *resource.SyncOpResults, error) {
+	return []*v2.Entitlement{
+		ent.NewPermissionEntitlement(nil, memberEntitlement,
+			ent.WithDisplayName("Member"),
+			ent.WithGrantableTo(resourceTypeUserAccount, resourceTypeGroup),
+		),
+	}, nil, nil
+}
+
+// Grants is unused: GrantsForResourceType emits the accounts' role grants; the group Grants emits the groups'.
+func (o *roleResourceType) Grants(_ context.Context, _ *v2.Resource, _ resource.SyncOpAttrs) ([]*v2.Grant, *resource.SyncOpResults, error) {
+	return nil, nil, nil
+}
+
+// Phases of the type-scoped role grants.
+const (
+	rolePhasePrivilegeSets  = "privilegeSets"
+	rolePhaseCustomAccounts = "customAccounts"
+)
+
+// customAccountsPageSize keeps a page of Custom accounts holding every privilege (~528 grants of ~270 bytes each)
+// well under gRPC's 4 MiB response limit.
+const customAccountsPageSize = 10
+
+// GrantsForResourceType emits the accounts' role grants in two phases: each account's privilege set,
+// then the individual privileges of the Custom accounts. Groups' role grants come from the group Grants.
+func (o *roleResourceType) GrantsForResourceType(ctx context.Context, _ string, attrs resource.SyncOpAttrs) ([]*v2.Grant, *resource.SyncOpResults, error) {
+	// Role grants only name accounts.
+	if !o.syncUserAccounts {
+		return nil, nil, nil
 	}
 
-	privilegesEn := ent.NewPermissionEntitlement(resource, memberEntitlement,
-		ent.WithDisplayName(fmt.Sprintf("%s privilege set %s", resource.DisplayName, memberEntitlement)),
-		ent.WithDescription(description),
-		ent.WithGrantableTo(resourceTypeUserAccount, resourceTypeGroup),
-	)
+	bag := &pagination.Bag{}
+	if err := bag.Unmarshal(attrs.PageToken.Token); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: parse role grants page token: %w", err)
+	}
+	if bag.Current() == nil {
+		bag.Push(pagination.PageState{ResourceTypeID: rolePhaseCustomAccounts})
+		bag.Push(pagination.PageState{ResourceTypeID: rolePhasePrivilegeSets})
+	}
 
-	return []*v2.Entitlement{privilegesEn}, nil, nil
-}
-
-// matchesIndividualPrivilege reports whether an account/group holding
-// privilegeSet and privileges should be granted the given individual
-// privilege role. Privileges is only meaningful for a Custom privilege_set
-// (see jamf.AccountPrivilegesUpdateBody.Privileges) — a built-in set's
-// Privileges data, if Jamf ever returns any, must not be treated as an
-// access grant.
-func matchesIndividualPrivilege(privilegeSet string, privileges *jamf.Privileges, privilege string) bool {
-	return privilegeSet == privilegeSetCustom && privileges.Contains(privilege)
-}
-
-func (o *roleResourceType) Grants(ctx context.Context, resource *v2.Resource, attrs resource.SyncOpAttrs) ([]*v2.Grant, *resource.SyncOpResults, error) {
-	var rv []*v2.Grant
-	isCustomPrivilege := !slices.Contains(privilegeSets, resource.Id.Resource)
-	userAccounts, groups, err := o.client.GetAccounts(ctx)
+	phase := bag.Current()
+	var grants []*v2.Grant
+	var nextPage string
+	var err error
+	switch phase.ResourceTypeID {
+	case rolePhasePrivilegeSets:
+		grants, nextPage, err = o.privilegeSetGrants(ctx, phase.Token)
+	case rolePhaseCustomAccounts:
+		grants, nextPage, err = o.customPrivilegeGrants(ctx, attrs.Session, phase.Token)
+	default:
+		err = fmt.Errorf("unknown phase %q", phase.ResourceTypeID)
+	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("jamf-connector: list role grants (%s): %w", phase.ResourceTypeID, err)
 	}
 
-	for _, group := range groups {
-		groupCopy := group
-		gr, err := groupResource(groupCopy, resource.Id)
-		if err != nil {
-			return nil, nil, err
-		}
+	nextToken, err := bag.NextToken(nextPage)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: build role grants page token: %w", err)
+	}
+	return grants, &resource.SyncOpResults{NextPageToken: nextToken}, nil
+}
 
-		if isCustomPrivilege && matchesIndividualPrivilege(group.PrivilegeSet, &group.Privileges, resource.Id.Resource) {
-			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
-			rv = append(rv, privilegeGrant)
+// privilegeSetGrants grants each account on the page its privilege set: Administrator, Auditor or Enrollment Only.
+func (o *roleResourceType) privilegeSetGrants(ctx context.Context, page string) ([]*v2.Grant, string, error) {
+	accounts, nextPage, err := o.client.GetProAccounts(ctx, "", page, jamf.AccountsPageSize)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var grants []*v2.Grant
+	for _, account := range accounts {
+		privilegeSet := account.UserAccount().PrivilegeSet
+		if slices.Contains(privilegeSets, privilegeSet) {
+			grants = append(grants, roleGrant(privilegeSet, account.ID))
+		}
+	}
+	return grants, nextPage, nil
+}
+
+// customPrivilegeGrants grants each Custom account on the page the individual privileges it holds.
+func (o *roleResourceType) customPrivilegeGrants(ctx context.Context, store sessions.SessionStore, page string) ([]*v2.Grant, string, error) {
+	catalog, err := privilegeCatalog(ctx, store, o.client)
+	if err != nil {
+		return nil, "", err
+	}
+	accounts, nextPage, err := o.client.GetProAccounts(ctx, "privilegeLevel==CUSTOM", page, customAccountsPageSize)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var grants []*v2.Grant
+	for _, account := range accounts {
+		// The accounts list has no privileges; only the account detail does.
+		detail, err := o.client.GetUserAccountDetails(ctx, account.ID)
+		if jamf.IsNotFoundError(err) {
+			ctxzap.Extract(ctx).Debug("jamf-connector: account deleted since it was listed; skipping its privileges",
+				zap.Int("account_id", account.ID))
 			continue
 		}
-		if group.PrivilegeSet == resource.Id.Resource {
-			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
-			rv = append(rv, privilegeGrant)
-		}
-	}
-
-	for _, userAccount := range userAccounts {
-		userAccountCopy := userAccount
-		gr, err := userAccountResource(userAccountCopy, resource.Id)
 		if err != nil {
-			return nil, nil, err
+			return nil, "", err
 		}
-
-		if isCustomPrivilege && matchesIndividualPrivilege(userAccount.PrivilegeSet, &userAccount.Privileges, resource.Id.Resource) {
-			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
-			rv = append(rv, privilegeGrant)
-			continue
-		}
-		if userAccount.PrivilegeSet == resource.Id.Resource {
-			privilegeGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
-			rv = append(rv, privilegeGrant)
+		for _, privilege := range customPrivileges(detail.PrivilegeSet, &detail.Privileges, catalog) {
+			grants = append(grants, roleGrant(privilege, account.ID))
 		}
 	}
-	return rv, nil, nil
+	return grants, nextPage, nil
+}
+
+// customPrivileges returns the catalog privileges held individually; only a Custom privilege set confers them.
+func customPrivileges(privilegeSet string, privileges *jamf.Privileges, catalog []string) []string {
+	if privilegeSet != privilegeSetCustom {
+		return nil
+	}
+	var held []string
+	for _, privilege := range dedupeStrings(privileges.All()) {
+		if slices.Contains(catalog, privilege) {
+			held = append(held, privilege)
+		}
+	}
+	return held
+}
+
+// roleGrant is an account's member grant on a role.
+func roleGrant(role string, accountID int) *v2.Grant {
+	roleID := &v2.ResourceId{ResourceType: resourceTypeRole.Id, Resource: role}
+	account := &v2.ResourceId{ResourceType: resourceTypeUserAccount.Id, Resource: strconv.Itoa(accountID)}
+	return grant.NewGrant(&v2.Resource{Id: roleID}, memberEntitlement, account)
 }
 
 // rolePrincipal is the account or group whose role is being changed, as last
@@ -500,9 +572,10 @@ func (o *roleResourceType) revokeIndividualPrivilege(ctx context.Context, p *rol
 	return nil, nil
 }
 
-func roleBuilder(client *jamf.Client) *roleResourceType {
+func roleBuilder(client *jamf.Client, syncUserAccounts bool) *roleResourceType {
 	return &roleResourceType{
-		resourceType: resourceTypeRole,
-		client:       client,
+		resourceType:     resourceTypeRole,
+		client:           client,
+		syncUserAccounts: syncUserAccounts,
 	}
 }

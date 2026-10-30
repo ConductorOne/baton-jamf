@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,17 +80,10 @@ type managedDeviceResourceType struct {
 	resourceType *v2.ResourceType
 	client       *jamf.Client
 
-	// userIndex maps lowercased username / email keys to the ResourceId of the
-	// synced Jamf user resource, so devices can cross-link their assigned owner.
-	// It is built lazily on first use and cached for the life of the process;
-	// List invalidates it at the start of each sync (see its first-page check)
-	// so a long-running process never serves a stale user list across syncs.
-	//
 	// deviceOwners maps a device resource id to the assignee recorded while
 	// listing devices, so Entitlements/Grants can emit the device->user grant
-	// without carrying it on the resource.
+	// without carrying it on the resource. mu guards it.
 	mu           sync.Mutex
-	userIndex    map[string]*v2.ResourceId
 	deviceOwners map[string]assignee
 }
 
@@ -98,13 +92,6 @@ func (d *managedDeviceResourceType) ResourceType(_ context.Context) *v2.Resource
 }
 
 func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	if attrs.PageToken.Token == "" {
-		// No incoming pagination cursor means this is the first page of a new
-		// sync; drop the cached user index so getUserIndex rebuilds it instead
-		// of serving a list left over from a prior sync.
-		d.resetUserIndex()
-	}
-
 	bag := &pagination.Bag{}
 	if err := bag.Unmarshal(attrs.PageToken.Token); err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: failed to parse device page token: %w", err)
@@ -205,18 +192,18 @@ func (d *managedDeviceResourceType) Entitlements(_ context.Context, resource *v2
 // When the assignee is a synced Jamf user it grants that user directly; otherwise
 // it annotates the grant with an ExternalResourceMatch so the platform can bind it
 // to a directory identity from an external source.
-func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
-	a := d.deviceAssignee(resource)
-	if a.empty() {
+func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	owner := d.deviceAssignee(resource)
+	if owner.empty() {
 		return nil, nil, nil
 	}
 
-	userIndex, err := d.getUserIndex(ctx)
+	userIDs, err := cachedUserIDs(ctx, attrs.Session, assigneeLookupKeys(owner))
 	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: failed to build user index for device owner resolution: %w", err)
+		return nil, nil, fmt.Errorf("jamf-connector: failed to resolve device owner: %w", err)
 	}
 
-	grants, err := deviceGrants(resource, a, userIndex)
+	grants, err := deviceGrants(resource, owner, userResourceIDs(userIDs))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -460,20 +447,23 @@ func assigneePrincipal(idx map[string]*v2.ResourceId, a assignee) (*v2.ResourceI
 // replacedGrantID resolves a device's outgoing assignee to the grant id
 // Grants() would have emitted for them, so Grant can report a GrantReplaced
 // annotation naming the exact grant being displaced. ok is false only when
-// there is truly nothing to resolve (a is empty).
-func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, a assignee, entitlement *v2.Entitlement) (string, bool, error) {
-	idx, err := d.getUserIndex(ctx)
-	if err != nil {
-		return "", false, err
-	}
-	rid, _, err := assigneePrincipal(idx, a)
-	if err != nil {
-		return "", false, err
-	}
-	if rid == nil {
+// there is truly nothing to resolve (owner is empty).
+func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, owner assignee, entitlement *v2.Entitlement) (string, bool, error) {
+	keys := assigneeLookupKeys(owner)
+	if len(keys) == 0 {
 		return "", false, nil
 	}
-	return grant.NewGrantID(rid, entitlement), true, nil
+
+	// Grant has no session store, so ask Jamf.
+	users, err := d.client.GetProUsersByUsernameOrEmail(ctx, keys)
+	if err != nil {
+		return "", false, err
+	}
+	principal, _, err := assigneePrincipal(userResourceIDs(userIDsByLookupKey(users)), owner)
+	if err != nil {
+		return "", false, err
+	}
+	return grant.NewGrantID(principal, entitlement), true, nil
 }
 
 // principalIdentityForRevoke resolves gr's principal to the assignee Revoke
@@ -516,56 +506,6 @@ func managedDeviceBuilder(client *jamf.Client) *managedDeviceResourceType {
 		resourceType: resourceTypeManagedDevice,
 		client:       client,
 	}
-}
-
-// getUserIndex lazily builds (and caches) the username/email -> user ResourceId
-// lookup used to cross-link a device to its assigned owner. On error nothing is
-// cached, so a subsequent call retries.
-func (d *managedDeviceResourceType) getUserIndex(ctx context.Context) (map[string]*v2.ResourceId, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if d.userIndex != nil {
-		return d.userIndex, nil
-	}
-
-	users, err := d.client.GetUsers(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	idx := make(map[string]*v2.ResourceId, len(users))
-	for _, u := range users {
-		if u == nil {
-			continue
-		}
-		rid := &v2.ResourceId{}
-		rid.SetResourceType(resourceTypeUser.Id)
-		rid.SetResource(strconv.Itoa(u.ID))
-
-		for _, key := range []string{u.Name, u.Username, u.Email, u.EmailAddress} {
-			key = strings.ToLower(strings.TrimSpace(key))
-			if key == "" {
-				continue
-			}
-			// First writer wins so a stable user keeps the key on collisions.
-			if _, exists := idx[key]; !exists {
-				idx[key] = rid
-			}
-		}
-	}
-
-	d.userIndex = idx
-	return d.userIndex, nil
-}
-
-// resetUserIndex drops the cached user index so the next getUserIndex call
-// rebuilds it. Called at the start of a managed-device sync (List's first
-// page).
-func (d *managedDeviceResourceType) resetUserIndex() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.userIndex = nil
 }
 
 // computerResource maps a Jamf computer-inventory record onto a ManagedDevice
@@ -869,10 +809,31 @@ func mobileOS(m *jamf.MobileDevice) *v2.DeviceOS {
 	return d
 }
 
+// assigneeLookupKeys returns the distinct non-empty lookup keys of owner's username and email.
+func assigneeLookupKeys(owner assignee) []string {
+	keys := make([]string, 0, 2)
+	for _, value := range []string{owner.username, owner.email} {
+		key := userLookupKey(value)
+		if key != "" && !slices.Contains(keys, key) {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+// userResourceIDs maps each lookup key to its user ResourceId.
+func userResourceIDs(userIDs map[string]string) map[string]*v2.ResourceId {
+	resourceIDs := make(map[string]*v2.ResourceId, len(userIDs))
+	for key, userID := range userIDs {
+		resourceIDs[key] = &v2.ResourceId{ResourceType: resourceTypeUser.Id, Resource: userID}
+	}
+	return resourceIDs
+}
+
 // resolveUser looks up a synced user ResourceId by username then email.
 func resolveUser(idx map[string]*v2.ResourceId, username, email string) (*v2.ResourceId, bool) {
 	for _, key := range []string{username, email} {
-		key = strings.ToLower(strings.TrimSpace(key))
+		key = userLookupKey(key)
 		if key == "" {
 			continue
 		}

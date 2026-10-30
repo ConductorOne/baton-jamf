@@ -1,6 +1,7 @@
-// Package main implements a mock Jamf Pro server (Classic API + the token
-// endpoints /api/v1/auth/token and /api/v1/oauth/token) for testing the
-// baton-jamf connector without a real Jamf Pro tenant.
+// Package main implements a mock Jamf Pro server (Classic API, the
+// /api/v1/auth and /api/v1/oauth/token endpoints, and the Pro users, accounts
+// and site objects endpoints) for testing the baton-jamf connector without a
+// real Jamf Pro tenant.
 //
 // Environment Variables:
 //   - PORT:          Server port (default: 8090, use 0 for a random port)
@@ -25,7 +26,7 @@
 //	  --instance-url http://localhost:8090
 //
 // Seeded data:
-//   - Sites: 1 "Headquarters", 2 "Remote"
+//   - Sites: 1 "Headquarters", 2 "Remote", 3 "Large Site"
 //   - Directory users (trait: user): john.appleseed (site 1), jane.doe,
 //     carol.smith, dave.jones, eve.miller (site 2) — jane and dave overlap in
 //     usergroup-sales below.
@@ -37,13 +38,23 @@
 //     (admin2+admin3 — admin2 overlaps two groups), group-custom (admin3,
 //     custom privilege).
 //   - User groups: usergroup-eng (john+jane), usergroup-sales (jane+dave —
-//     jane overlaps two groups), usergroup-empty (no members).
+//     jane overlaps two groups), usergroup-empty (no members), usergroup-bulk
+//     (id 304, site 3, 1,200 bulk users).
+//   - Bulk directory users: 2,100 users (ids 1001-3100, bulk.userNNNN@example.com)
+//     so /api/v1/users crosses its 1,000 page size; the first 1,100 belong to
+//     site 3 (more than one 1,000-object page of /api/v1/sites/{id}/objects)
+//     and the first 1,200 are the members of usergroup-bulk (more than one
+//     1,000-grant page).
 //   - Privileges (surfaced as custom roles): "Read Advanced Computer
 //     Searches", "Update Advanced Computer Searches", "Read User", "Update User".
 //
 // The mock enforces the Classic API's documented content-type contract: GET
 // responses are JSON, but POST/PUT request bodies must be XML — a JSON POST
 // body is rejected with 415, exactly like the real API.
+//
+// The Pro endpoints GET /api/v1/users, GET /api/v1/accounts and GET
+// /api/v1/sites/{id}/objects are mocked in proapi.go from the same seeded
+// users, admin accounts and sites the Classic endpoints serve.
 //
 // Managed devices (computers and mobile devices) are mocked in devices.go:
 // the v4 computers-inventory list/detail/PATCH and the v2 mobile-devices
@@ -212,6 +223,7 @@ func newServer(username, password, token, clientID, clientSecret string) *server
 		userGroups:   make(map[int]*jamf.UserGroup),
 	}
 	s.seedData()
+	s.seedBulkDirectory()
 	s.seedDevices()
 	return s
 }
@@ -428,24 +440,6 @@ func (s *server) requireBearer(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // ── Directory users (/JSSResource/users) ────────────────────────────────────
-
-// Doc URL: https://developer.jamf.com/jamf-pro/reference/findusers
-func (s *server) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	if !s.requireBearer(w, r) {
-		return
-	}
-	if r.Method != http.MethodGet {
-		writeJSONError(w, http.StatusMethodNotAllowed, "method must be GET")
-		return
-	}
-	s.mu.Lock()
-	minimal := make([]jamf.BaseType, 0, len(s.userList))
-	for _, u := range s.userList {
-		minimal = append(minimal, jamf.BaseType{ID: u.ID, Name: u.Name})
-	}
-	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, jamf.UsersResponse{Users: minimal})
-}
 
 // handleUserByID dispatches GET (by numeric ID) / POST (create, ID must be
 // 0) / DELETE (by numeric ID) on /JSSResource/users/id/{id}.
@@ -1409,8 +1403,10 @@ func run() error {
 	mux.HandleFunc("/api/v1/oauth/token", s.handleOAuthToken)
 	mux.HandleFunc("/api/v1/auth", s.handleTokenDetails)
 	mux.HandleFunc("/api/v1/api-role-privileges", s.handleListPrivileges)
+	mux.HandleFunc("/api/v1/users", s.handleProListUsers)
+	mux.HandleFunc("/api/v1/accounts", s.handleProListAccounts)
+	mux.HandleFunc("/api/v1/sites/{id}/objects", s.handleProSiteObjects)
 
-	mux.HandleFunc("/JSSResource/users", s.handleListUsers)
 	mux.HandleFunc("/JSSResource/users/id/", s.handleUserByID)
 	mux.HandleFunc("/JSSResource/users/name/", s.handleUserByName)
 

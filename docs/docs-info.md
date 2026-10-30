@@ -70,7 +70,7 @@ See the "Jamf account privileges" section of the README / connector docs page fo
 None identified — every endpoint below is part of standard Jamf Pro, not gated behind a separate add-on or tier. The connector uses both the Classic API (`/JSSResource/*`) and the Jamf Pro API (`/api/*`):
 
 - Classic API: `/JSSResource/users`, `/JSSResource/accounts`, `/JSSResource/usergroups`, `/JSSResource/sites` (and their `/id/{id}` and create/update/delete variants) — see the links below.
-- Jamf Pro API: `POST /api/v1/auth/token` or `POST /api/v1/oauth/token` (authentication), `GET /api/v1/auth` (validation), `GET /api/v1/api-role-privileges` (Role sync), `GET /api/v4/computers-inventory` and `PATCH /api/v4/computers-inventory-detail/{id}` (Managed Device computers), `GET`/`PATCH /api/v2/mobile-devices[/{id}]` (Managed Device mobile devices).
+- Jamf Pro API: `POST /api/v1/auth/token` or `POST /api/v1/oauth/token` (authentication), `GET /api/v1/auth` (validation and the delete self-check), `GET /api/v1/api-role-privileges` (Role sync), `GET /api/v1/users` (User sync and managed device owner lookup), `GET /api/v1/accounts` (User Account sync, Role and Site grants), `GET /api/v1/sites/{id}/objects` (Site grants), `GET /api/v4/computers-inventory` and `PATCH /api/v4/computers-inventory-detail/{id}` (Managed Device computers), `GET`/`PATCH /api/v2/mobile-devices[/{id}]` (Managed Device mobile devices).
 
 ### Classic API content-type contract
 
@@ -84,6 +84,9 @@ The Jamf Pro Classic API only accepts **XML** for POST/PUT request bodies — JS
 - [Create bearer token](https://developer.jamf.com/jamf-pro/reference/post_v1-auth-token)
 - [Obtain an access token using an API client](https://developer.jamf.com/jamf-pro/reference/postoauthtoken)
 - [API role privileges catalog](https://developer.jamf.com/jamf-pro/reference/get_v1-api-role-privileges)
+- [Users (v1)](https://developer.jamf.com/jamf-pro/reference/get_v1-users)
+- [Accounts (v1)](https://developer.jamf.com/jamf-pro/reference/get_v1-accounts)
+- [Site objects (v1)](https://developer.jamf.com/jamf-pro/reference/get_v1-sites-id-objects)
 - [Computers inventory (v4)](https://developer.jamf.com/jamf-pro/reference/get_v4-computers-inventory)
 - [Computers inventory detail PATCH (v4)](https://developer.jamf.com/jamf-pro/reference/patch_v4-computers-inventory-detail-id)
 - [Mobile devices (v2)](https://developer.jamf.com/jamf-pro/reference/get_v2-mobile-devices)
