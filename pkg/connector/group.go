@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"time"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -13,6 +12,7 @@ import (
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -24,6 +24,8 @@ const memberEntitlement = "member"
 type groupResourceType struct {
 	resourceType *v2.ResourceType
 	client       *jamf.Client
+	syncRoles    bool
+	syncSites    bool
 }
 
 func (g *groupResourceType) ResourceType(_ context.Context) *v2.ResourceType {
@@ -53,82 +55,102 @@ func groupResource(group *jamf.Group, parentResourceID *v2.ResourceId) (*v2.Reso
 }
 
 func (g *groupResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	_, groups, err := g.client.GetAccounts(ctx)
+	accounts, err := g.client.GetBaseAccounts(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: failed to list accounts: %w", err)
 	}
 
 	var rv []*v2.Resource
-	for _, group := range groups {
-		groupCopy := group
-		gr, err := groupResource(groupCopy, parentId)
+	for _, group := range accounts.Groups {
+		resource, err := groupResource(&group, parentId)
 		if err != nil {
 			return nil, nil, err
 		}
-		rv = append(rv, gr)
+		rv = append(rv, resource)
 	}
 	return rv, nil, nil
 }
 
-func (g *groupResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
-	var rv []*v2.Entitlement
-
-	assignmentOptions := []ent.EntitlementOption{
-		ent.WithGrantableTo(resourceTypeUserAccount),
-		ent.WithDescription(fmt.Sprintf("Member of %s Group", resource.DisplayName)),
-		ent.WithDisplayName(fmt.Sprintf("%s Group %s", resource.DisplayName, memberEntitlement)),
-	}
-
-	en := ent.NewAssignmentEntitlement(resource, memberEntitlement, assignmentOptions...)
-	rv = append(rv, en)
-
-	return rv, nil, nil
+// Entitlements is unused: StaticEntitlements declares the member entitlement.
+func (g *groupResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	return nil, nil, nil
 }
 
+func (g *groupResourceType) StaticEntitlements(_ context.Context, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	return []*v2.Entitlement{
+		ent.NewAssignmentEntitlement(nil, memberEntitlement,
+			ent.WithDisplayName("Member"),
+			ent.WithDescription("Member of the Jamf account group"),
+			ent.WithGrantableTo(resourceTypeUserAccount),
+		),
+	}, nil, nil
+}
+
+// Grants emits the group's members, the roles it holds and its site, paged by grant ID.
 func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
-	var rv []*v2.Grant
-
 	groupId, err := strconv.Atoi(resource.Id.Resource)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: invalid group id %q: %w", resource.Id.Resource, err)
+	}
+
+	grants, err := g.groupGrants(ctx, attrs.Session, resource, groupId)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: list group %d grants: %w", groupId, err)
+	}
+
+	page, nextCursor, err := pageGrants(grants, attrs.PageToken.Token)
 	if err != nil {
 		return nil, nil, err
 	}
+	return page, &rs.SyncOpResults{NextPageToken: nextCursor}, nil
+}
 
-	// HACK: the endpoint to get group details returns a members list, but it comes back empty
-	// sometimes when it shouldn't. This is a bug in the Jamf API.
-	// This is a workaround to get the members list as of 22/05/2025 and is not 100% reliable.
-	// but from what's i've seen, it will return the members list after 2-3 tries. (if there are
-	// any members at all in that group)
-	// https://developer.jamf.com/jamf-pro/reference/findgroupsbyid
-	// if this endpoint becomes reliable again, we can remove this for loop
-	var group *jamf.Group
-	count := 0
-	for count < 5 {
-		group, err = g.client.GetGroupDetails(ctx, groupId)
-		if err != nil {
-			return nil, nil, err
-		}
-		if len(group.Members) > 0 {
-			break
-		}
-		count++
-		time.Sleep(time.Second)
+// groupGrants lists the grants of one group: its members, then the roles and the site it holds.
+func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.SessionStore, resource *v2.Resource, groupId int) ([]*v2.Grant, error) {
+	group, err := g.client.GetGroupDetails(ctx, groupId)
+	if err != nil {
+		return nil, err
 	}
 
-	for _, user := range group.Members {
-		userAccountDetails, err := g.client.GetUserAccountDetails(ctx, user.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		ur, err := userAccountResource(userAccountDetails, resource.Id)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		grant := grant.NewGrant(resource, memberEntitlement, ur.Id)
-		rv = append(rv, grant)
+	grants := make([]*v2.Grant, 0, len(group.Members))
+	for _, member := range group.Members {
+		account := &v2.ResourceId{ResourceType: resourceTypeUserAccount.Id, Resource: strconv.Itoa(member.ID)}
+		grants = append(grants, grant.NewGrant(resource, memberEntitlement, account))
 	}
 
-	return rv, nil, nil
+	if g.syncRoles {
+		roles, err := g.heldRoles(ctx, store, group)
+		if err != nil {
+			return nil, err
+		}
+		for _, role := range roles {
+			roleID := &v2.ResourceId{ResourceType: resourceTypeRole.Id, Resource: role}
+			grants = append(grants, grant.NewGrant(&v2.Resource{Id: roleID}, memberEntitlement, resource.Id))
+		}
+	}
+
+	// Jamf reports a site id of -1 for none.
+	if g.syncSites && group.Site.ID > 0 {
+		siteID := &v2.ResourceId{ResourceType: resourceTypeSite.Id, Resource: strconv.Itoa(group.Site.ID)}
+		grants = append(grants, grant.NewGrant(&v2.Resource{Id: siteID}, memberEntitlement, resource.Id))
+	}
+	return grants, nil
+}
+
+// heldRoles returns the roles a group holds: its privilege set, or the individual privileges of a Custom group.
+func (g *groupResourceType) heldRoles(ctx context.Context, store sessions.SessionStore, group *jamf.Group) ([]string, error) {
+	if slices.Contains(privilegeSets, group.PrivilegeSet) {
+		return []string{group.PrivilegeSet}, nil
+	}
+	if group.PrivilegeSet != privilegeSetCustom {
+		return nil, nil
+	}
+
+	catalog, err := privilegeCatalog(ctx, store, g.client)
+	if err != nil {
+		return nil, err
+	}
+	return customPrivileges(group.PrivilegeSet, &group.Privileges, catalog), nil
 }
 
 // Grant adds principal (a Jamf admin account) to the static admin account
@@ -247,9 +269,11 @@ func (g *groupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotatio
 	return nil, nil
 }
 
-func groupBuilder(client *jamf.Client) *groupResourceType {
+func groupBuilder(client *jamf.Client, syncRoles, syncSites bool) *groupResourceType {
 	return &groupResourceType{
 		resourceType: resourceTypeGroup,
 		client:       client,
+		syncRoles:    syncRoles,
+		syncSites:    syncSites,
 	}
 }

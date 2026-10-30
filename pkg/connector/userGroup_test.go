@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
@@ -433,5 +435,33 @@ func TestUserGroupGrants_SingleRead_BuildsPrincipalIDsFromMembers(t *testing.T) 
 	}
 	if getCalls != 1 {
 		t.Errorf("want exactly 1 GET, got %d", getCalls)
+	}
+}
+
+// A group of 1500 members spans two Grants pages, each member a distinct user principal.
+func TestUserGroupGrants_PagesPastOneThousandMembers(t *testing.T) {
+	const memberCount = 1500
+	users := make([]map[string]any, 0, memberCount)
+	for _, id := range idRange(1, memberCount) {
+		users = append(users, map[string]any{"id": id, "name": fmt.Sprintf("user%d", id)})
+	}
+	client := newTestJamfClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		encodeJSON(t, w, map[string]any{"user_group": map[string]any{"id": 5, "name": "Test Group", "users": users}})
+	})
+	builder := userGroupBuilder(client)
+	resource, err := userGroupResource(&jamf.UserGroup{BaseType: jamf.BaseType{ID: 5, Name: "Test Group"}}, nil)
+	if err != nil {
+		t.Fatalf("userGroupResource: %v", err)
+	}
+
+	grants, calls := collectGrants(t, builder.Grants, resource, nil)
+
+	if calls != 2 {
+		t.Errorf("Grants calls = %d, want 2", calls)
+	}
+	principals := grantPrincipals(t, grants)
+	if len(principals) != memberCount || !strings.HasPrefix(principals[0], resourceTypeUser.Id+":") {
+		t.Errorf("principals = %d, want %d unique %s principals", len(principals), memberCount, resourceTypeUser.Id)
 	}
 }

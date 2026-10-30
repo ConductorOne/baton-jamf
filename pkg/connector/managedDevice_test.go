@@ -440,12 +440,10 @@ func jamfDeviceAssignHandlerEmail(t *testing.T, principalUsername, principalEmai
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
-			// Grant's getUserIndex scan when resolving a GrantReplaced
-			// annotation for the outgoing assignee — empty is fine here, the
-			// annotation's exact id isn't asserted by these tests.
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/users":
+			// Owner lookup for the GrantReplaced annotation; no match is fine, these tests don't assert its id.
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"users": []any{}})
+			encodeJSON(t, w, map[string]any{"totalCount": 0, "results": []any{}})
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/"):
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -836,13 +834,8 @@ func TestManagedDeviceGrant_SameAssignee_ReturnsGrantAlreadyExists(t *testing.T)
 	}
 }
 
-// jamfDeviceGrantDisplaceHandler extends jamfDeviceAssignHandlerWithCurrent's
-// computer-only endpoints with GET /JSSResource/users (base user list) and GET
-// /JSSResource/users/id/{oldUserID} (outgoing-assignee detail), so
-// getUserIndex can resolve the device's outgoing assignee to a synced user's
-// ResourceId for Grant's GrantReplaced annotation. oldUserID == 0 models an
-// outgoing assignee that isn't a synced Jamf user (GetUsers returns nobody
-// matching), exercising the ExternalResourceMatch-style fallback instead.
+// deviceGrantDisplaceScenario is the principal being granted, the device's current assignee, and the synced user
+// that assignee resolves to. oldUserID 0 means the assignee is not a synced user: the owner lookup finds nobody.
 type deviceGrantDisplaceScenario struct {
 	principalID                       int
 	principalUsername, principalEmail string
@@ -851,6 +844,8 @@ type deviceGrantDisplaceScenario struct {
 	oldUsername, oldEmail             string
 }
 
+// jamfDeviceGrantDisplaceHandler extends jamfDeviceAssignHandlerWithCurrent's computer-only endpoints with
+// GET /api/v1/users, which replacedGrantID uses to resolve the outgoing assignee for Grant's GrantReplaced annotation.
 func jamfDeviceGrantDisplaceHandler(t *testing.T, sc deviceGrantDisplaceScenario, gotPATCHBody *[]byte) http.HandlerFunc {
 	t.Helper()
 	principalID, principalUsername, principalEmail := sc.principalID, sc.principalUsername, sc.principalEmail
@@ -858,22 +853,17 @@ func jamfDeviceGrantDisplaceHandler(t *testing.T, sc deviceGrantDisplaceScenario
 	oldUserID, oldUsername, oldEmail := sc.oldUserID, sc.oldUsername, sc.oldEmail
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
-			w.Header().Set("Content-Type", "application/json")
-			var users []map[string]any
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/users":
+			users := []map[string]any{}
 			if oldUserID != 0 {
-				users = append(users, map[string]any{"id": oldUserID, "name": oldUsername})
+				users = append(users, map[string]any{"id": strconv.Itoa(oldUserID), "username": oldUsername, "email": oldEmail})
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"users": users})
+			w.Header().Set("Content-Type", "application/json")
+			encodeJSON(t, w, map[string]any{"totalCount": len(users), "results": users})
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, fmt.Sprintf("/JSSResource/users/id/%d", principalID)):
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"user": map[string]any{"id": principalID, "name": principalUsername, "username": principalUsername, "email": principalEmail},
-			})
-		case oldUserID != 0 && r.Method == http.MethodGet && strings.Contains(r.URL.Path, fmt.Sprintf("/JSSResource/users/id/%d", oldUserID)):
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"user": map[string]any{"id": oldUserID, "name": oldUsername, "username": oldUsername, "email": oldEmail},
 			})
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/api/v4/computers-inventory-detail/"):
 			w.Header().Set("Content-Type", "application/json")
@@ -940,7 +930,7 @@ func TestManagedDeviceGrant_DisplacesDifferentUser_ReturnsGrantReplaced(t *testi
 
 // TestManagedDeviceGrant_DisplacesUnsyncedUser_ReturnsGrantReplacedExternalMatch
 // is the unsynced-assignee counterpart: the outgoing assignee doesn't resolve
-// to any synced Jamf user via getUserIndex (oldUserID 0 — GetUsers returns
+// to any synced Jamf user via the owner lookup (oldUserID 0 — the API finds
 // nobody), so GrantReplaced must fall back to the same external-match-style
 // principal id deviceGrants builds for that case.
 func TestManagedDeviceGrant_DisplacesUnsyncedUser_ReturnsGrantReplacedExternalMatch(t *testing.T) {
@@ -1291,32 +1281,16 @@ func TestOSTypeFromName(t *testing.T) {
 	}
 }
 
-// replacedGrantIDHandler serves the endpoints replacedGrantID's full-index
-// resolution depends on: GET /JSSResource/users plus GET
-// /JSSResource/users/id/{id}. listCalls counts requests to the bare list
-// endpoint.
-func replacedGrantIDHandler(t *testing.T, indexUsers []map[string]any, listCalls *int) http.HandlerFunc {
+// replacedGrantIDHandler serves GET /api/v1/users with users as the results and counts the requests.
+func replacedGrantIDHandler(t *testing.T, users []map[string]any, usersCalls *int) http.HandlerFunc {
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
-			*listCalls++
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"users": indexUsers})
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/id/"):
-			idStr := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-			id, _ := strconv.Atoi(idStr)
-			for _, u := range indexUsers {
-				if u["id"] == id {
-					w.Header().Set("Content-Type", "application/json")
-					_ = json.NewEncoder(w).Encode(map[string]any{"user": u})
-					return
-				}
-			}
-			w.WriteHeader(http.StatusNotFound)
-		default:
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/users" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
+		*usersCalls++
+		w.Header().Set("Content-Type", "application/json")
+		encodeJSON(t, w, map[string]any{"totalCount": len(users), "results": users})
 	}
 }
 
@@ -1330,130 +1304,54 @@ func wantReplacedGrantID(t *testing.T, userID string, en *v2.Entitlement) string
 	return grant.NewGrantID(rid, en)
 }
 
-// TestReplacedGrantID_ResolvesViaIndex covers resolving a synced outgoing
-// assignee through the full user index.
-func TestReplacedGrantID_ResolvesViaIndex(t *testing.T) {
-	var listCalls int
-	indexUsers := []map[string]any{{"id": 7, "name": "old.user", "username": "old.user", "email": "old.user@ex.com"}}
-	client := newTestJamfClient(t, replacedGrantIDHandler(t, indexUsers, &listCalls))
-	d := managedDeviceBuilder(client)
+// A synced outgoing assignee resolves to that user's grant ID through the filtered users lookup.
+func TestReplacedGrantID_ResolvesViaLookup(t *testing.T) {
+	var usersCalls int
+	users := []map[string]any{{"id": "7", "username": "old.user", "email": "old.user@ex.com"}}
+	client := newTestJamfClient(t, replacedGrantIDHandler(t, users, &usersCalls))
+	devices := managedDeviceBuilder(client)
+	entitlement := deviceEntitlement(t, "computer:17")
 
-	en := deviceEntitlement(t, "computer:17")
-	rid, ok, err := d.replacedGrantID(context.Background(), assignee{username: "old.user", email: "old.user@ex.com"}, en)
+	got, ok, err := devices.replacedGrantID(context.Background(), assignee{username: "old.user", email: "old.user@ex.com"}, entitlement)
+
 	if err != nil {
 		t.Fatalf("replacedGrantID: %v", err)
 	}
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
-	if want := wantReplacedGrantID(t, "7", en); rid != want {
-		t.Errorf("replacedGrantID = %q, want %q", rid, want)
+	if want := wantReplacedGrantID(t, "7", entitlement); got != want {
+		t.Errorf("replacedGrantID = %q, want %q", got, want)
 	}
-	if listCalls != 1 {
-		t.Errorf("want 1 call to the users list endpoint, got %d", listCalls)
+	if usersCalls != 1 {
+		t.Errorf("users requests = %d, want 1", usersCalls)
 	}
 }
 
-// TestReplacedGrantID_NotInIndex_ExternalMatch covers an outgoing assignee
-// that doesn't resolve to any synced Jamf user: replacedGrantID falls back
-// to the same external-match-style resource id deviceGrants builds.
-func TestReplacedGrantID_NotInIndex_ExternalMatch(t *testing.T) {
-	var listCalls int
-	client := newTestJamfClient(t, replacedGrantIDHandler(t, nil, &listCalls))
-	d := managedDeviceBuilder(client)
+// An outgoing assignee that is not a synced user falls back to the external-match user ID deviceGrants emits.
+func TestReplacedGrantID_NotFound_ExternalMatch(t *testing.T) {
+	var usersCalls int
+	client := newTestJamfClient(t, replacedGrantIDHandler(t, nil, &usersCalls))
+	devices := managedDeviceBuilder(client)
+	entitlement := deviceEntitlement(t, "computer:17")
 
-	en := deviceEntitlement(t, "computer:17")
-	rid, ok, err := d.replacedGrantID(context.Background(), assignee{email: "ghost@ex.com"}, en)
+	got, ok, err := devices.replacedGrantID(context.Background(), assignee{email: "ghost@ex.com"}, entitlement)
+
 	if err != nil {
 		t.Fatalf("replacedGrantID: %v", err)
 	}
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
-	externalRid, err := rs.NewResourceID(resourceTypeUser, "ghost@ex.com")
+	externalUserID, err := rs.NewResourceID(resourceTypeUser, "ghost@ex.com")
 	if err != nil {
 		t.Fatalf("NewResourceID: %v", err)
 	}
-	if want := grant.NewGrantID(externalRid, en); rid != want {
-		t.Errorf("replacedGrantID = %q, want %q", rid, want)
+	if want := grant.NewGrantID(externalUserID, entitlement); got != want {
+		t.Errorf("replacedGrantID = %q, want %q", got, want)
 	}
-	if listCalls != 1 {
-		t.Errorf("want 1 call to the users list endpoint, got %d", listCalls)
-	}
-}
-
-// emptyDevicePagesHandler serves empty computers-inventory and mobile-devices
-// pages (ending the sync after one page of each phase), plus the Classic API
-// users list endpoint used by getUserIndex, counting calls to the latter.
-func emptyDevicePagesHandler(listCalls *int) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v4/computers-inventory":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}, "totalCount": 0})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/mobile-devices":
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}, "totalCount": 0})
-		case r.Method == http.MethodGet && r.URL.Path == "/JSSResource/users":
-			*listCalls++
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"users": []any{}})
-		}
-	}
-}
-
-// TestManagedDeviceList_InvalidatesUserIndex_OnNewSyncOnly covers the
-// userIndex invalidation requirement: List must drop the cached index at the
-// start of a new sync (its first page, carrying no incoming pagination
-// cursor) so a long-running process never serves a stale user list across
-// syncs, but must leave the cache alone between pages of the SAME sync.
-func TestManagedDeviceList_InvalidatesUserIndex_OnNewSyncOnly(t *testing.T) {
-	var listCalls int
-	client := newTestJamfClient(t, emptyDevicePagesHandler(&listCalls))
-	d := managedDeviceBuilder(client)
-	ctx := context.Background()
-	// getUserIndex's GET benefits from the HTTP client's response cache on
-	// sync paths (see jamf.WithFreshReads' doc comment); bypass it here so
-	// listCalls observes whether getUserIndex actually re-issued the request
-	// rather than the in-process cache being masked by the HTTP-level one.
-	indexCtx := jamf.WithFreshReads(ctx)
-
-	// Sync 1, page 1 (no incoming cursor): builds the index for the first time.
-	_, results, err := d.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Token: ""}})
-	if err != nil {
-		t.Fatalf("List (sync 1, page 1): %v", err)
-	}
-	if _, err := d.getUserIndex(indexCtx); err != nil {
-		t.Fatalf("getUserIndex: %v", err)
-	}
-	if listCalls != 1 {
-		t.Fatalf("want 1 call to the users list endpoint after the first index build, got %d", listCalls)
-	}
-	if results.NextPageToken == "" {
-		t.Fatal("expected a non-empty continuation token into the mobile-device phase")
-	}
-
-	// Sync 1, page 2 (carries sync 1's cursor): same sync, so the cached
-	// index must survive untouched.
-	if _, _, err := d.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Token: results.NextPageToken}}); err != nil {
-		t.Fatalf("List (sync 1, page 2): %v", err)
-	}
-	if _, err := d.getUserIndex(indexCtx); err != nil {
-		t.Fatalf("getUserIndex: %v", err)
-	}
-	if listCalls != 1 {
-		t.Errorf("want the cached index to survive across pages of the same sync, got %d calls to the users list endpoint", listCalls)
-	}
-
-	// Sync 2, page 1 (no incoming cursor again): a new sync must rebuild it.
-	if _, _, err := d.List(ctx, nil, rs.SyncOpAttrs{PageToken: pagination.Token{Token: ""}}); err != nil {
-		t.Fatalf("List (sync 2, page 1): %v", err)
-	}
-	if _, err := d.getUserIndex(indexCtx); err != nil {
-		t.Fatalf("getUserIndex: %v", err)
-	}
-	if listCalls != 2 {
-		t.Errorf("want a new sync's first page to rebuild the index, got %d calls to the users list endpoint", listCalls)
+	if usersCalls != 1 {
+		t.Errorf("users requests = %d, want 1", usersCalls)
 	}
 }
 
@@ -1483,5 +1381,139 @@ func TestManagedDeviceEntitlements_NeverAssigned_EmitsNothing(t *testing.T) {
 	}
 	if len(grants) != 0 {
 		t.Errorf("want no grants for a never-assigned device, got %d", len(grants))
+	}
+}
+
+// externalResourceMatch returns the grant's ExternalResourceMatch annotation and whether it has one.
+func externalResourceMatch(t *testing.T, deviceGrant *v2.Grant) (*v2.ExternalResourceMatch, bool) {
+	t.Helper()
+	match := &v2.ExternalResourceMatch{}
+	grantAnnotations := annotations.Annotations(deviceGrant.GetAnnotations())
+	found, err := grantAnnotations.Pick(match)
+	if err != nil {
+		t.Fatalf("pick ExternalResourceMatch: %v", err)
+	}
+	return match, found
+}
+
+// A device owner already seen by the user sync resolves from the session store, case-insensitively, with no API
+// lookup. An owner the user sync never saw becomes an ExternalResourceMatch, also with no lookup.
+func TestDeviceGrants_ResolvesOwnerFromUserList(t *testing.T) {
+	users := []map[string]any{
+		{"id": "7", "username": "Jdoe", "realname": "J Doe", "email": "jdoe@example.com"},
+		{"id": "9", "username": "asmith", "realname": "A Smith", "email": ""},
+	}
+	var usersRequests int
+	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/users" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		usersRequests++
+		w.Header().Set("Content-Type", "application/json")
+		encodeJSON(t, w, map[string]any{"totalCount": len(users), "results": users})
+	})
+	store := newMemorySessionStore()
+	ctx := context.Background()
+	if _, _, err := userBuilder(client, true).List(ctx, nil, rs.SyncOpAttrs{Session: store}); err != nil {
+		t.Fatalf("user List: %v", err)
+	}
+	requestsAfterList := usersRequests
+
+	devices := managedDeviceBuilder(client)
+	syncedOwnerDevice := deviceResourceForTest(t, "computer:17")
+	devices.recordDeviceOwner(syncedOwnerDevice, assignee{username: "jdoe"})
+	unknownOwnerDevice := deviceResourceForTest(t, "computer:18")
+	devices.recordDeviceOwner(unknownOwnerDevice, assignee{username: "ghost"})
+
+	// The owner is a synced user: a direct grant to user 7.
+	grants, _, err := devices.Grants(ctx, syncedOwnerDevice, rs.SyncOpAttrs{Session: store})
+	if err != nil {
+		t.Fatalf("device Grants: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant, got %d", len(grants))
+	}
+	if got := grants[0].GetPrincipal().GetId(); got.GetResourceType() != resourceTypeUser.Id || got.GetResource() != "7" {
+		t.Errorf("principal = %s/%s, want user/7", got.GetResourceType(), got.GetResource())
+	}
+	if _, ok := externalResourceMatch(t, grants[0]); ok {
+		t.Error("expected a direct grant, got an ExternalResourceMatch")
+	}
+	if usersRequests != requestsAfterList {
+		t.Errorf("want no /api/v1/users request during Grants, got %d", usersRequests-requestsAfterList)
+	}
+
+	// The owner is not a synced user: an ExternalResourceMatch on the username.
+	grants, _, err = devices.Grants(ctx, unknownOwnerDevice, rs.SyncOpAttrs{Session: store})
+	if err != nil {
+		t.Fatalf("unknown owner device Grants: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant for the unknown owner, got %d", len(grants))
+	}
+	if match, ok := externalResourceMatch(t, grants[0]); !ok || match.GetValue() != "ghost" {
+		t.Errorf("want an ExternalResourceMatch on ghost, got %v (found=%v)", match, ok)
+	}
+	if usersRequests != requestsAfterList {
+		t.Errorf("want no /api/v1/users request for an unknown owner after the list, got %d", usersRequests-requestsAfterList)
+	}
+}
+
+// The last of UsersPageSize+1 users reuses user 1's email on the second page; the lowest ID keeps it.
+func TestDeviceGrants_KeyReusedOnLaterPage_KeepsLowestID(t *testing.T) {
+	userCount := jamf.UsersPageSize + 1
+	users := make([]map[string]any, 0, userCount)
+	for _, id := range idRange(1, userCount) {
+		email := fmt.Sprintf("user%d@example.com", id)
+		if id == userCount {
+			email = "user1@example.com"
+		}
+		users = append(users, map[string]any{
+			"id":       strconv.Itoa(id),
+			"username": fmt.Sprintf("user%d", id),
+			"realname": fmt.Sprintf("User Number%d", id),
+			"email":    email,
+		})
+	}
+	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		page, pageErr := strconv.Atoi(query.Get("page"))
+		pageSize, pageSizeErr := strconv.Atoi(query.Get("page-size"))
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/users" || pageErr != nil || pageSizeErr != nil {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+
+		start := min(page*pageSize, len(users))
+		end := min(start+pageSize, len(users))
+		w.Header().Set("Content-Type", "application/json")
+		encodeJSON(t, w, map[string]any{"totalCount": len(users), "results": users[start:end]})
+	})
+	store := newMemorySessionStore()
+	ctx := context.Background()
+	userSyncer := userBuilder(client, true)
+	_, results, err := userSyncer.List(ctx, nil, rs.SyncOpAttrs{Session: store})
+	if err != nil {
+		t.Fatalf("user List page 1: %v", err)
+	}
+	_, _, err = userSyncer.List(ctx, nil, rs.SyncOpAttrs{Session: store, PageToken: pagination.Token{Token: results.NextPageToken}})
+	if err != nil {
+		t.Fatalf("user List page 2: %v", err)
+	}
+	devices := managedDeviceBuilder(client)
+	device := deviceResourceForTest(t, "computer:17")
+	devices.recordDeviceOwner(device, assignee{email: "user1@example.com"})
+
+	grants, _, err := devices.Grants(ctx, device, rs.SyncOpAttrs{Session: store})
+
+	if err != nil {
+		t.Fatalf("device Grants: %v", err)
+	}
+	if len(grants) != 1 {
+		t.Fatalf("want 1 grant, got %d", len(grants))
+	}
+	if got := grants[0].GetPrincipal().GetId(); got.GetResourceType() != resourceTypeUser.Id || got.GetResource() != "1" {
+		t.Errorf("principal = %s/%s, want user/1", got.GetResourceType(), got.GetResource())
 	}
 }

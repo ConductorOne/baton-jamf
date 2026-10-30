@@ -7,6 +7,11 @@
         "displayName": "Group",
         "traits": [
           "TRAIT_GROUP"
+        ],
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlements"
+          }
         ]
       },
       "capabilities": [
@@ -41,6 +46,14 @@
         "displayName": "Role",
         "traits": [
           "TRAIT_ROLE"
+        ],
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlements"
+          },
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.TypeScopedGrants"
+          }
         ]
       },
       "capabilities": [
@@ -52,7 +65,12 @@
     {
       "resourceType": {
         "id": "site",
-        "displayName": "Site"
+        "displayName": "Site",
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlements"
+          }
+        ]
       },
       "capabilities": [
         "CAPABILITY_SYNC",
@@ -105,6 +123,11 @@
         "displayName": "User Group",
         "traits": [
           "TRAIT_GROUP"
+        ],
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlements"
+          }
         ]
       },
       "capabilities": [

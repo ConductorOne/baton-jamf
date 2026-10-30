@@ -151,6 +151,14 @@ func (p *Privileges) Contains(privilege string) bool {
 		slices.Contains(p.CasperImaging, privilege)
 }
 
+// All returns every privilege name of p.
+func (p *Privileges) All() []string {
+	if p == nil {
+		return nil
+	}
+	return slices.Concat(p.JSSObjects, p.JSSSettings, p.JSSActions, p.Recon, p.CasperAdmin, p.CasperRemote, p.CasperImaging)
+}
+
 // MarshalXML emits only the privilege categories that are populated.
 // encoding/xml's built-in "omitempty" does not apply to a nil/empty slice
 // nested behind a ">"-chained struct tag (e.g. "jss_objects>privilege") — it
@@ -240,10 +248,6 @@ type Account struct {
 type TokenResponse struct {
 	Token   string `json:"token"`
 	Expires string `json:"expires"`
-}
-
-type UsersResponse struct {
-	Users []BaseType `json:"users"`
 }
 
 type UserResponse struct {
@@ -377,4 +381,66 @@ type UserGroupMemberMutation struct {
 type UserSitesUpdateBody struct {
 	XMLName xml.Name   `xml:"user"`
 	Sites   []BaseType `xml:"sites>site"`
+}
+
+// ProUser is a user in the Jamf Pro API users list (GET /api/v1/users).
+type ProUser struct {
+	ID       int    `json:"id,string"`
+	Username string `json:"username"`
+	Realname string `json:"realname"`
+	Email    string `json:"email"`
+}
+
+// User returns u in the Classic User shape.
+func (u ProUser) User() *User {
+	return &User{
+		BaseType: BaseType{ID: u.ID, Name: u.Username},
+		FullName: u.Realname,
+		Email:    u.Email,
+	}
+}
+
+type ProUsersResponse struct {
+	TotalCount int       `json:"totalCount"`
+	Results    []ProUser `json:"results"`
+}
+
+// ProAccount is an admin account in the Jamf Pro API accounts list (GET /api/v1/accounts).
+type ProAccount struct {
+	ID             int    `json:"id,string"`
+	Username       string `json:"username"`
+	Realname       string `json:"realname"`
+	Email          string `json:"email"`
+	AccountStatus  string `json:"accountStatus"`
+	PrivilegeLevel string `json:"privilegeLevel"`
+}
+
+// proPrivilegeLevels maps the Pro API privilegeLevel enum to the Classic privilege_set names.
+var proPrivilegeLevels = map[string]string{
+	"ADMINISTRATOR": "Administrator",
+	"AUDITOR":       "Auditor",
+	"ENROLLMENT":    "Enrollment Only",
+	"CUSTOM":        "Custom",
+}
+
+// UserAccount returns a in the Classic UserAccount shape.
+func (a ProAccount) UserAccount() *UserAccount {
+	return &UserAccount{
+		BaseType:     BaseType{ID: a.ID, Name: a.Username},
+		FullName:     a.Realname,
+		Email:        a.Email,
+		Enabled:      a.AccountStatus,
+		PrivilegeSet: proPrivilegeLevels[a.PrivilegeLevel],
+	}
+}
+
+type ProAccountsResponse struct {
+	TotalCount int          `json:"totalCount"`
+	Results    []ProAccount `json:"results"`
+}
+
+// SiteObject is an object (user, user group, ...) assigned to a site (GET /api/v1/sites/{id}/objects).
+type SiteObject struct {
+	ObjectType string `json:"objectType"`
+	ObjectID   int    `json:"objectId,string"`
 }

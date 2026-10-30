@@ -36,9 +36,9 @@ The Administrator privilege set covers everything. For least privilege, grant:
 | Sync users | `Read User` |
 | Sync user accounts and groups | `Read Accounts` |
 | Sync user groups | `Read Static User Groups`, `Read Smart User Groups` (Smart is only needed when smart groups exist — it's checked per group) |
-| Sync sites | `Read Sites`, `Read User`, `Read Static User Groups`, `Read Smart User Groups`, `Read Accounts` (site grants are built by reading users, user groups and accounts) |
+| Sync sites | `Read Sites`, `Read Accounts` |
 | Sync roles | `Read API Roles`, `Read Accounts` |
-| Sync managed devices (opt-in) | `Read Computers`, `Read Mobile Devices`, `Read User` (needed even if `user` isn't synced) |
+| Sync managed devices (opt-in) | `Read Computers`, `Read Mobile Devices` |
 | Create/delete users | `Create User` and `Read User` (the connector reads the user back after creating); `Delete User` |
 | Create/delete user accounts | `Create Accounts` and `Read Accounts`; `Delete Accounts` |
 | Group Grant/Revoke (`userAccount` principal) | `Read Accounts`, `Update Accounts` |
@@ -49,7 +49,7 @@ The Administrator privilege set covers everything. For least privilege, grant:
 
 `Read Accounts`/`Create Accounts`/`Update Accounts`/`Delete Accounts` cover both admin user accounts and admin groups — Jamf has no separate privilege for account groups. Every write path reads the object first, so each `Update` privilege above needs its `Read` counterpart too.
 
-Jamf reports a missing privilege differently depending on which API it uses: the Classic API (`/JSSResource` — Users, Accounts, Static User Groups) answers with HTTP 401, and the Jamf Pro API (`/api/v1`, `/api/v2`, `/api/v4` — the roles catalog, Computers, Mobile Devices) with HTTP 403. The connector reports both as a permission error.
+Jamf reports a missing privilege differently depending on which API it uses: the Classic API (`/JSSResource` — User Groups, admin groups, Sites, and user and account details and writes) answers with HTTP 401, and the Jamf Pro API (`/api/v1`, `/api/v2`, `/api/v4` — the users and accounts lists, site objects, the roles catalog, Computers, Mobile Devices) with HTTP 403. The connector reports both as a permission error.
 
 Group Grant/Revoke adds or removes a `userAccount` from an admin account
 group's member list. A group with no members cannot receive its first member
@@ -99,6 +99,22 @@ assign the role to the group instead. Changing a Full or Site Access
 account's role removes it from any admin group it belonged to (that
 membership granted it nothing). A write rejected for the connector's own Jamf
 account is reported as a permission error.
+
+## Sync cost
+
+Requests per full sync:
+
+| Resource type | Requests |
+|---|---|
+| `user` | ⌈users / 1000⌉ |
+| `userAccount` | ⌈accounts / 100⌉ |
+| `group` | 1, plus per group one read per 1,000 grants (members, roles and site; at least one) |
+| `userGroup` | 1, plus per user group one read per 1,000 members (at least one) |
+| `site` | 1, plus per site ⌊users / 1000⌋ + 1, ⌊user groups / 1000⌋ + 1 and ⌈accounts / 100⌉ (at least one) |
+| `role` | 1, plus ⌈accounts / 100⌉ + ⌈`Custom` accounts / 10⌉ and one read per `Custom` account, when `userAccount` is synced |
+| `managedDevice` | ⌈computers / 100⌉ + ⌈mobile devices / 100⌉ |
+
+Validation adds one request, plus one token request per new process (each Lambda container) and each time the token expires. Most SDK calls make one request; the largest is a `role` grants page of `Custom` accounts, which reads each one's details (up to 11). A group or user group detail comes back whole, so that read grows with the size of the group. For example, 50,000 users, 1,000 accounts (300 of them `Custom`), 50 groups, 200 user groups, 20 sites holding the users and 20,000 devices come to roughly 950 requests; sync time is about that count times the instance's API response time.
 
 ## Jamf Pro console admin account creation (`userAccount`)
 
