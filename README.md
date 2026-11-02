@@ -15,7 +15,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 
 Account creation/deletion and Grant/Revoke all require `-p`/`$BATON_PROVISIONING` to be set; without it the connector only syncs.
 
-Tested with Jamf Pro 11.32.1. Managed Devices use the Jamf Pro API v4 computers-inventory and v2 mobile-devices endpoints.
+Requires Jamf Pro 11.26.0 or later (`GET /api/v1/users` was added in 11.26.0). Managed Devices, which are opt-in, use the Jamf Pro API v4 computers-inventory endpoints, added in 11.30.0, and the v2 mobile-devices endpoints. Tested with Jamf Pro 11.32.1.
 
 ## Authentication
 
@@ -109,7 +109,7 @@ Requests per full sync:
 | `user` | ⌈users / 1000⌉ |
 | `userAccount` | ⌈accounts / 100⌉ |
 | `group` | 1, plus per group one read per 1,000 grants (members, roles and site; at least one) |
-| `userGroup` | 1, plus per user group one read per 1,000 members (at least one) |
+| `userGroup` | 1, plus one read per user group |
 | `site` | 1, plus per site ⌊users / 1000⌋ + 1, ⌊user groups / 1000⌋ + 1 and ⌈accounts / 100⌉ (at least one) |
 | `role` | 1, plus ⌈accounts / 100⌉ + ⌈`Custom` accounts / 10⌉ and one read per `Custom` account, when `userAccount` is synced |
 | `managedDevice` | ⌈computers / 100⌉ + ⌈mobile devices / 100⌉ |

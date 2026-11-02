@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -15,6 +16,14 @@ import (
 const privilegeCatalogKey = "privilege_catalog"
 
 var userIDsNamespace = sessions.WithPrefix("user_ids:")
+
+var userGroupMembersNamespace = sessions.WithPrefix("user_group_members:")
+
+// userGroupMemberPage is one grants page of a user group's member ids, sorted.
+type userGroupMemberPage struct {
+	UserIDs []int `json:"user_ids"`
+	Last    bool  `json:"last"`
+}
 
 // privilegeCatalog returns the individual privileges Jamf offers, read once per sync.
 func privilegeCatalog(ctx context.Context, store sessions.SessionStore, client *jamf.Client) ([]string, error) {
@@ -74,4 +83,22 @@ func userIDsByLookupKey(users []jamf.ProUser) map[string]string {
 // userLookupKey normalizes a username or email for the user id cache.
 func userLookupKey(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+// cacheUserGroupMemberPages stores a user group's member pages from page first on, one key per page.
+func cacheUserGroupMemberPages(ctx context.Context, store sessions.SessionStore, userGroupID int, pages []userGroupMemberPage, first int) error {
+	values := make(map[string]userGroupMemberPage, len(pages)-first)
+	for page := first; page < len(pages); page++ {
+		values[userGroupMemberPageKey(userGroupID, page)] = pages[page]
+	}
+	return session.SetManyJSON(ctx, store, values, userGroupMembersNamespace)
+}
+
+// cachedUserGroupMemberPage returns one stored member page of a user group.
+func cachedUserGroupMemberPage(ctx context.Context, store sessions.SessionStore, userGroupID, page int) (userGroupMemberPage, bool, error) {
+	return session.GetJSON[userGroupMemberPage](ctx, store, userGroupMemberPageKey(userGroupID, page), userGroupMembersNamespace)
+}
+
+func userGroupMemberPageKey(userGroupID, page int) string {
+	return fmt.Sprintf("%d:%d", userGroupID, page)
 }

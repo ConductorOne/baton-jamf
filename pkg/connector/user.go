@@ -57,8 +57,17 @@ func userResource(user *jamf.User, parentResourceID *v2.ResourceId) (*v2.Resourc
 		rs.WithEmail(user.Email, true),
 	}
 
+	// Jamf users may have no full name; fall back to the username, then the email.
+	displayName := user.FullName
+	if displayName == "" {
+		displayName = user.Name
+	}
+	if displayName == "" {
+		displayName = user.Email
+	}
+
 	ret, err := rs.NewUserResource(
-		user.FullName,
+		displayName,
 		resourceTypeUser,
 		user.ID,
 		userTraitOptions,
