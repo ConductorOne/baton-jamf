@@ -392,11 +392,6 @@ func groupRevokeGrantForPrincipal(t *testing.T, groupID int, principal *v2.Resou
 	return grant.NewGrant(groupEntitlement(t, groupID).Resource, memberEntitlement, principal.Id)
 }
 
-func groupResourceForTest(t *testing.T, groupID int) *v2.Resource {
-	t.Helper()
-	return groupEntitlement(t, groupID).Resource
-}
-
 // Member grants come from the group read alone: any per-member account read would 404 and fail the sync.
 func TestGroupGrants_PagesPastOneThousandMembers(t *testing.T) {
 	const memberCount = 1500
@@ -410,7 +405,7 @@ func TestGroupGrants_PagesPastOneThousandMembers(t *testing.T) {
 	})
 	builder := groupBuilder(client, false, false)
 
-	grants, calls := collectGrants(t, builder.Grants, groupResourceForTest(t, 5), nil)
+	grants, calls := collectGrants(t, builder.Grants, groupPrincipal(t, 5), nil)
 
 	if calls != 2 {
 		t.Errorf("Grants calls = %d, want 2", calls)
@@ -436,7 +431,7 @@ func TestGroupGrants_EmitsRoleAndSiteGrantsFromTheSameRead(t *testing.T) {
 	fixture.catalog = []string{"Delete Users", "Read Computers", "Read Users"}
 	builder := groupBuilder(fixture.client(), true, true)
 
-	grants, _ := collectGrants(t, builder.Grants, groupResourceForTest(t, customGroup.ID), newMemorySessionStore())
+	grants, _ := collectGrants(t, builder.Grants, groupPrincipal(t, customGroup.ID), newMemorySessionStore())
 
 	// Each grant as "<target type>:<target id>|<principal type>:<principal id>".
 	got := make([]string, 0, len(grants))

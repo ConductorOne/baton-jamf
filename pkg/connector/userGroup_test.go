@@ -8,10 +8,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
@@ -445,7 +447,9 @@ func TestUserGroupGrants_PagesPastOneThousandMembers(t *testing.T) {
 	for _, id := range idRange(1, memberCount) {
 		users = append(users, map[string]any{"id": id, "name": fmt.Sprintf("user%d", id)})
 	}
+	var jamfReads atomic.Int32
 	client := newTestJamfClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		jamfReads.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		encodeJSON(t, w, map[string]any{"user_group": map[string]any{"id": 5, "name": "Test Group", "users": users}})
 	})
@@ -455,7 +459,12 @@ func TestUserGroupGrants_PagesPastOneThousandMembers(t *testing.T) {
 		t.Fatalf("userGroupResource: %v", err)
 	}
 
-	grants, calls := collectGrants(t, builder.Grants, resource, nil)
+	// Fresh reads keep the HTTP cache from hiding the Jamf reads this test counts.
+	freshGrants := func(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+		return builder.Grants(jamf.WithFreshReads(ctx), resource, attrs)
+	}
+
+	grants, calls := collectGrants(t, freshGrants, resource, newMemorySessionStore())
 
 	if calls != 2 {
 		t.Errorf("Grants calls = %d, want 2", calls)
@@ -463,5 +472,23 @@ func TestUserGroupGrants_PagesPastOneThousandMembers(t *testing.T) {
 	principals := grantPrincipals(t, grants)
 	if len(principals) != memberCount || !strings.HasPrefix(principals[0], resourceTypeUser.Id+":") {
 		t.Errorf("principals = %d, want %d unique %s principals", len(principals), memberCount, resourceTypeUser.Id)
+	}
+	if reads := jamfReads.Load(); reads != 1 {
+		t.Errorf("Jamf reads = %d, want 1: the session store serves page 1", reads)
+	}
+
+	// A page missing from the store is read from Jamf again.
+	secondPage, results, err := freshGrants(context.Background(), resource, rs.SyncOpAttrs{
+		Session:   newMemorySessionStore(),
+		PageToken: pagination.Token{Token: "1"},
+	})
+	if err != nil {
+		t.Fatalf("Grants page 1 on a store miss: %v", err)
+	}
+	if len(secondPage) != memberCount-grantsPageSize || results.NextPageToken != "" {
+		t.Errorf("page 1 = %d grants, next token %q; want %d grants and no token", len(secondPage), results.NextPageToken, memberCount-grantsPageSize)
+	}
+	if reads := jamfReads.Load(); reads != 2 {
+		t.Errorf("Jamf reads after the store miss = %d, want 2", reads)
 	}
 }

@@ -72,6 +72,8 @@ None identified — every endpoint below is part of standard Jamf Pro, not gated
 - Classic API: `/JSSResource/users`, `/JSSResource/accounts`, `/JSSResource/usergroups`, `/JSSResource/sites` (and their `/id/{id}` and create/update/delete variants) — see the links below.
 - Jamf Pro API: `POST /api/v1/auth/token` or `POST /api/v1/oauth/token` (authentication), `GET /api/v1/auth` (validation and the delete self-check), `GET /api/v1/api-role-privileges` (Role sync), `GET /api/v1/users` (User sync and managed device owner lookup), `GET /api/v1/accounts` (User Account sync, Role and Site grants), `GET /api/v1/sites/{id}/objects` (Site grants), `GET /api/v4/computers-inventory` and `PATCH /api/v4/computers-inventory-detail/{id}` (Managed Device computers), `GET`/`PATCH /api/v2/mobile-devices[/{id}]` (Managed Device mobile devices).
 
+Version requirements: Jamf Pro 11.26.0 or later. `GET /api/v1/users` was added in 11.26.0, `GET /api/v1/accounts` in 11.20.0, `GET /api/v1/sites/{id}/objects` in 11.2.0 and `GET /api/v1/api-role-privileges` in 10.49.0; an older instance fails the sync with `FailedPrecondition` naming the missing endpoint. Managed Devices (opt-in) need 11.30.0 for `/api/v4/computers-inventory`.
+
 ### Classic API content-type contract
 
 The Jamf Pro Classic API only accepts **XML** for POST/PUT request bodies — JSON is supported for GET responses only. This is easy to get wrong (the SDK's default HTTP helper sends JSON); the client explicitly uses `uhttp.WithXMLBody` for `CreateUser`/`CreateUserAccount`. See https://developer.jamf.com/jamf-pro/docs/getting-started-2.

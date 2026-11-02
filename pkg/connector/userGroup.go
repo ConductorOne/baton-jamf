@@ -12,6 +12,7 @@ import (
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -85,24 +86,75 @@ func (g *userGroupResourceType) Grants(ctx context.Context, resource *v2.Resourc
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: invalid user group id %q: %w", resource.Id.Resource, err)
 	}
+	page := 0
+	if attrs.PageToken.Token != "" {
+		page, err = strconv.Atoi(attrs.PageToken.Token)
+		if err != nil {
+			return nil, nil, fmt.Errorf("jamf-connector: invalid user group %d grants page token %q: %w", userGroupId, attrs.PageToken.Token, err)
+		}
+	}
 
-	// Classic returns every member at once, so each page re-reads the group.
-	group, err := g.client.GetUserGroupDetails(ctx, userGroupId)
+	members, err := g.memberPage(ctx, attrs.Session, userGroupId, page)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: list user group %d grants: %w", userGroupId, err)
 	}
 
-	grants := make([]*v2.Grant, 0, len(group.Users))
-	for _, user := range group.Users {
-		principal := &v2.ResourceId{ResourceType: resourceTypeUser.Id, Resource: strconv.Itoa(user.ID)}
+	grants := make([]*v2.Grant, 0, len(members.UserIDs))
+	for _, userID := range members.UserIDs {
+		principal := &v2.ResourceId{ResourceType: resourceTypeUser.Id, Resource: strconv.Itoa(userID)}
 		grants = append(grants, grant.NewGrant(resource, memberEntitlement, principal))
 	}
 
-	page, nextCursor, err := pageGrants(grants, attrs.PageToken.Token)
-	if err != nil {
-		return nil, nil, err
+	var nextPage string
+	if !members.Last {
+		nextPage = strconv.Itoa(page + 1)
 	}
-	return page, &rs.SyncOpResults{NextPageToken: nextCursor}, nil
+	return grants, &rs.SyncOpResults{NextPageToken: nextPage}, nil
+}
+
+// memberPage returns one grants page of the user group's members. Classic returns every member at once,
+// so a read from Jamf stores the pages after this one; a page missing from the store is read again.
+func (g *userGroupResourceType) memberPage(ctx context.Context, store sessions.SessionStore, userGroupId, page int) (userGroupMemberPage, error) {
+	if page > 0 {
+		stored, found, err := cachedUserGroupMemberPage(ctx, store, userGroupId, page)
+		if err != nil {
+			return userGroupMemberPage{}, err
+		}
+		if found {
+			return stored, nil
+		}
+	}
+
+	group, err := g.client.GetUserGroupDetails(ctx, userGroupId)
+	if err != nil {
+		return userGroupMemberPage{}, err
+	}
+	pages := memberPages(group.Users)
+	if page >= len(pages) {
+		return userGroupMemberPage{Last: true}, nil
+	}
+	if err := cacheUserGroupMemberPages(ctx, store, userGroupId, pages, page+1); err != nil {
+		return userGroupMemberPage{}, err
+	}
+	return pages[page], nil
+}
+
+// memberPages splits the members into grants pages of sorted user ids; the last one is marked.
+func memberPages(users []jamf.User) []userGroupMemberPage {
+	userIDs := make([]int, 0, len(users))
+	for _, user := range users {
+		userIDs = append(userIDs, user.ID)
+	}
+	slices.Sort(userIDs)
+
+	var pages []userGroupMemberPage
+	for pageIDs := range slices.Chunk(userIDs, grantsPageSize) {
+		pages = append(pages, userGroupMemberPage{UserIDs: pageIDs})
+	}
+	if len(pages) > 0 {
+		pages[len(pages)-1].Last = true
+	}
+	return pages
 }
 
 // isUserGroupMember reports whether userID is in users, the membership list
