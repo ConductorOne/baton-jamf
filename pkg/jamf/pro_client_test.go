@@ -20,23 +20,23 @@ func TestProListEndpoints_MissingEndpointIsFailedPrecondition(t *testing.T) {
 
 	calls := map[string]func() error{
 		"GetProUsers": func() error {
-			_, _, err := client.GetProUsers(ctx, "", UsersPageSize)
+			_, _, _, err := client.GetProUsers(ctx, "", UsersPageSize)
 			return err
 		},
 		"GetProUsersByUsernameOrEmail": func() error {
-			_, err := client.GetProUsersByUsernameOrEmail(ctx, []string{"jdoe"})
+			_, _, err := client.GetProUsersByUsernameOrEmail(ctx, []string{"jdoe"})
 			return err
 		},
 		"GetProAccounts": func() error {
-			_, _, err := client.GetProAccounts(ctx, "", "", AccountsPageSize)
+			_, _, _, err := client.GetProAccounts(ctx, "", "", AccountsPageSize)
 			return err
 		},
 		"GetSiteObjects": func() error {
-			_, _, err := client.GetSiteObjects(ctx, 3, "User", "")
+			_, _, _, err := client.GetSiteObjects(ctx, 3, "User", "")
 			return err
 		},
 		"GetPrivileges": func() error {
-			_, err := client.GetPrivileges(ctx)
+			_, _, err := client.GetPrivileges(ctx)
 			return err
 		},
 	}
@@ -72,7 +72,7 @@ func TestGetProUsers_SendsPagingAndSort_DecodesStringIDs(t *testing.T) {
 		]
 	}`))
 
-	users, _, err := client.GetProUsers(context.Background(), "2", 50)
+	users, _, _, err := client.GetProUsers(context.Background(), "2", 50)
 	if err != nil {
 		t.Fatalf("GetProUsers: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestGetProUsersByUsernameOrEmail_SendsFilter(t *testing.T) {
 		"results": [{"id": "5", "username": "c@d", "realname": "", "email": "c@d"}]
 	}`))
 
-	users, err := client.GetProUsersByUsernameOrEmail(context.Background(), []string{`a"b`, "c@d"})
+	users, _, err := client.GetProUsersByUsernameOrEmail(context.Background(), []string{`a"b`, "c@d"})
 	if err != nil {
 		t.Fatalf("GetProUsersByUsernameOrEmail: %v", err)
 	}

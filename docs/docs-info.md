@@ -23,7 +23,7 @@ Yes — account creation/deletion for **User** and **User Account**, plus Grant/
 | Resource | Grant | Revoke | Create | Delete |
 |----------|-------|--------|--------|--------|
 | **User** | - | - | ✅ Creates a Jamf directory user (`POST /JSSResource/users/id/0`) | ✅ Deletes a Jamf directory user |
-| **User Account** | - | - | ✅ Creates a Jamf Pro console admin account (`POST /JSSResource/accounts/userid/0`), with a C1-generated random password returned as plaintext | ✅ Deletes a Jamf Pro console admin account |
+| **User Account** | - | - | ✅ Creates a Jamf Pro console admin account (`POST /JSSResource/accounts/userid/0`), with a C1-generated random password returned as plaintext | ✅ Deletes a Jamf Pro console admin account, except the one the connector authenticates with |
 | **Group** | ✅ `userAccount`, Group Access only | ✅ | - | - |
 | **User Group** | ✅ `user`, static groups only | ✅ | - | - |
 | **Role** | ✅ `userAccount`/`group` | ✅ | - | - |

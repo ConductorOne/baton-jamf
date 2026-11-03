@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/conductorone/baton-sdk/pkg/types/sessions"
@@ -76,6 +77,11 @@ func idRange(first, count int) []int {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// hasMarkerAnnotation reports whether annos carries a GrantAlreadyExists, GrantAlreadyRevoked or GrantReplaced marker.
+func hasMarkerAnnotation(annos annotations.Annotations) bool {
+	return annos.ContainsAny(&v2.GrantAlreadyExists{}, &v2.GrantAlreadyRevoked{}, &v2.GrantReplaced{})
 }
 
 // A cursor whose grant was removed since the previous page still resumes right after its position.

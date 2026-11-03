@@ -10,7 +10,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 |------------|--------|
 | Sync | Yes |
 | Account Creation (Users, User Accounts) | Yes — one type per connector instance, see `create-account-resource-type` below |
-| Account Deletion (Users, User Accounts) | Yes |
+| Account Deletion (Users, User Accounts) | Yes — except the user account the connector authenticates with |
 | Provisioning (Grant/Revoke) | Yes — Groups (`userAccount` principal only, Group Access accounts only), User Groups (static groups only), Sites (`user` principal only), Managed Devices (`assigned`, `user` principal only, opt-in — see Data Model below), Roles (built-in privilege sets and individual privileges, `userAccount`/`group` principal, see below). |
 
 Account creation/deletion and Grant/Revoke all require `-p`/`$BATON_PROVISIONING` to be set; without it the connector only syncs.
@@ -54,10 +54,10 @@ Jamf reports a missing privilege differently depending on which API it uses: the
 Group Grant/Revoke adds or removes a `userAccount` from an admin account
 group's member list. A group with no members cannot receive its first member
 through the connector, and Revoke on such a group returns a retryable error
-instead of reporting success — Jamf can transiently return an empty member
-list even when the group genuinely has members, and the connector refuses to
-write over (or assume someone was removed from) a list it can't trust is
-complete. Only Group Access
+instead of reporting success. The write replaces the whole member list, so the
+connector never writes over an empty read or takes it to mean the member was
+removed: if that read were incomplete, the write would drop every real member.
+Only Group Access
 accounts can usefully be granted membership — a Full or Site Access account's
 rights come from its own `privilege_set`, not its groups, so Grant rejects
 adding one (membership grants it nothing). Do not use Grant/Revoke on
@@ -110,7 +110,7 @@ Requests per full sync:
 | `userAccount` | ⌈accounts / 100⌉ |
 | `group` | 1, plus per group one read per 1,000 grants (members, roles and site; at least one) |
 | `userGroup` | 1, plus one read per user group |
-| `site` | 1, plus per site ⌊users / 1000⌋ + 1, ⌊user groups / 1000⌋ + 1 and ⌈accounts / 100⌉ (at least one) |
+| `site` | 1, plus per site ⌊users / 1000⌋ + 1, ⌊user groups / 1000⌋ + 1 and ⌈accounts / 100⌉, each only when `user`, `userGroup` or `userAccount` is synced |
 | `role` | 1, plus ⌈accounts / 100⌉ + ⌈`Custom` accounts / 10⌉ and one read per `Custom` account, when `userAccount` is synced |
 | `managedDevice` | ⌈computers / 100⌉ + ⌈mobile devices / 100⌉ |
 

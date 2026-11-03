@@ -55,7 +55,7 @@ func groupResource(group *jamf.Group, parentResourceID *v2.ResourceId) (*v2.Reso
 }
 
 func (g *groupResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	accounts, err := g.client.GetBaseAccounts(ctx)
+	accounts, annos, err := g.client.GetBaseAccounts(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: failed to list accounts: %w", err)
 	}
@@ -68,7 +68,7 @@ func (g *groupResourceType) List(ctx context.Context, parentId *v2.ResourceId, a
 		}
 		rv = append(rv, resource)
 	}
-	return rv, nil, nil
+	return rv, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
 // Entitlements is unused: StaticEntitlements declares the member entitlement.
@@ -93,7 +93,7 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 		return nil, nil, fmt.Errorf("jamf-connector: invalid group id %q: %w", resource.Id.Resource, err)
 	}
 
-	grants, err := g.groupGrants(ctx, attrs.Session, resource, groupId)
+	grants, annos, err := g.groupGrants(ctx, attrs.Session, resource, groupId)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: list group %d grants: %w", groupId, err)
 	}
@@ -102,14 +102,14 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 	if err != nil {
 		return nil, nil, err
 	}
-	return page, &rs.SyncOpResults{NextPageToken: nextCursor}, nil
+	return page, &rs.SyncOpResults{NextPageToken: nextCursor, Annotations: annos}, nil
 }
 
 // groupGrants lists the grants of one group: its members, then the roles and the site it holds.
-func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.SessionStore, resource *v2.Resource, groupId int) ([]*v2.Grant, error) {
-	group, err := g.client.GetGroupDetails(ctx, groupId)
+func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.SessionStore, resource *v2.Resource, groupId int) ([]*v2.Grant, annotations.Annotations, error) {
+	group, annos, err := g.client.GetGroupDetails(ctx, groupId)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	grants := make([]*v2.Grant, 0, len(group.Members))
@@ -121,7 +121,7 @@ func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.Sess
 	if g.syncRoles {
 		roles, err := g.heldRoles(ctx, store, group)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, role := range roles {
 			roleID := &v2.ResourceId{ResourceType: resourceTypeRole.Id, Resource: role}
@@ -134,7 +134,7 @@ func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.Sess
 		siteID := &v2.ResourceId{ResourceType: resourceTypeSite.Id, Resource: strconv.Itoa(group.Site.ID)}
 		grants = append(grants, grant.NewGrant(&v2.Resource{Id: siteID}, memberEntitlement, resource.Id))
 	}
-	return grants, nil
+	return grants, annos, nil
 }
 
 // heldRoles returns the roles a group holds: its privilege set, or the individual privileges of a Custom group.
@@ -146,7 +146,8 @@ func (g *groupResourceType) heldRoles(ctx context.Context, store sessions.Sessio
 		return nil, nil
 	}
 
-	catalog, err := privilegeCatalog(ctx, store, g.client)
+	// The group read supplies the annotations.
+	catalog, _, err := privilegeCatalog(ctx, store, g.client)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +170,7 @@ func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, e
 		return nil, nil, err
 	}
 
-	current, err := g.client.GetGroupDetails(ctx, groupID)
+	current, annos, err := g.client.GetGroupDetails(ctx, groupID)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant group member: group %d not found", groupID)
@@ -186,14 +187,16 @@ func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, e
 	}
 
 	if slices.ContainsFunc(current.Members, func(m jamf.BaseType) bool { return m.ID == userID }) {
-		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+		annos.Update(&v2.GrantAlreadyExists{})
+		return nil, annos, nil
 	}
 
 	// Membership only grants anything to a Group Access account — a Full or
 	// Site Access account's rights come from its own privilege_set, so
 	// adding it to a group would silently do nothing. Fetched fresh, right
 	// before the write, so this reflects the account's current access level.
-	account, err := g.client.GetUserAccountDetails(ctx, userID)
+	// The write below supplies the annotations.
+	account, _, err := g.client.GetUserAccountDetails(ctx, userID)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant group member: account %d not found", userID)
@@ -206,11 +209,12 @@ func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, e
 	}
 
 	newMembers := append(append([]jamf.BaseType{}, current.Members...), jamf.BaseType{ID: userID})
-	if err := g.client.UpdateGroupMembers(ctx, groupID, current.Name, newMembers); err != nil {
+	annos, err = g.client.UpdateGroupMembers(ctx, groupID, current.Name, newMembers)
+	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: grant group member: %w", err)
 	}
 
-	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
+	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, annos, nil
 }
 
 // Revoke removes gr's principal (a Jamf admin account) from the static
@@ -227,7 +231,7 @@ func (g *groupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotatio
 		return nil, err
 	}
 
-	current, err := g.client.GetGroupDetails(ctx, groupID)
+	current, annos, err := g.client.GetGroupDetails(ctx, groupID)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			// The group has been deleted — a deleted group trivially has no
@@ -259,14 +263,16 @@ func (g *groupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotatio
 		remaining = append(remaining, member)
 	}
 	if !found {
-		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		annos.Update(&v2.GrantAlreadyRevoked{})
+		return annos, nil
 	}
 
-	if err := g.client.UpdateGroupMembers(ctx, groupID, current.Name, remaining); err != nil {
+	annos, err = g.client.UpdateGroupMembers(ctx, groupID, current.Name, remaining)
+	if err != nil {
 		return nil, fmt.Errorf("jamf-connector: revoke group member: %w", err)
 	}
 
-	return nil, nil
+	return annos, nil
 }
 
 func groupBuilder(client *jamf.Client, syncRoles, syncSites bool) *groupResourceType {

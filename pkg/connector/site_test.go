@@ -84,7 +84,7 @@ func jamfUserSitesStatefulHandler(t *testing.T, sitesBeforePut, sitesAfterPut []
 func TestSiteGrant_UserNotYetMember_IssuesPUT(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesHandler(t, []int{1}, &putBody))
-	s := siteBuilder(client)
+	s := siteBuilder(client, true, true, true)
 
 	grants, annos, err := s.Grant(context.Background(), userPrincipal(t, 42), siteEntitlement(t, 2))
 	if err != nil {
@@ -93,8 +93,8 @@ func TestSiteGrant_UserNotYetMember_IssuesPUT(t *testing.T) {
 	if len(grants) != 1 {
 		t.Fatalf("want 1 grant, got %d", len(grants))
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations — Sites absorbs idempotency client-side, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations — Sites absorbs idempotency client-side, got %v", annos)
 	}
 	if len(putBody) == 0 {
 		t.Fatal("expected a PUT to be issued to add the new site")
@@ -111,7 +111,7 @@ func TestSiteGrant_UserNotYetMember_IssuesPUT(t *testing.T) {
 func TestSiteGrant_UserAlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesHandler(t, []int{2}, &putBody))
-	s := siteBuilder(client)
+	s := siteBuilder(client, true, true, true)
 
 	grants, annos, err := s.Grant(context.Background(), userPrincipal(t, 42), siteEntitlement(t, 2))
 	if err != nil {
@@ -131,15 +131,15 @@ func TestSiteGrant_UserAlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 func TestSiteRevoke_UserIsMember_IssuesPUT(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesHandler(t, []int{1, 2}, &putBody))
-	s := siteBuilder(client)
+	s := siteBuilder(client, true, true, true)
 
 	gr := grant.NewGrant(siteEntitlement(t, 2).Resource, memberEntitlement, userPrincipal(t, 42).Id)
 	annos, err := s.Revoke(context.Background(), gr)
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations, got %v", annos)
 	}
 	if len(putBody) == 0 {
 		t.Fatal("expected a PUT to be issued to remove the site")
@@ -157,7 +157,7 @@ func TestSiteRevoke_UserIsMember_IssuesPUT(t *testing.T) {
 func TestSiteRevoke_UserNotMember_MapsToGrantAlreadyRevoked(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesHandler(t, []int{1}, &putBody))
-	s := siteBuilder(client)
+	s := siteBuilder(client, true, true, true)
 
 	gr := grant.NewGrant(siteEntitlement(t, 2).Resource, memberEntitlement, userPrincipal(t, 42).Id)
 	annos, err := s.Revoke(context.Background(), gr)
@@ -181,7 +181,7 @@ func TestSiteRevoke_UserDeleted_MapsToGrantAlreadyRevoked(t *testing.T) {
 	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
-	s := siteBuilder(client)
+	s := siteBuilder(client, true, true, true)
 
 	gr := grant.NewGrant(siteEntitlement(t, 2).Resource, memberEntitlement, userPrincipal(t, 42).Id)
 	annos, err := s.Revoke(context.Background(), gr)
@@ -194,7 +194,7 @@ func TestSiteRevoke_UserDeleted_MapsToGrantAlreadyRevoked(t *testing.T) {
 }
 
 func TestSiteGrant_NonUserPrincipal_Errors(t *testing.T) {
-	s := siteBuilder(nil)
+	s := siteBuilder(nil, true, true, true)
 	_, _, err := s.Grant(context.Background(), userGroupPrincipal(t, 7), siteEntitlement(t, 2))
 	if err == nil {
 		t.Fatal("expected an error granting site membership to a non-user principal")
@@ -202,7 +202,7 @@ func TestSiteGrant_NonUserPrincipal_Errors(t *testing.T) {
 }
 
 func TestSiteRevoke_NonUserPrincipal_Errors(t *testing.T) {
-	s := siteBuilder(nil)
+	s := siteBuilder(nil, true, true, true)
 	gr := grant.NewGrant(siteEntitlement(t, 2).Resource, memberEntitlement, userGroupPrincipal(t, 7).Id)
 	_, err := s.Revoke(context.Background(), gr)
 	if err == nil {
@@ -220,7 +220,7 @@ func TestSiteGrant_UserDeleted_ReturnsNotFound(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNotFound)
 	})
-	s := siteBuilder(client)
+	s := siteBuilder(client, true, true, true)
 
 	_, _, err := s.Grant(context.Background(), userPrincipal(t, 42), siteEntitlement(t, 2))
 	if err == nil {
@@ -238,7 +238,7 @@ func TestSiteGrant_UserDeleted_ReturnsNotFound(t *testing.T) {
 func TestSiteGrant_Conflict_ReturnsFailedPrecondition(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesStatefulHandler(t, []int{1}, []int{1}, http.StatusConflict, &putBody))
-	s := siteBuilder(client)
+	s := siteBuilder(client, true, true, true)
 
 	_, _, err := s.Grant(context.Background(), userPrincipal(t, 42), siteEntitlement(t, 2))
 	if err == nil {
@@ -259,15 +259,15 @@ func TestSiteGrant_Conflict_ReturnsFailedPrecondition(t *testing.T) {
 func TestSiteRevoke_LastSite_SendsExplicitEmptySitesElement(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesHandler(t, []int{2}, &putBody))
-	s := siteBuilder(client)
+	s := siteBuilder(client, true, true, true)
 
 	gr := grant.NewGrant(siteEntitlement(t, 2).Resource, memberEntitlement, userPrincipal(t, 42).Id)
 	annos, err := s.Revoke(context.Background(), gr)
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations, got %v", annos)
 	}
 	if want := "<user><sites></sites></user>"; string(putBody) != want {
 		t.Errorf("PUT body = %q, want %q", string(putBody), want)
@@ -280,7 +280,7 @@ func TestSiteRevoke_LastSite_SendsExplicitEmptySitesElement(t *testing.T) {
 func TestSiteRevoke_Conflict_ReturnsFailedPrecondition(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesStatefulHandler(t, []int{1, 2}, []int{1, 2}, http.StatusConflict, &putBody))
-	s := siteBuilder(client)
+	s := siteBuilder(client, true, true, true)
 
 	gr := grant.NewGrant(siteEntitlement(t, 2).Resource, memberEntitlement, userPrincipal(t, 42).Id)
 	_, err := s.Revoke(context.Background(), gr)
@@ -313,7 +313,7 @@ func TestSiteGrants_WalksUsersUserGroupsThenAdmins(t *testing.T) {
 		"1/User Group": userGroupIDs,
 		"2/User":       {999},
 	}
-	builder := siteBuilder(fixture.client())
+	builder := siteBuilder(fixture.client(), true, true, true)
 	site, err := siteResource(&jamf.Site{BaseType: jamf.BaseType{ID: 1, Name: "Site 1"}}, nil)
 	if err != nil {
 		t.Fatalf("siteResource: %v", err)
@@ -346,5 +346,46 @@ func TestSiteGrants_WalksUsersUserGroupsThenAdmins(t *testing.T) {
 	slices.Sort(want)
 	if got := grantPrincipals(t, grants); !slices.Equal(got, want) {
 		t.Errorf("principals = %v, want %v", got, want)
+	}
+}
+
+// A sync without userAccount reads no accounts, so a missing Read Accounts can't fail it.
+func TestSiteGrants_SkipsAdminsWhenUserAccountNotSynced(t *testing.T) {
+	siteAuditor := testAccount(7, privilegeSetAuditor)
+	siteAuditor.Site = jamf.BaseType{ID: 1}
+	fixture := newAdminFixture(t, []jamf.UserAccount{siteAuditor}, nil)
+	fixture.siteObjects = map[string][]int{"1/User": {1}, "1/User Group": {500}}
+	builder := siteBuilder(fixture.client(), true, true, false)
+	site, err := siteResource(&jamf.Site{BaseType: jamf.BaseType{ID: 1, Name: "Site 1"}}, nil)
+	if err != nil {
+		t.Fatalf("siteResource: %v", err)
+	}
+
+	grants, _ := collectGrants(t, builder.Grants, site, newMemorySessionStore())
+
+	if got := fixture.accountsRequestsSeen(); len(got) != 0 {
+		t.Errorf("accounts requests = %v, want none", got)
+	}
+	if got := grantPrincipals(t, grants); !slices.Equal(got, []string{"user:1", "userGroup:500"}) {
+		t.Errorf("principals = %v, want [user:1 userGroup:500]", got)
+	}
+}
+
+// With none of its principal types synced, site Grants pushes no phase and must end without a read, not panic.
+func TestSiteGrants_ReadsNothingWhenNoPrincipalTypeSynced(t *testing.T) {
+	fixture := newAdminFixture(t, nil, nil)
+	builder := siteBuilder(fixture.client(), false, false, false)
+	site, err := siteResource(&jamf.Site{BaseType: jamf.BaseType{ID: 1, Name: "Site 1"}}, nil)
+	if err != nil {
+		t.Fatalf("siteResource: %v", err)
+	}
+
+	grants, calls := collectGrants(t, builder.Grants, site, newMemorySessionStore())
+
+	if len(grants) != 0 || calls != 1 {
+		t.Errorf("grants = %d over %d calls, want 0 over 1", len(grants), calls)
+	}
+	if got := fixture.requestCount(""); got != 0 {
+		t.Errorf("Jamf requests = %d, want 0", got)
 	}
 }

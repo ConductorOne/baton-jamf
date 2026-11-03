@@ -83,7 +83,7 @@ func userResource(user *jamf.User, parentResourceID *v2.ResourceId) (*v2.Resourc
 }
 
 func (o *userResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	users, nextToken, err := o.client.GetProUsers(ctx, attrs.PageToken.Token, jamf.UsersPageSize)
+	users, nextToken, annos, err := o.client.GetProUsers(ctx, attrs.PageToken.Token, jamf.UsersPageSize)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: list users: %w", err)
 	}
@@ -104,7 +104,7 @@ func (o *userResourceType) List(ctx context.Context, parentId *v2.ResourceId, at
 		}
 	}
 
-	return rv, &rs.SyncOpResults{NextPageToken: nextToken}, nil
+	return rv, &rs.SyncOpResults{NextPageToken: nextToken, Annotations: annos}, nil
 }
 
 func (o *userResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
@@ -189,14 +189,14 @@ func (o *provisionableUserType) CreateAccount(
 	fullName, _ := profileMap[profileFieldFullName].(string)
 	email, _ := profileMap[profileFieldEmail].(string)
 
-	err = o.client.CreateUser(ctx, name, fullName, email)
+	writeAnnos, err := o.client.CreateUser(ctx, name, fullName, email)
 	alreadyExists := err != nil && jamf.IsAlreadyExistsError(err)
 	if err != nil && !alreadyExists {
 		return nil, nil, nil, fmt.Errorf("jamf-connector: create account %s: %w", name, err)
 	}
 
 	// Fetch the user, whether just created or already existing.
-	fetched, err := o.client.GetUserByName(ctx, name)
+	fetched, annos, err := o.client.GetUserByName(ctx, name)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("jamf-connector: create account %s: fetch failed: %w", name, err)
 	}
@@ -207,9 +207,9 @@ func (o *provisionableUserType) CreateAccount(
 	}
 
 	if alreadyExists {
-		return &v2.CreateAccountResponse_AlreadyExistsResult{Resource: resource}, nil, nil, nil
+		return &v2.CreateAccountResponse_AlreadyExistsResult{Resource: resource}, nil, annos, nil
 	}
-	return &v2.CreateAccountResponse_SuccessResult{Resource: resource}, nil, nil, nil
+	return &v2.CreateAccountResponse_SuccessResult{Resource: resource}, nil, writeAnnos, nil
 }
 
 // Delete removes a Jamf directory user. Not gated by create-account-resource-type —
@@ -223,14 +223,14 @@ func (o *userResourceType) Delete(ctx context.Context, resourceID *v2.ResourceId
 		return nil, err
 	}
 
-	err = o.client.DeleteUser(ctx, id)
+	annos, err := o.client.DeleteUser(ctx, id)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("jamf-connector: delete user %d: %w", id, err)
 	}
-	return nil, nil
+	return annos, nil
 }
 
 func userBuilder(client *jamf.Client, syncManagedDevices bool) *userResourceType {

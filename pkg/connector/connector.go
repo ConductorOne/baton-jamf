@@ -26,6 +26,8 @@ type Jamf struct {
 	accountProvisioningTarget string
 
 	// Whether the sync includes each type: the grants that point at it, and the reads they need, depend on that.
+	syncUsers          bool
+	syncUserGroups     bool
 	syncRoles          bool
 	syncSites          bool
 	syncUserAccounts   bool
@@ -78,6 +80,8 @@ func New(ctx context.Context, cc *cfg.Jamf, opts *cli.ConnectorOpts) (connectorb
 	return &Jamf{
 		client:                    client,
 		accountProvisioningTarget: accountProvisioningTarget,
+		syncUsers:                 opts.WillSyncResourceType(resourceTypeUser.Id),
+		syncUserGroups:            opts.WillSyncResourceType(resourceTypeUserGroup.Id),
 		syncRoles:                 opts.WillSyncResourceType(resourceTypeRole.Id),
 		syncSites:                 opts.WillSyncResourceType(resourceTypeSite.Id),
 		syncUserAccounts:          opts.WillSyncResourceType(resourceTypeUserAccount.Id),
@@ -95,7 +99,7 @@ func (j *Jamf) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error) {
 }
 
 func (j *Jamf) Validate(ctx context.Context) (annotations.Annotations, error) {
-	tokenDetails, err := j.client.GetTokenDetails(ctx)
+	tokenDetails, annos, err := j.client.GetTokenDetails(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("jamf-connector: error fetching token details: %w", err)
 	}
@@ -103,7 +107,7 @@ func (j *Jamf) Validate(ctx context.Context) (annotations.Annotations, error) {
 	if reflect.ValueOf(tokenDetails).IsZero() {
 		return nil, fmt.Errorf("jamf-connector: missing token details")
 	}
-	return nil, nil
+	return annos, nil
 }
 
 func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncerV2 {
@@ -112,7 +116,7 @@ func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceS
 		groupBuilder(j.client, j.syncRoles, j.syncSites),
 		j.userAccountSyncer(),
 		userGroupBuilder(j.client),
-		siteBuilder(j.client),
+		siteBuilder(j.client, j.syncUsers, j.syncUserGroups, j.syncUserAccounts),
 		roleBuilder(j.client, j.syncUserAccounts),
 		managedDeviceBuilder(j.client),
 	}

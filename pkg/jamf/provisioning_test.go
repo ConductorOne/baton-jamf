@@ -23,7 +23,7 @@ func TestAddUserGroupMembers_RequestWiring(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	})
 
-	if err := client.AddUserGroupMembers(context.Background(), 301, []int{10, 11}); err != nil {
+	if _, err := client.AddUserGroupMembers(context.Background(), 301, []int{10, 11}); err != nil {
 		t.Fatalf("AddUserGroupMembers: %v", err)
 	}
 	if gotMethod != http.MethodPut {
@@ -54,7 +54,7 @@ func TestRemoveUserGroupMembers_RequestWiring(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	})
 
-	if err := client.RemoveUserGroupMembers(context.Background(), 301, []int{10}); err != nil {
+	if _, err := client.RemoveUserGroupMembers(context.Background(), 301, []int{10}); err != nil {
 		t.Fatalf("RemoveUserGroupMembers: %v", err)
 	}
 	if gotMethod != http.MethodPut {
@@ -77,7 +77,7 @@ func TestRemoveUserGroupMembers_NotFound_SurfacesNotFoundError(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 
-	err := client.RemoveUserGroupMembers(context.Background(), 999, []int{10})
+	_, err := client.RemoveUserGroupMembers(context.Background(), 999, []int{10})
 	if !IsNotFoundError(err) {
 		t.Errorf("want a NotFound error, got %v", err)
 	}

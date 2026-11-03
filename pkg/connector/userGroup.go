@@ -49,7 +49,7 @@ func userGroupResource(group *jamf.UserGroup, parentResourceID *v2.ResourceId) (
 }
 
 func (g *userGroupResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	userGroups, err := g.client.GetBaseUserGroups(ctx)
+	userGroups, annos, err := g.client.GetBaseUserGroups(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: failed to list user groups: %w", err)
 	}
@@ -63,7 +63,7 @@ func (g *userGroupResourceType) List(ctx context.Context, parentId *v2.ResourceI
 		rv = append(rv, resource)
 	}
 
-	return rv, nil, nil
+	return rv, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
 // Entitlements is unused: StaticEntitlements declares the member entitlement.
@@ -86,15 +86,15 @@ func (g *userGroupResourceType) Grants(ctx context.Context, resource *v2.Resourc
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: invalid user group id %q: %w", resource.Id.Resource, err)
 	}
-	page := 0
+	cursor := 0
 	if attrs.PageToken.Token != "" {
-		page, err = strconv.Atoi(attrs.PageToken.Token)
+		cursor, err = strconv.Atoi(attrs.PageToken.Token)
 		if err != nil {
 			return nil, nil, fmt.Errorf("jamf-connector: invalid user group %d grants page token %q: %w", userGroupId, attrs.PageToken.Token, err)
 		}
 	}
 
-	members, err := g.memberPage(ctx, attrs.Session, userGroupId, page)
+	members, annos, err := g.memberPage(ctx, attrs.Session, userGroupId, cursor)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: list user group %d grants: %w", userGroupId, err)
 	}
@@ -107,43 +107,45 @@ func (g *userGroupResourceType) Grants(ctx context.Context, resource *v2.Resourc
 
 	var nextPage string
 	if !members.Last {
-		nextPage = strconv.Itoa(page + 1)
+		nextPage = strconv.Itoa(members.UserIDs[len(members.UserIDs)-1])
 	}
-	return grants, &rs.SyncOpResults{NextPageToken: nextPage}, nil
+	return grants, &rs.SyncOpResults{NextPageToken: nextPage, Annotations: annos}, nil
 }
 
-// memberPage returns one grants page of the user group's members. Classic returns every member at once,
-// so a read from Jamf stores the pages after this one; a page missing from the store is read again.
-func (g *userGroupResourceType) memberPage(ctx context.Context, store sessions.SessionStore, userGroupId, page int) (userGroupMemberPage, error) {
-	if page > 0 {
-		stored, found, err := cachedUserGroupMemberPage(ctx, store, userGroupId, page)
+// memberPage returns the grants page of the user group's members after cursor, a user id. Classic returns every
+// member at once, so a read from Jamf stores the later pages by cursor; a page missing from the store is read again.
+func (g *userGroupResourceType) memberPage(ctx context.Context, store sessions.SessionStore, userGroupId, cursor int) (userGroupMemberPage, annotations.Annotations, error) {
+	if cursor > 0 {
+		stored, found, err := cachedUserGroupMemberPage(ctx, store, userGroupId, cursor)
 		if err != nil {
-			return userGroupMemberPage{}, err
+			return userGroupMemberPage{}, nil, err
 		}
 		if found {
-			return stored, nil
+			return stored, nil, nil
 		}
 	}
 
-	group, err := g.client.GetUserGroupDetails(ctx, userGroupId)
+	group, annos, err := g.client.GetUserGroupDetails(ctx, userGroupId)
 	if err != nil {
-		return userGroupMemberPage{}, err
+		return userGroupMemberPage{}, nil, err
 	}
-	pages := memberPages(group.Users)
-	if page >= len(pages) {
-		return userGroupMemberPage{Last: true}, nil
+	pages := memberPages(group.Users, cursor)
+	if len(pages) == 0 {
+		return userGroupMemberPage{Last: true}, annos, nil
 	}
-	if err := cacheUserGroupMemberPages(ctx, store, userGroupId, pages, page+1); err != nil {
-		return userGroupMemberPage{}, err
+	if err := cacheUserGroupMemberPages(ctx, store, userGroupId, pages); err != nil {
+		return userGroupMemberPage{}, nil, err
 	}
-	return pages[page], nil
+	return pages[0], annos, nil
 }
 
-// memberPages splits the members into grants pages of sorted user ids; the last one is marked.
-func memberPages(users []jamf.User) []userGroupMemberPage {
+// memberPages splits the members after cursor into grants pages of sorted user ids; the last one is marked.
+func memberPages(users []jamf.User, cursor int) []userGroupMemberPage {
 	userIDs := make([]int, 0, len(users))
 	for _, user := range users {
-		userIDs = append(userIDs, user.ID)
+		if user.ID > cursor {
+			userIDs = append(userIDs, user.ID)
+		}
 	}
 	slices.Sort(userIDs)
 
@@ -174,7 +176,7 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 		return nil, nil, err
 	}
 
-	group, err := g.client.GetUserGroupDetails(ctx, groupID)
+	group, annos, err := g.client.GetUserGroupDetails(ctx, groupID)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant user group member: group %d not found", groupID)
@@ -185,17 +187,19 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: cannot grant membership on smart user group %d — membership is computed from criteria, not assignable", groupID)
 	}
 	if isUserGroupMember(group.Users, userID) {
-		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+		annos.Update(&v2.GrantAlreadyExists{})
+		return nil, annos, nil
 	}
 
-	if err := g.client.AddUserGroupMembers(ctx, groupID, []int{userID}); err != nil {
+	annos, err = g.client.AddUserGroupMembers(ctx, groupID, []int{userID})
+	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant user group member: group %d not found", groupID)
 		}
 		return nil, nil, membershipWriteError("grant user group member", "the user or group", err)
 	}
 
-	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
+	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, annos, nil
 }
 
 // Revoke removes gr's principal (a Jamf user) from the static user group
@@ -209,7 +213,7 @@ func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annot
 		return nil, err
 	}
 
-	group, err := g.client.GetUserGroupDetails(ctx, groupID)
+	group, annos, err := g.client.GetUserGroupDetails(ctx, groupID)
 	if err != nil {
 		// A 404 here means the group itself has been deleted. A deleted
 		// group trivially has no membership left to revoke.
@@ -222,18 +226,21 @@ func (g *userGroupResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annot
 		return nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: cannot revoke membership on smart user group %d", groupID)
 	}
 	if !isUserGroupMember(group.Users, userID) {
-		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		annos.Update(&v2.GrantAlreadyRevoked{})
+		return annos, nil
 	}
 
-	if err := g.client.RemoveUserGroupMembers(ctx, groupID, []int{userID}); err != nil {
+	writeAnnos, err := g.client.RemoveUserGroupMembers(ctx, groupID, []int{userID})
+	if err != nil {
 		// A 404 here means the group was deleted between the GET and this
 		// PUT — same as the GET 404 case above.
 		if jamf.IsNotFoundError(err) {
-			return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+			annos.Update(&v2.GrantAlreadyRevoked{})
+			return annos, nil
 		}
 		return nil, membershipWriteError("revoke user group member", "the user or group", err)
 	}
-	return nil, nil
+	return writeAnnos, nil
 }
 
 func userGroupBuilder(client *jamf.Client) *userGroupResourceType {

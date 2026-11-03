@@ -109,13 +109,15 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 	page, seen := parseDevicePageToken(current.Token)
 
 	var resources []*v2.Resource
+	var annos annotations.Annotations
 
 	switch current.ResourceTypeID {
 	case devicePhaseComputer:
-		resp, err := d.client.GetComputersInventory(ctx, page, pageSize, jamf.ComputerInventorySections)
+		resp, pageAnnos, err := d.client.GetComputersInventory(ctx, page, pageSize, jamf.ComputerInventorySections)
 		if err != nil {
 			return nil, nil, fmt.Errorf("jamf-connector: failed to list computers inventory: %w", err)
 		}
+		annos = pageAnnos
 		for i := range resp.Results {
 			c := &resp.Results[i]
 			r, err := computerResource(c, parentId)
@@ -138,10 +140,11 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 		}
 
 	case devicePhaseMobile:
-		resp, err := d.client.GetMobileDevices(ctx, page, pageSize)
+		resp, pageAnnos, err := d.client.GetMobileDevices(ctx, page, pageSize)
 		if err != nil {
 			return nil, nil, fmt.Errorf("jamf-connector: failed to list mobile devices: %w", err)
 		}
+		annos = pageAnnos
 		for i := range resp.Results {
 			m := &resp.Results[i]
 			r, err := mobileDeviceResource(m, parentId)
@@ -169,7 +172,7 @@ func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.Resou
 		return nil, nil, err
 	}
 
-	return resources, &rs.SyncOpResults{NextPageToken: nextToken}, nil
+	return resources, &rs.SyncOpResults{NextPageToken: nextToken, Annotations: annos}, nil
 }
 
 // Entitlements exposes the "assigned" assignment entitlement, but only for
@@ -235,7 +238,7 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: jamf user %s has no username", principal.Id.Resource)
 	}
 
-	current, err := d.currentAssignedUser(ctx, entitlement.Resource)
+	current, annos, err := d.currentAssignedUser(ctx, entitlement.Resource)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant device assigned: device %q not found", entitlement.Resource.Id.Resource)
@@ -248,14 +251,15 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 	if current.matches(newAssignee) {
 		// principal is already the live assignee — nothing would be displaced,
 		// and re-sending the same PATCH would only churn Jamf's audit log.
-		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+		annos.Update(&v2.GrantAlreadyExists{})
+		return nil, annos, nil
 	}
 
-	if err := d.setAssignedUser(ctx, entitlement.Resource, newAssignee); err != nil {
+	annos, err = d.setAssignedUser(ctx, entitlement.Resource, newAssignee)
+	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: %w", err)
 	}
 
-	var annos annotations.Annotations
 	if !current.empty() {
 		replacedGrantID, ok, rerr := d.replacedGrantID(ctx, current, entitlement)
 		switch {
@@ -269,7 +273,7 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 			ctxzap.Extract(ctx).Debug("jamf-connector: grant device assigned: failed to resolve previous assignee for GrantReplaced",
 				zap.Error(rerr))
 		case ok:
-			annos = annotations.New(&v2.GrantReplaced{ReplacedGrantId: replacedGrantID})
+			annos.Update(&v2.GrantReplaced{ReplacedGrantId: replacedGrantID})
 		}
 	}
 
@@ -300,7 +304,7 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 		return nil, fmt.Errorf("jamf-connector: revoke device assigned: resolve principal identity: %w", err)
 	}
 
-	current, err := d.currentAssignedUser(ctx, gr.Entitlement.Resource)
+	current, annos, err := d.currentAssignedUser(ctx, gr.Entitlement.Resource)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			// The device itself has been deleted — nothing left to revoke.
@@ -314,7 +318,8 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 		// this grant was synced. Clearing now would either be a no-op or,
 		// worse, would clear a different user's live assignment, so treat
 		// this specific grant as already gone rather than touching the device.
-		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		annos.Update(&v2.GrantAlreadyRevoked{})
+		return annos, nil
 	}
 
 	// Clearing the whole assignee identity: for computers, every
@@ -325,10 +330,11 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 	// the same way via location.username alone (see
 	// SetMobileDeviceAssignedUser): Jamf drops the auto-populated fields
 	// together with it.
-	if err := d.setAssignedUser(ctx, gr.Entitlement.Resource, assignee{}); err != nil {
+	annos, err = d.setAssignedUser(ctx, gr.Entitlement.Resource, assignee{})
+	if err != nil {
 		return nil, fmt.Errorf("jamf-connector: revoke device assigned: %w", err)
 	}
-	return nil, nil
+	return annos, nil
 }
 
 // setAssignedUser dispatches to the computer or mobile-device client call
@@ -336,10 +342,10 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 // id at List() time. A computer's userAndLocation is written with every
 // field of a; mobile devices only send a.username (Jamf auto-populates the
 // rest, see SetMobileDeviceAssignedUser). The zero assignee clears the device.
-func (d *managedDeviceResourceType) setAssignedUser(ctx context.Context, resource *v2.Resource, a assignee) error {
+func (d *managedDeviceResourceType) setAssignedUser(ctx context.Context, resource *v2.Resource, a assignee) (annotations.Annotations, error) {
 	phase, id, err := parseDeviceObjectID(resource.Id.Resource)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if phase == devicePhaseComputer {
@@ -360,31 +366,31 @@ func (d *managedDeviceResourceType) setAssignedUser(ctx context.Context, resourc
 // into the resource id. Returns the zero assignee when the device is
 // currently unassigned; email is always "" for mobile devices, since the
 // mobile-device detail endpoint this uses exposes no email field.
-func (d *managedDeviceResourceType) currentAssignedUser(ctx context.Context, resource *v2.Resource) (assignee, error) {
+func (d *managedDeviceResourceType) currentAssignedUser(ctx context.Context, resource *v2.Resource) (assignee, annotations.Annotations, error) {
 	phase, id, err := parseDeviceObjectID(resource.Id.Resource)
 	if err != nil {
-		return assignee{}, err
+		return assignee{}, nil, err
 	}
 
 	if phase == devicePhaseComputer {
-		detail, err := d.client.GetComputerInventoryDetail(ctx, id)
+		detail, annos, err := d.client.GetComputerInventoryDetail(ctx, id)
 		if err != nil {
-			return assignee{}, err
+			return assignee{}, nil, err
 		}
 		if detail.UserAndLocation == nil {
-			return assignee{}, nil
+			return assignee{}, annos, nil
 		}
-		return assignee{username: detail.UserAndLocation.Username, email: detail.UserAndLocation.EmailAddr()}, nil
+		return assignee{username: detail.UserAndLocation.Username, email: detail.UserAndLocation.EmailAddr()}, annos, nil
 	}
 
-	detail, err := d.client.GetMobileDeviceDetail(ctx, id)
+	detail, annos, err := d.client.GetMobileDeviceDetail(ctx, id)
 	if err != nil {
-		return assignee{}, err
+		return assignee{}, nil, err
 	}
 	if detail.Location == nil {
-		return assignee{}, nil
+		return assignee{}, annos, nil
 	}
-	return assignee{username: detail.Location.Username}, nil
+	return assignee{username: detail.Location.Username}, annos, nil
 }
 
 // parseDeviceObjectID reverses deviceObjectID, splitting a resource id like
@@ -407,7 +413,8 @@ func resolvePrincipalUser(ctx context.Context, client *jamf.Client, principal *v
 		return assignee{}, err
 	}
 
-	user, err := client.GetUserDetails(ctx, userID)
+	// Grant and Revoke return the device calls' annotations, not this read's.
+	user, _, err := client.GetUserDetails(ctx, userID)
 	if err != nil {
 		return assignee{}, err
 	}
@@ -454,8 +461,8 @@ func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, owner a
 		return "", false, nil
 	}
 
-	// Grant has no session store, so ask Jamf.
-	users, err := d.client.GetProUsersByUsernameOrEmail(ctx, keys)
+	// Grant has no session store, so ask Jamf. Grant returns the PATCH's annotations, not this read's.
+	users, _, err := d.client.GetProUsersByUsernameOrEmail(ctx, keys)
 	if err != nil {
 		return "", false, err
 	}

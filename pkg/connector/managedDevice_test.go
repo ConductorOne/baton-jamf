@@ -529,8 +529,8 @@ func TestManagedDeviceRevoke_ExternalMatchPrincipal_Patches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations (grant should be revoked), got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations (grant should be revoked), got %v", annos)
 	}
 	if patchBody == nil {
 		t.Fatal("expected a PATCH to be sent for an externally-matched principal that matches the current assignee")
@@ -568,8 +568,8 @@ func TestManagedDeviceRevoke_ExternalMatchPrincipal_EmailOnly_DeviceHasUsername_
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations (grant should be revoked), got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations (grant should be revoked), got %v", annos)
 	}
 	if patchBody == nil {
 		t.Fatal("expected a PATCH to be sent: the principal's email matches the device's current assignee even though the device also reports a username")
@@ -595,8 +595,8 @@ func TestManagedDeviceGrant_Computer_PatchesUserAndLocation(t *testing.T) {
 	if len(grants) != 1 {
 		t.Fatalf("want 1 grant, got %d", len(grants))
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations for a previously-unassigned device, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations for a previously-unassigned device, got %v", annos)
 	}
 	if want := `{"userAndLocation":{"username":"jappleseed","realname":"","email":"","position":"","phone":""}}` + "\n"; string(patchBody) != want {
 		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
@@ -663,8 +663,8 @@ func TestManagedDeviceGrant_Mobile_PatchesLocation(t *testing.T) {
 	if len(grants) != 1 {
 		t.Fatalf("want 1 grant, got %d", len(grants))
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations for a previously-unassigned device, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations for a previously-unassigned device, got %v", annos)
 	}
 	if want := `{"location":{"username":"jappleseed"}}` + "\n"; string(patchBody) != want {
 		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
@@ -983,8 +983,8 @@ func TestManagedDeviceRevoke_ClearsUsername(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations, got %v", annos)
 	}
 	if want := `{"userAndLocation":{"username":"","realname":"","email":"","position":"","phone":""}}` + "\n"; string(patchBody) != want {
 		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
@@ -1081,8 +1081,8 @@ func TestManagedDeviceRevoke_MobileDevice_ClearsUsername(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations, got %v", annos)
 	}
 	if want := `{"location":{"username":""}}` + "\n"; string(patchBody) != want {
 		t.Errorf("PATCH body = %q, want %q", string(patchBody), want)
@@ -1109,8 +1109,8 @@ func TestManagedDeviceRevoke_EmailDoesNotMatch_StillClearsEverything(t *testing.
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations (grant should be revoked), got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations (grant should be revoked), got %v", annos)
 	}
 	if patchBody == nil {
 		t.Fatal("expected a PATCH to be sent to clear the assignee")
@@ -1148,8 +1148,8 @@ func TestManagedDeviceRevoke_ExternalMatchPrincipal_EmailDoesNotMatch_StillClear
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations (grant should be revoked), got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations (grant should be revoked), got %v", annos)
 	}
 	if patchBody == nil {
 		t.Fatal("expected a PATCH to be sent to clear the assignee")

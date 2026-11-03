@@ -229,8 +229,8 @@ func TestRoleGrant_NoGrantReplaced_WhenPreviouslyCustomOrUnassigned(t *testing.T
 			if len(grants) != 1 {
 				t.Fatalf("want 1 grant, got %d", len(grants))
 			}
-			if annos != nil {
-				t.Errorf("expected no annotations when the previous privilege_set was %q, got %v", previous, annos)
+			if hasMarkerAnnotation(annos) {
+				t.Errorf("expected no marker annotations when the previous privilege_set was %q, got %v", previous, annos)
 			}
 		})
 	}
@@ -342,8 +342,8 @@ func TestRoleGrant_IndividualPrivilege_Success(t *testing.T) {
 	if len(grants) != 1 {
 		t.Fatalf("want 1 grant, got %d", len(grants))
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations on a fresh individual-privilege grant, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations on a fresh individual-privilege grant, got %v", annos)
 	}
 }
 
@@ -452,8 +452,8 @@ func TestRoleRevoke_UserAccount_MovesToCustomWithExplicitEmptyBlock(t *testing.T
 	if got != want {
 		t.Errorf("PUT body = %s, want %s", got, want)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations on a plain revoke, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations on a plain revoke, got %v", annos)
 	}
 }
 
@@ -478,8 +478,8 @@ func TestRoleRevoke_Group_MovesToCustomWithExplicitEmptyBlock(t *testing.T) {
 	if got != want {
 		t.Errorf("PUT body = %s, want %s", got, want)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations on a plain revoke, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations on a plain revoke, got %v", annos)
 	}
 }
 
@@ -605,8 +605,8 @@ func TestRoleRevoke_IndividualPrivilege_Success(t *testing.T) {
 	if !strings.Contains(got, "Read User") {
 		t.Errorf("expected the remaining privilege to still be present, got: %s", got)
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations on a fresh individual-privilege revoke, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations on a fresh individual-privilege revoke, got %v", annos)
 	}
 }
 
