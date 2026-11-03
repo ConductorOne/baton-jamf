@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/session"
 	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 )
@@ -26,23 +27,23 @@ type userGroupMemberPage struct {
 }
 
 // privilegeCatalog returns the individual privileges Jamf offers, read once per sync.
-func privilegeCatalog(ctx context.Context, store sessions.SessionStore, client *jamf.Client) ([]string, error) {
+func privilegeCatalog(ctx context.Context, store sessions.SessionStore, client *jamf.Client) ([]string, annotations.Annotations, error) {
 	catalog, found, err := session.GetJSON[[]string](ctx, store, privilegeCatalogKey)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if found {
-		return catalog, nil
+		return catalog, nil, nil
 	}
 
-	response, err := client.GetPrivileges(ctx)
+	response, annos, err := client.GetPrivileges(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := session.SetJSON(ctx, store, privilegeCatalogKey, response.Privileges); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return response.Privileges, nil
+	return response.Privileges, annos, nil
 }
 
 // cacheUserIDs stores each user's username and email -> user id.
@@ -85,20 +86,21 @@ func userLookupKey(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-// cacheUserGroupMemberPages stores a user group's member pages from page first on, one key per page.
-func cacheUserGroupMemberPages(ctx context.Context, store sessions.SessionStore, userGroupID int, pages []userGroupMemberPage, first int) error {
-	values := make(map[string]userGroupMemberPage, len(pages)-first)
-	for page := first; page < len(pages); page++ {
-		values[userGroupMemberPageKey(userGroupID, page)] = pages[page]
+// cacheUserGroupMemberPages stores each page after the first under its cursor, the last user id of the page before.
+func cacheUserGroupMemberPages(ctx context.Context, store sessions.SessionStore, userGroupID int, pages []userGroupMemberPage) error {
+	values := make(map[string]userGroupMemberPage, len(pages)-1)
+	for i := 1; i < len(pages); i++ {
+		previousIDs := pages[i-1].UserIDs
+		values[userGroupMemberPageKey(userGroupID, previousIDs[len(previousIDs)-1])] = pages[i]
 	}
 	return session.SetManyJSON(ctx, store, values, userGroupMembersNamespace)
 }
 
-// cachedUserGroupMemberPage returns one stored member page of a user group.
-func cachedUserGroupMemberPage(ctx context.Context, store sessions.SessionStore, userGroupID, page int) (userGroupMemberPage, bool, error) {
-	return session.GetJSON[userGroupMemberPage](ctx, store, userGroupMemberPageKey(userGroupID, page), userGroupMembersNamespace)
+// cachedUserGroupMemberPage returns the stored member page of a user group that follows cursor.
+func cachedUserGroupMemberPage(ctx context.Context, store sessions.SessionStore, userGroupID, cursor int) (userGroupMemberPage, bool, error) {
+	return session.GetJSON[userGroupMemberPage](ctx, store, userGroupMemberPageKey(userGroupID, cursor), userGroupMembersNamespace)
 }
 
-func userGroupMemberPageKey(userGroupID, page int) string {
-	return fmt.Sprintf("%d:%d", userGroupID, page)
+func userGroupMemberPageKey(userGroupID, cursor int) string {
+	return fmt.Sprintf("%d:%d", userGroupID, cursor)
 }

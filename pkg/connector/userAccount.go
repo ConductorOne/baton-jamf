@@ -167,7 +167,7 @@ func userAccountResource(account *jamf.UserAccount, parentResourceID *v2.Resourc
 }
 
 func (o *userAccountResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	accounts, nextToken, err := o.client.GetProAccounts(ctx, "", attrs.PageToken.Token, jamf.AccountsPageSize)
+	accounts, nextToken, annos, err := o.client.GetProAccounts(ctx, "", attrs.PageToken.Token, jamf.AccountsPageSize)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: list accounts: %w", err)
 	}
@@ -181,7 +181,7 @@ func (o *userAccountResourceType) List(ctx context.Context, parentId *v2.Resourc
 		rv = append(rv, resource)
 	}
 
-	return rv, &rs.SyncOpResults{NextPageToken: nextToken}, nil
+	return rv, &rs.SyncOpResults{NextPageToken: nextToken, Annotations: annos}, nil
 }
 
 func (o *userAccountResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
@@ -310,7 +310,7 @@ func (o *provisionableUserAccountType) CreateAccount(
 		return nil, nil, nil, err
 	}
 
-	err = o.client.CreateUserAccount(ctx, jamf.UserAccountCreateBody{
+	writeAnnos, err := o.client.CreateUserAccount(ctx, jamf.UserAccountCreateBody{
 		Name:         name,
 		Password:     password,
 		FullName:     fullName,
@@ -326,7 +326,7 @@ func (o *provisionableUserAccountType) CreateAccount(
 	}
 
 	// Fetch the account, whether just created or already existing.
-	fetched, err := o.client.GetUserAccountByName(ctx, name)
+	fetched, annos, err := o.client.GetUserAccountByName(ctx, name)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("jamf-connector: create account %s: fetch failed: %w", name, err)
 	}
@@ -337,7 +337,7 @@ func (o *provisionableUserAccountType) CreateAccount(
 	}
 
 	if alreadyExists {
-		return &v2.CreateAccountResponse_AlreadyExistsResult{Resource: resource}, nil, nil, nil
+		return &v2.CreateAccountResponse_AlreadyExistsResult{Resource: resource}, nil, annos, nil
 	}
 
 	plaintextData := []*v2.PlaintextData{
@@ -346,7 +346,7 @@ func (o *provisionableUserAccountType) CreateAccount(
 			Bytes: []byte(password),
 		},
 	}
-	return &v2.CreateAccountResponse_SuccessResult{Resource: resource}, plaintextData, nil, nil
+	return &v2.CreateAccountResponse_SuccessResult{Resource: resource}, plaintextData, writeAnnos, nil
 }
 
 // Delete removes a Jamf console admin account. Not gated by
@@ -360,7 +360,7 @@ func (o *userAccountResourceType) Delete(ctx context.Context, resourceID *v2.Res
 		return nil, err
 	}
 
-	tokenDetails, err := o.client.GetTokenDetails(ctx)
+	tokenDetails, annos, err := o.client.GetTokenDetails(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("jamf-connector: delete userAccount %d: read token details: %w", id, err)
 	}
@@ -369,14 +369,14 @@ func (o *userAccountResourceType) Delete(ctx context.Context, resourceID *v2.Res
 			"jamf-connector: refusing to delete userAccount %d: it is the account the connector authenticates with", id)
 	}
 
-	err = o.client.DeleteUserAccount(ctx, id)
+	writeAnnos, err := o.client.DeleteUserAccount(ctx, id)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
-			return nil, nil
+			return annos, nil
 		}
 		return nil, fmt.Errorf("jamf-connector: delete userAccount %d: %w", id, err)
 	}
-	return nil, nil
+	return writeAnnos, nil
 }
 
 func userAccountBuilder(client *jamf.Client) *userAccountResourceType {

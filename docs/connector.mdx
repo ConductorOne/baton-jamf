@@ -26,7 +26,7 @@ The Jamf connector syncs the following resources:
 {/* AUTO-GENERATED:END - capabilities */}
 
 **Notes:**
-- Jamf has two distinct account types: **Users** (directory users) and **User Accounts** (Jamf Pro console admins). The connector can only create **one** of these types per connector instance — set by the **Account Provisioning Target** configuration field. Deletion works for both types regardless of this setting. Created accounts are `Enabled`, `Full Access`, and default to the `Auditor` privilege set; a random password is generated and returned once, as plaintext. See [Jamf account privileges](#jamf-account-privileges) below for the privileges this requires.
+- Jamf has two distinct account types: **Users** (directory users) and **User Accounts** (Jamf Pro console admins). The connector can only create **one** of these types per connector instance — set by the **Account Provisioning Target** configuration field. Deletion works for both types regardless of this setting, except for the user account the connector authenticates with, which Delete refuses. Created accounts are `Enabled`, `Full Access`, and default to the `Auditor` privilege set; a random password is generated and returned once, as plaintext. See [Jamf account privileges](#jamf-account-privileges) below for the privileges this requires.
 - **User Groups**: Grant/Revoke adds or removes a Jamf user from a **static** User Group only — Smart User Groups are rejected.
 - **Sites**: Grant/Revoke is only supported for the `user` principal — a Jamf user's site membership is a true multi-valued list. `userGroup`/`userAccount`/`group` site membership remains sync-only (each of those objects can only belong to one site at a time, so granting a new one would silently displace the old one instead of adding a membership).
 - **Managed Devices**: Grant/Revoke sets or clears a device's `assigned` user (computer or mobile device) — single-valued, so granting to a new user displaces whichever user was previously assigned. Devices with no assignee expose no grantable `assigned` entitlement. Computers use the Jamf Pro v4 computers-inventory API: Grant overwrites the assignee's username, name, email, position and phone with the new user's values (Jamf never auto-populates these for computers), and Revoke clears all five. Mobile devices take these fields from the directory user automatically — Grant only sets the username, and Revoke clears it (and everything Jamf derived from it) by clearing the username.
@@ -37,7 +37,7 @@ The Jamf connector syncs the following resources:
 **Managed Devices is opt-in.** This resource type is off by default in C1 so existing connectors keep working after upgrading. Enable it by selecting the **Managed Device** resource type in the connector's sync configuration. Self-hosted runs sync it unless `--sync-resource-types`/`$BATON_SYNC_RESOURCE_TYPES` leaves it out. When enabled, the Jamf account used by the connector must additionally have the **Read Computers** and **Read Mobile Devices** privileges, or the sync will fail.
 </Note>
 
-Requires Jamf Pro 11.26.0 or later (`GET /api/v1/users` was added in 11.26.0). Managed Devices, which are opt-in, use the Jamf Pro API v4 computers-inventory endpoints, added in 11.30.0, and the v2 mobile-devices endpoints. Tested with Jamf Pro 11.32.1.
+Requires Jamf Pro 11.26.0 or later (Managed Devices: 11.30.0). Tested with Jamf Pro 11.32.1.
 
 ## Gather Jamf credentials 
 

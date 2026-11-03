@@ -17,7 +17,7 @@ func TestGetComputersInventory_QueryEncoding(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(ComputersInventoryResponse{TotalCount: 0})
 	})
 
-	_, err := client.GetComputersInventory(context.Background(), 2, 50, ComputerInventorySections)
+	_, _, err := client.GetComputersInventory(context.Background(), 2, 50, ComputerInventorySections)
 	if err != nil {
 		t.Fatalf("GetComputersInventory: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestGetMobileDevices_QueryEncoding(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(MobileDevicesResponse{TotalCount: 0})
 	})
 
-	_, err := client.GetMobileDevices(context.Background(), 3, 25)
+	_, _, err := client.GetMobileDevices(context.Background(), 3, 25)
 	if err != nil {
 		t.Fatalf("GetMobileDevices: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestGetComputerInventoryDetail_IssuesGET(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(ComputerInventory{ID: "17", UserAndLocation: &ComputerUserAndLocation{Username: "jappleseed"}})
 	})
 
-	detail, err := client.GetComputerInventoryDetail(context.Background(), "17")
+	detail, _, err := client.GetComputerInventoryDetail(context.Background(), "17")
 	if err != nil {
 		t.Fatalf("GetComputerInventoryDetail: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestGetMobileDeviceDetail_IssuesGET(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(MobileDeviceDetail{ID: "3", Location: &MobileDeviceLocation{Username: "jappleseed"}})
 	})
 
-	detail, err := client.GetMobileDeviceDetail(context.Background(), "3")
+	detail, _, err := client.GetMobileDeviceDetail(context.Background(), "3")
 	if err != nil {
 		t.Fatalf("GetMobileDeviceDetail: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestSetComputerAssignedUser_PATCHBody_AllFiveKeysIncludingEmpty(t *testing.
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	err := client.SetComputerAssignedUser(context.Background(), "17", ComputerAssignedUserFields{Username: "jappleseed"})
+	_, err := client.SetComputerAssignedUser(context.Background(), "17", ComputerAssignedUserFields{Username: "jappleseed"})
 	if err != nil {
 		t.Fatalf("SetComputerAssignedUser: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestSetComputerAssignedUser_204NoBody_TreatedAsSuccess(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	if err := client.SetComputerAssignedUser(context.Background(), "17", ComputerAssignedUserFields{}); err != nil {
+	if _, err := client.SetComputerAssignedUser(context.Background(), "17", ComputerAssignedUserFields{}); err != nil {
 		t.Fatalf("SetComputerAssignedUser: %v", err)
 	}
 }
@@ -181,7 +181,7 @@ func TestSetMobileDeviceAssignedUser_PATCHBody_LocationUsernameOnly(t *testing.T
 		_, _ = w.Write([]byte(`{"id":"3"}`))
 	})
 
-	if err := client.SetMobileDeviceAssignedUser(context.Background(), "3", "jappleseed"); err != nil {
+	if _, err := client.SetMobileDeviceAssignedUser(context.Background(), "3", "jappleseed"); err != nil {
 		t.Fatalf("SetMobileDeviceAssignedUser: %v", err)
 	}
 	if gotMethod != http.MethodPatch {
@@ -210,7 +210,7 @@ func TestSetMobileDeviceAssignedUser_EmptyUsername_ClearsExplicitly(t *testing.T
 		w.WriteHeader(http.StatusOK)
 	})
 
-	if err := client.SetMobileDeviceAssignedUser(context.Background(), "3", ""); err != nil {
+	if _, err := client.SetMobileDeviceAssignedUser(context.Background(), "3", ""); err != nil {
 		t.Fatalf("SetMobileDeviceAssignedUser: %v", err)
 	}
 	want := `{"location":{"username":""}}` + "\n"

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 
+	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
@@ -122,139 +124,147 @@ func (c *Client) getUrl(path string) (*liburl.URL, error) {
 }
 
 // GetTokenDetails gets authorization details associated with the current api token.
-func (c *Client) GetTokenDetails(ctx context.Context) (*TokenDetails, error) {
+func (c *Client) GetTokenDetails(ctx context.Context) (*TokenDetails, annotations.Annotations, error) {
 	url, err := c.getUrl(authUrlPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target TokenDetails
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return &target, nil
+	return &target, annos, nil
 }
 
 // GetUserDetails returns Jamf user details for a single directory user.
-func (c *Client) GetUserDetails(ctx context.Context, userId int) (*User, error) {
+func (c *Client) GetUserDetails(ctx context.Context, userId int) (*User, annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userId))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target UserResponse
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return &target.User, nil
+	return &target.User, annos, nil
 }
 
 // GetBaseAccounts returns the Classic admin accounts (users and groups, id and name only).
 // GET /JSSResource/accounts, not paginated, needs the Read Accounts privilege.
-func (c *Client) GetBaseAccounts(ctx context.Context) (*BaseAccount, error) {
+func (c *Client) GetBaseAccounts(ctx context.Context) (*BaseAccount, annotations.Annotations, error) {
 	url, err := c.getUrl(accountsUrlPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target AccountsResponse
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return &target.Accounts, nil
+	return &target.Accounts, annos, nil
 }
 
 // GetGroupDetails returns Jamf group details.
-func (c *Client) GetGroupDetails(ctx context.Context, groupId int) (*Group, error) {
+func (c *Client) GetGroupDetails(ctx context.Context, groupId int) (*Group, annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(groupUrlPath, groupId))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target GroupResponse
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return &target.Group, nil
+	return &target.Group, annos, nil
 }
 
 // GetUserAccountDetails returns Jamf user account details; a 404 (IsNotFoundError) means the account does not exist.
-func (c *Client) GetUserAccountDetails(ctx context.Context, userId int) (*UserAccount, error) {
+func (c *Client) GetUserAccountDetails(ctx context.Context, userId int) (*UserAccount, annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, userId))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target UserAccountResponse
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return &target.UserAccount, nil
+	return &target.UserAccount, annos, nil
 }
 
 // GetSites returns all Jamf sites.
-func (c *Client) GetSites(ctx context.Context) (*[]Site, error) {
+func (c *Client) GetSites(ctx context.Context) (*[]Site, annotations.Annotations, error) {
 	url, err := c.getUrl(sitesUrlPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target SitesResponse
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return &target.Sites, nil
+	return &target.Sites, annos, nil
 }
 
 // GetBaseUserGroups returns the Classic user groups (id and name only).
 // GET /JSSResource/usergroups, not paginated, needs the Read Static User Groups privilege.
-func (c *Client) GetBaseUserGroups(ctx context.Context) ([]UserGroup, error) {
+func (c *Client) GetBaseUserGroups(ctx context.Context) ([]UserGroup, annotations.Annotations, error) {
 	url, err := c.getUrl(userGroupsUrlPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target UserGroupsResponse
 
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return target.UserGroups, nil
+	return target.UserGroups, annos, nil
 }
 
 // GetUserGroupDetails returns Jamf user group details.
-func (c *Client) GetUserGroupDetails(ctx context.Context, userGroupId int) (*UserGroup, error) {
+func (c *Client) GetUserGroupDetails(ctx context.Context, userGroupId int) (*UserGroup, annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, userGroupId))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target UserGroupResponse
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return &target.UserGroup, nil
+	return &target.UserGroup, annos, nil
 }
 
 // GetProUsers returns one page of users ordered by id and the next page token, "" after the last page.
 // GET /api/v1/users, needs the Read User privilege.
-func (c *Client) GetProUsers(ctx context.Context, pageToken string, pageSize int) ([]ProUser, string, error) {
+func (c *Client) GetProUsers(ctx context.Context, pageToken string, pageSize int) ([]ProUser, string, annotations.Annotations, error) {
 	page, err := parsePageToken(pageToken)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	url, err := c.getUrl(proUsersUrlPath)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	query := liburl.Values{}
 	query.Set("page", strconv.Itoa(page))
@@ -263,12 +273,13 @@ func (c *Client) GetProUsers(ctx context.Context, pageToken string, pageSize int
 	url.RawQuery = query.Encode()
 
 	var response ProUsersResponse
-	if err := c.doRequest(ctx, url, &response); err != nil {
-		return nil, "", proEndpointError(proUsersUrlPath, err)
+	annos, err := c.doRequest(ctx, url, &response)
+	if err != nil {
+		return nil, "", nil, proEndpointError(proUsersUrlPath, err)
 	}
 
 	nextPage := nextPageToken(page, pageSize, len(response.Results), response.TotalCount)
-	return response.Results, nextPage, nil
+	return response.Results, nextPage, annos, nil
 }
 
 // rsqlValueEscaper escapes a value placed inside a double-quoted RSQL string.
@@ -277,10 +288,10 @@ var rsqlValueEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 // GetProUsersByUsernameOrEmail returns up to UsersPageSize users, ordered by id, whose username or email equals
 // any of values. GET /api/v1/users with an RSQL filter, needs the Read User privilege.
 // RSQL treats `*` as a wildcard, so the caller must re-check each match.
-func (c *Client) GetProUsersByUsernameOrEmail(ctx context.Context, values []string) ([]ProUser, error) {
+func (c *Client) GetProUsersByUsernameOrEmail(ctx context.Context, values []string) ([]ProUser, annotations.Annotations, error) {
 	url, err := c.getUrl(proUsersUrlPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	terms := make([]string, 0, len(values)*2)
@@ -296,24 +307,25 @@ func (c *Client) GetProUsersByUsernameOrEmail(ctx context.Context, values []stri
 	url.RawQuery = query.Encode()
 
 	var response ProUsersResponse
-	if err := c.doRequest(ctx, url, &response); err != nil {
-		return nil, proEndpointError(proUsersUrlPath, err)
+	annos, err := c.doRequest(ctx, url, &response)
+	if err != nil {
+		return nil, nil, proEndpointError(proUsersUrlPath, err)
 	}
 
-	return response.Results, nil
+	return response.Results, annos, nil
 }
 
 // GetProAccounts returns one page of admin accounts ordered by id and the next page token, "" after the last page.
 // filter is an optional RSQL expression. GET /api/v1/accounts, needs the Read Accounts privilege.
-func (c *Client) GetProAccounts(ctx context.Context, filter, pageToken string, pageSize int) ([]ProAccount, string, error) {
+func (c *Client) GetProAccounts(ctx context.Context, filter, pageToken string, pageSize int) ([]ProAccount, string, annotations.Annotations, error) {
 	page, err := parsePageToken(pageToken)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	url, err := c.getUrl(proAccountsUrlPath)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	query := liburl.Values{}
 	if filter != "" {
@@ -325,26 +337,27 @@ func (c *Client) GetProAccounts(ctx context.Context, filter, pageToken string, p
 	url.RawQuery = query.Encode()
 
 	var response ProAccountsResponse
-	if err := c.doRequest(ctx, url, &response); err != nil {
-		return nil, "", proEndpointError(proAccountsUrlPath, err)
+	annos, err := c.doRequest(ctx, url, &response)
+	if err != nil {
+		return nil, "", nil, proEndpointError(proAccountsUrlPath, err)
 	}
 
 	nextPage := nextPageToken(page, pageSize, len(response.Results), response.TotalCount)
-	return response.Results, nextPage, nil
+	return response.Results, nextPage, annos, nil
 }
 
 // GetSiteObjects returns one page of the site's objects of objectType (for example "User") and the next page
 // token, "" after the last page. GET /api/v1/sites/{id}/objects, needs the Read Sites privilege.
 // An unknown site answers an empty list, so a 404 means the instance lacks the endpoint.
-func (c *Client) GetSiteObjects(ctx context.Context, siteID int, objectType, pageToken string) ([]SiteObject, string, error) {
+func (c *Client) GetSiteObjects(ctx context.Context, siteID int, objectType, pageToken string) ([]SiteObject, string, annotations.Annotations, error) {
 	page, err := parsePageToken(pageToken)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	url, err := c.getUrl(fmt.Sprintf(siteObjectsUrlPath, siteID))
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	query := liburl.Values{}
 	query.Set("filter", `objectType=="`+rsqlValueEscaper.Replace(objectType)+`"`)
@@ -354,25 +367,26 @@ func (c *Client) GetSiteObjects(ctx context.Context, siteID int, objectType, pag
 	url.RawQuery = query.Encode()
 
 	var objects []SiteObject
-	if err := c.doRequest(ctx, url, &objects); err != nil {
-		return nil, "", proEndpointError(url.Path, err)
+	annos, err := c.doRequest(ctx, url, &objects)
+	if err != nil {
+		return nil, "", nil, proEndpointError(url.Path, err)
 	}
 
 	// The response has no total count: a full page may be followed by another.
 	if len(objects) == SiteObjectsPageSize {
-		return objects, strconv.Itoa(page + 1), nil
+		return objects, strconv.Itoa(page + 1), annos, nil
 	}
-	return objects, "", nil
+	return objects, "", annos, nil
 }
 
 // AddUserGroupMembers adds the given user IDs to a static Jamf user group via
 // the additions verb (PUT .../usergroups/id/{id} <user_group><user_additions>).
 // Atomic — no read-modify-write. Returns a gRPC NotFound error if the group
 // doesn't exist (surfaced via IsNotFoundError).
-func (c *Client) AddUserGroupMembers(ctx context.Context, groupID int, userIDs []int) error {
+func (c *Client) AddUserGroupMembers(ctx context.Context, groupID int, userIDs []int) (annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, groupID))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	reqBody := UserGroupMemberMutation{Additions: &memberUsers{Users: baseTypesFromIDs(userIDs)}}
@@ -383,10 +397,10 @@ func (c *Client) AddUserGroupMembers(ctx context.Context, groupID int, userIDs [
 // group via the deletions verb (<user_group><user_deletions>). Atomic.
 // Returns a gRPC NotFound error if the group doesn't exist (surfaced via
 // IsNotFoundError).
-func (c *Client) RemoveUserGroupMembers(ctx context.Context, groupID int, userIDs []int) error {
+func (c *Client) RemoveUserGroupMembers(ctx context.Context, groupID int, userIDs []int) (annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(userGroupUrlPath, groupID))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	reqBody := UserGroupMemberMutation{Deletions: &memberUsers{Users: baseTypesFromIDs(userIDs)}}
@@ -405,26 +419,27 @@ func baseTypesFromIDs(ids []int) []BaseType {
 }
 
 // GetUserByName returns the Jamf user with the given username (login name).
-func (c *Client) GetUserByName(ctx context.Context, name string) (*User, error) {
+func (c *Client) GetUserByName(ctx context.Context, name string) (*User, annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(userNameUrlPath, liburl.PathEscape(name)))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target UserResponse
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return &target.User, nil
+	return &target.User, annos, nil
 }
 
 // CreateUser creates a new Jamf user. Returns a gRPC AlreadyExists error
 // (surfaced via IsAlreadyExistsError) if a user with this name already exists.
-func (c *Client) CreateUser(ctx context.Context, name, fullName, email string) error {
+func (c *Client) CreateUser(ctx context.Context, name, fullName, email string) (annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(userUrlPath, newResourceID))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	reqBody := UserCreateBody{
@@ -438,37 +453,38 @@ func (c *Client) CreateUser(ctx context.Context, name, fullName, email string) e
 
 // DeleteUser deletes the Jamf user with the given ID. Returns a gRPC NotFound
 // error (surfaced via IsNotFoundError) if the user doesn't exist.
-func (c *Client) DeleteUser(ctx context.Context, userID int) error {
+func (c *Client) DeleteUser(ctx context.Context, userID int) (annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userID))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return c.doRequestWithMethod(ctx, http.MethodDelete, url, nil, nil)
 }
 
 // GetUserAccountByName returns the Jamf admin account with the given username.
-func (c *Client) GetUserAccountByName(ctx context.Context, name string) (*UserAccount, error) {
+func (c *Client) GetUserAccountByName(ctx context.Context, name string) (*UserAccount, annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(accountUsernameUrlPath, liburl.PathEscape(name)))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target UserAccountResponse
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, err
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return &target.UserAccount, nil
+	return &target.UserAccount, annos, nil
 }
 
 // CreateUserAccount creates a new Jamf Pro console admin account. Returns a
 // gRPC AlreadyExists error (surfaced via IsAlreadyExistsError) if an account
 // with this name already exists.
-func (c *Client) CreateUserAccount(ctx context.Context, account UserAccountCreateBody) error {
+func (c *Client) CreateUserAccount(ctx context.Context, account UserAccountCreateBody) (annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, newResourceID))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return c.doRequestWithMethod(ctx, http.MethodPost, url, account, nil)
@@ -476,10 +492,10 @@ func (c *Client) CreateUserAccount(ctx context.Context, account UserAccountCreat
 
 // DeleteUserAccount deletes the Jamf admin account with the given ID. Returns
 // a gRPC NotFound error (surfaced via IsNotFoundError) if the account doesn't exist.
-func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
+func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) (annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(accountUrlPath, accountID))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	return c.doRequestWithMethod(ctx, http.MethodDelete, url, nil, nil)
@@ -490,10 +506,10 @@ func (c *Client) DeleteUserAccount(ctx context.Context, accountID int) error {
 // <privilege_set>/<privileges>, with root as the XML root element name
 // ("account" or "group") — see privilegesUpdateBody for the body shape and
 // the Custom-write caveat.
-func (c *Client) updatePrivileges(ctx context.Context, path, root string, id int, name, privilegeSet string, privileges *Privileges) error {
+func (c *Client) updatePrivileges(ctx context.Context, path, root string, id int, name, privilegeSet string, privileges *Privileges) (annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(path, id))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	reqBody := privilegesUpdateBody{
@@ -508,14 +524,14 @@ func (c *Client) updatePrivileges(ctx context.Context, path, root string, id int
 // UpdateAccountPrivileges updates a Jamf admin account's privilege_set
 // and/or individual privileges. See
 // https://developer.jamf.com/jamf-pro/reference/updateaccountbyid.
-func (c *Client) UpdateAccountPrivileges(ctx context.Context, accountID int, name, privilegeSet string, privileges *Privileges) error {
+func (c *Client) UpdateAccountPrivileges(ctx context.Context, accountID int, name, privilegeSet string, privileges *Privileges) (annotations.Annotations, error) {
 	return c.updatePrivileges(ctx, accountUrlPath, "account", accountID, name, privilegeSet, privileges)
 }
 
 // UpdateGroupPrivileges is UpdateAccountPrivileges's counterpart for an
 // admin account group. See
 // https://developer.jamf.com/jamf-pro/reference/updategroupbyid.
-func (c *Client) UpdateGroupPrivileges(ctx context.Context, groupID int, name, privilegeSet string, privileges *Privileges) error {
+func (c *Client) UpdateGroupPrivileges(ctx context.Context, groupID int, name, privilegeSet string, privileges *Privileges) (annotations.Annotations, error) {
 	return c.updatePrivileges(ctx, groupUrlPath, "group", groupID, name, privilegeSet, privileges)
 }
 
@@ -525,10 +541,10 @@ func (c *Client) UpdateGroupPrivileges(ctx context.Context, groupID int, name, p
 // empty slice to clear the last member. Returns a gRPC NotFound error
 // (IsNotFoundError) if the group doesn't exist. See
 // https://developer.jamf.com/jamf-pro/reference/updategroupbyid.
-func (c *Client) UpdateGroupMembers(ctx context.Context, groupID int, name string, members []BaseType) error {
+func (c *Client) UpdateGroupMembers(ctx context.Context, groupID int, name string, members []BaseType) (annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(groupUrlPath, groupID))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	reqBody := GroupMembersUpdateBody{
@@ -545,10 +561,10 @@ func (c *Client) UpdateGroupMembers(ctx context.Context, groupID int, name strin
 // Concurrency note: no locking/versioning guard — concurrent calls for the
 // same userID can race and silently drop one side's change; serialize calls
 // per user if that matters.
-func (c *Client) UpdateUserSites(ctx context.Context, userID int, sites UserSites) error {
+func (c *Client) UpdateUserSites(ctx context.Context, userID int, sites UserSites) (annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(userUrlPath, userID))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	ids := make([]int, 0, len(sites))
@@ -564,7 +580,7 @@ func (c *Client) doRequest(
 	ctx context.Context,
 	url *liburl.URL,
 	target interface{},
-) error {
+) (annotations.Annotations, error) {
 	return c.doRequestWithMethod(ctx, http.MethodGet, url, nil, target)
 }
 
@@ -579,7 +595,7 @@ func (c *Client) doRequestWithMethod(
 	url *liburl.URL,
 	reqBody interface{},
 	target interface{},
-) error {
+) (annotations.Annotations, error) {
 	// The Classic API only accepts XML for POST/PUT request bodies (JSON is
 	// GET-response-only); see
 	// https://developer.jamf.com/jamf-pro/docs/getting-started-2.
@@ -596,7 +612,7 @@ func (c *Client) doRequestWithJSONMethod(
 	url *liburl.URL,
 	reqBody interface{},
 	target interface{},
-) error {
+) (annotations.Annotations, error) {
 	return c.doRequestWithMethodAndBodyEncoding(ctx, method, url, reqBody, target, uhttp.WithJSONBody)
 }
 
@@ -614,12 +630,12 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 	reqBody interface{},
 	target interface{},
 	bodyEncoding func(interface{}) uhttp.RequestOption,
-) error {
+) (annotations.Annotations, error) {
 	l := ctxzap.Extract(ctx)
 
 	token, err := c.token()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	requestOpts := []uhttp.RequestOption{
@@ -640,12 +656,13 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 		requestOpts...,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	response, err := c.wrapper.Do(request)
+	var rateLimit v2.RateLimitDescription
+	response, err := c.wrapper.Do(request, uhttp.WithRatelimitData(&rateLimit))
 	if response != nil && response.StatusCode == http.StatusUnauthorized && !missingPrivilege(response, url.Path) {
 		// Jamf can reject a token before it expires, so get a new one and retry once.
-		response, err = c.retryWithNewToken(request, token.AccessToken)
+		response, err = c.retryWithNewToken(request, token.AccessToken, uhttp.WithRatelimitData(&rateLimit))
 	}
 	if err != nil {
 		// uhttp already logs the underlying HTTP failure at the appropriate
@@ -655,28 +672,30 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 		// Error would misrepresent expected idempotent outcomes as failures.
 		l.Debug("failed to perform request", zap.Error(err))
 		if missingPrivilege(response, url.Path) {
-			return uhttp.WrapErrors(codes.PermissionDenied,
+			return nil, uhttp.WrapErrors(codes.PermissionDenied,
 				fmt.Sprintf("jamf rejected %s %s with 401: the account or API client lacks the Jamf privilege this operation needs", method, url.Path), err)
 		}
-		return err
+		return nil, err
 	}
 
 	defer response.Body.Close()
+	annos := annotations.Annotations{}
+	annos.WithRateLimiting(&rateLimit)
 	if target == nil {
-		return nil
+		return annos, nil
 	}
 
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 	err = json.Unmarshal(body, target)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal json response: %w. status code: %d. content type: %q. body omitted (%d bytes)",
+		return nil, fmt.Errorf("failed to unmarshal json response: %w. status code: %d. content type: %q. body omitted (%d bytes)",
 			err, response.StatusCode, response.Header.Get("Content-Type"), len(body))
 	}
 
-	return nil
+	return annos, nil
 }
 
 func (c *Client) token() (*oauth2.Token, error) {
@@ -700,7 +719,7 @@ func missingPrivilege(response *http.Response, path string) bool {
 }
 
 // retryWithNewToken drops the rejected token and resends the request with a new one.
-func (c *Client) retryWithNewToken(request *http.Request, rejected string) (*http.Response, error) {
+func (c *Client) retryWithNewToken(request *http.Request, rejected string, options ...uhttp.DoOption) (*http.Response, error) {
 	c.tokenSource.Renew(rejected)
 	token, err := c.token()
 	if err != nil {
@@ -715,19 +734,20 @@ func (c *Client) retryWithNewToken(request *http.Request, rejected string) (*htt
 		}
 	}
 	retry.Header.Set("Authorization", "Bearer "+token.AccessToken)
-	return c.wrapper.Do(retry)
+	return c.wrapper.Do(retry, options...)
 }
 
-func (c *Client) GetPrivileges(ctx context.Context) (*PrivilegesResponse, error) {
+func (c *Client) GetPrivileges(ctx context.Context) (*PrivilegesResponse, annotations.Annotations, error) {
 	url, err := c.getUrl(privilegesUrlPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var target PrivilegesResponse
-	if err := c.doRequest(ctx, url, &target); err != nil {
-		return nil, proEndpointError(privilegesUrlPath, err)
+	annos, err := c.doRequest(ctx, url, &target)
+	if err != nil {
+		return nil, nil, proEndpointError(privilegesUrlPath, err)
 	}
 
-	return &target, nil
+	return &target, annos, nil
 }

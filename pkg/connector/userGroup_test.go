@@ -110,8 +110,8 @@ func TestUserGroupGrant_StaticGroup_Succeeds(t *testing.T) {
 	if len(grants) != 1 {
 		t.Fatalf("want 1 grant, got %d", len(grants))
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations on a plain success, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations on a plain success, got %v", annos)
 	}
 }
 
@@ -163,8 +163,8 @@ func TestUserGroupRevoke_StaticGroup_Succeeds(t *testing.T) {
 	if !putCalled {
 		t.Error("expected PUT to be called for a static group")
 	}
-	if annos != nil {
-		t.Errorf("expected no annotations on a plain success, got %v", annos)
+	if hasMarkerAnnotation(annos) {
+		t.Errorf("expected no marker annotations on a plain success, got %v", annos)
 	}
 }
 
@@ -477,16 +477,19 @@ func TestUserGroupGrants_PagesPastOneThousandMembers(t *testing.T) {
 		t.Errorf("Jamf reads = %d, want 1: the session store serves page 1", reads)
 	}
 
-	// A page missing from the store is read from Jamf again.
+	// A page missing from the store is read from Jamf again and still starts after the cursor,
+	// even when a member with a lower id left in between.
+	users = users[1:]
 	secondPage, results, err := freshGrants(context.Background(), resource, rs.SyncOpAttrs{
 		Session:   newMemorySessionStore(),
-		PageToken: pagination.Token{Token: "1"},
+		PageToken: pagination.Token{Token: "1000"},
 	})
 	if err != nil {
 		t.Fatalf("Grants page 1 on a store miss: %v", err)
 	}
-	if len(secondPage) != memberCount-grantsPageSize || results.NextPageToken != "" {
-		t.Errorf("page 1 = %d grants, next token %q; want %d grants and no token", len(secondPage), results.NextPageToken, memberCount-grantsPageSize)
+	if len(secondPage) != memberCount-grantsPageSize || results.NextPageToken != "" || secondPage[0].GetPrincipal().GetId().GetResource() != "1001" {
+		t.Errorf("page 1 = %d grants from user %s, next token %q; want %d grants from user 1001 and no token",
+			len(secondPage), secondPage[0].GetPrincipal().GetId().GetResource(), results.NextPageToken, memberCount-grantsPageSize)
 	}
 	if reads := jamfReads.Load(); reads != 2 {
 		t.Errorf("Jamf reads after the store miss = %d, want 2", reads)

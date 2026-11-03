@@ -24,8 +24,11 @@ const (
 )
 
 type siteResourceType struct {
-	resourceType *v2.ResourceType
-	client       *jamf.Client
+	resourceType     *v2.ResourceType
+	client           *jamf.Client
+	syncUsers        bool
+	syncUserGroups   bool
+	syncUserAccounts bool
 }
 
 func (g *siteResourceType) ResourceType(_ context.Context) *v2.ResourceType {
@@ -47,7 +50,7 @@ func siteResource(site *jamf.Site, parentResourceID *v2.ResourceId) (*v2.Resourc
 }
 
 func (g *siteResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	sites, err := g.client.GetSites(ctx)
+	sites, annos, err := g.client.GetSites(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: failed to list sites: %w", err)
 	}
@@ -61,7 +64,7 @@ func (g *siteResourceType) List(ctx context.Context, parentId *v2.ResourceId, at
 		rv = append(rv, ur)
 	}
 
-	return rv, nil, nil
+	return rv, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
 // Entitlements is unused: StaticEntitlements declares the member entitlement.
@@ -81,7 +84,7 @@ func (g *siteResourceType) StaticEntitlements(_ context.Context, _ rs.SyncOpAttr
 	}, nil, nil
 }
 
-// Grants emits the site's members in three phases: users, user groups and admin accounts.
+// Grants emits the site's members in one phase per synced principal type: users, user groups and admin accounts.
 func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	siteID, err := strconv.Atoi(resource.Id.Resource)
 	if err != nil {
@@ -93,21 +96,32 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 		return nil, nil, fmt.Errorf("jamf-connector: parse site %s grants page token: %w", resource.Id.Resource, err)
 	}
 	if bag.Current() == nil {
-		bag.Push(pagination.PageState{ResourceTypeID: sitePhaseAdmins})
-		bag.Push(pagination.PageState{ResourceTypeID: sitePhaseUserGroup})
-		bag.Push(pagination.PageState{ResourceTypeID: sitePhaseUser})
+		// Each phase grants one principal type, so a type the sync leaves out is not read.
+		if g.syncUserAccounts {
+			bag.Push(pagination.PageState{ResourceTypeID: sitePhaseAdmins})
+		}
+		if g.syncUserGroups {
+			bag.Push(pagination.PageState{ResourceTypeID: sitePhaseUserGroup})
+		}
+		if g.syncUsers {
+			bag.Push(pagination.PageState{ResourceTypeID: sitePhaseUser})
+		}
 	}
 
 	phase := bag.Current()
+	if phase == nil {
+		return nil, &rs.SyncOpResults{}, nil
+	}
 	var grants []*v2.Grant
 	var nextPage string
+	var annos annotations.Annotations
 	switch phase.ResourceTypeID {
 	case sitePhaseUser:
-		grants, nextPage, err = g.siteObjectGrants(ctx, resource, siteID, "User", resourceTypeUser, phase.Token)
+		grants, nextPage, annos, err = g.siteObjectGrants(ctx, resource, siteID, "User", resourceTypeUser, phase.Token)
 	case sitePhaseUserGroup:
-		grants, nextPage, err = g.siteObjectGrants(ctx, resource, siteID, "User Group", resourceTypeUserGroup, phase.Token)
+		grants, nextPage, annos, err = g.siteObjectGrants(ctx, resource, siteID, "User Group", resourceTypeUserGroup, phase.Token)
 	case sitePhaseAdmins:
-		grants, nextPage, err = g.adminGrants(ctx, resource, siteID, phase.Token)
+		grants, nextPage, annos, err = g.adminGrants(ctx, resource, siteID, phase.Token)
 	default:
 		err = fmt.Errorf("unknown phase %q", phase.ResourceTypeID)
 	}
@@ -119,7 +133,7 @@ func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, at
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: build site %s grants page token: %w", resource.Id.Resource, err)
 	}
-	return grants, &rs.SyncOpResults{NextPageToken: nextToken}, nil
+	return grants, &rs.SyncOpResults{NextPageToken: nextToken, Annotations: annos}, nil
 }
 
 // siteObjectGrants grants the site's objects of objectType on one page.
@@ -130,10 +144,10 @@ func (g *siteResourceType) siteObjectGrants(
 	objectType string,
 	principalType *v2.ResourceType,
 	page string,
-) ([]*v2.Grant, string, error) {
-	objects, nextPage, err := g.client.GetSiteObjects(ctx, siteID, objectType, page)
+) ([]*v2.Grant, string, annotations.Annotations, error) {
+	objects, nextPage, annos, err := g.client.GetSiteObjects(ctx, siteID, objectType, page)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	grants := make([]*v2.Grant, 0, len(objects))
@@ -141,14 +155,14 @@ func (g *siteResourceType) siteObjectGrants(
 		principal := &v2.ResourceId{ResourceType: principalType.Id, Resource: strconv.Itoa(object.ObjectID)}
 		grants = append(grants, grant.NewGrant(site, memberEntitlement, principal))
 	}
-	return grants, nextPage, nil
+	return grants, nextPage, annos, nil
 }
 
 // adminGrants grants the admin accounts assigned to the site on one page. Groups assigned to it come from the group Grants.
-func (g *siteResourceType) adminGrants(ctx context.Context, site *v2.Resource, siteID int, page string) ([]*v2.Grant, string, error) {
-	accounts, nextPage, err := g.client.GetProAccounts(ctx, fmt.Sprintf("siteId==%d", siteID), page, jamf.AccountsPageSize)
+func (g *siteResourceType) adminGrants(ctx context.Context, site *v2.Resource, siteID int, page string) ([]*v2.Grant, string, annotations.Annotations, error) {
+	accounts, nextPage, annos, err := g.client.GetProAccounts(ctx, fmt.Sprintf("siteId==%d", siteID), page, jamf.AccountsPageSize)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	grants := make([]*v2.Grant, 0, len(accounts))
@@ -156,7 +170,7 @@ func (g *siteResourceType) adminGrants(ctx context.Context, site *v2.Resource, s
 		principal := &v2.ResourceId{ResourceType: resourceTypeUserAccount.Id, Resource: strconv.Itoa(account.ID)}
 		grants = append(grants, grant.NewGrant(site, memberEntitlement, principal))
 	}
-	return grants, nextPage, nil
+	return grants, nextPage, annos, nil
 }
 
 // Grant adds principal (a Jamf user) to the multi-valued <sites> list of the
@@ -172,7 +186,7 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 		return nil, nil, err
 	}
 
-	user, err := g.client.GetUserDetails(ctx, userID)
+	user, annos, err := g.client.GetUserDetails(ctx, userID)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant site member: user %d not found", userID)
@@ -180,14 +194,16 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 		return nil, nil, fmt.Errorf("jamf-connector: grant site member: %w", err)
 	}
 	if slices.ContainsFunc(user.Sites, func(s jamf.BaseType) bool { return s.ID == siteID }) {
-		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+		annos.Update(&v2.GrantAlreadyExists{})
+		return nil, annos, nil
 	}
 
 	newSites := append(append(jamf.UserSites{}, user.Sites...), jamf.BaseType{ID: siteID})
-	if err := g.client.UpdateUserSites(ctx, userID, newSites); err != nil {
+	annos, err = g.client.UpdateUserSites(ctx, userID, newSites)
+	if err != nil {
 		return nil, nil, membershipWriteError("grant site member", "the user or site", err)
 	}
-	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
+	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, annos, nil
 }
 
 // Revoke removes gr's principal (a Jamf user) from the <sites> list of the
@@ -201,7 +217,7 @@ func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotation
 		return nil, err
 	}
 
-	user, err := g.client.GetUserDetails(ctx, userID)
+	user, annos, err := g.client.GetUserDetails(ctx, userID)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			// The user has been deleted — a deleted user trivially has no
@@ -221,18 +237,23 @@ func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotation
 		remaining = append(remaining, s)
 	}
 	if !found {
-		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		annos.Update(&v2.GrantAlreadyRevoked{})
+		return annos, nil
 	}
 
-	if err := g.client.UpdateUserSites(ctx, userID, remaining); err != nil {
+	annos, err = g.client.UpdateUserSites(ctx, userID, remaining)
+	if err != nil {
 		return nil, membershipWriteError("revoke site member", "the user or site", err)
 	}
-	return nil, nil
+	return annos, nil
 }
 
-func siteBuilder(client *jamf.Client) *siteResourceType {
+func siteBuilder(client *jamf.Client, syncUsers, syncUserGroups, syncUserAccounts bool) *siteResourceType {
 	return &siteResourceType{
-		resourceType: resourceTypeSite,
-		client:       client,
+		resourceType:     resourceTypeSite,
+		client:           client,
+		syncUsers:        syncUsers,
+		syncUserGroups:   syncUserGroups,
+		syncUserAccounts: syncUserAccounts,
 	}
 }
