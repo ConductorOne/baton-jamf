@@ -11,8 +11,10 @@ import (
 	"testing"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -392,26 +394,52 @@ func groupRevokeGrantForPrincipal(t *testing.T, groupID int, principal *v2.Resou
 	return grant.NewGrant(groupEntitlement(t, groupID).Resource, memberEntitlement, principal.Id)
 }
 
-// Member grants come from the group read alone: any per-member account read would 404 and fail the sync.
+// Member grants come from one group read, and the session store serves the later pages; any per-member account
+// read would 404 and fail the sync.
 func TestGroupGrants_PagesPastOneThousandMembers(t *testing.T) {
 	const memberCount = 1500
-	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/JSSResource/accounts/userid/") {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		encodeJSON(t, w, groupDetailsResponse(5, "Test Group", idRange(1, memberCount)))
-	})
-	builder := groupBuilder(client, false, false)
+	members := make([]jamf.BaseType, 0, memberCount)
+	for _, id := range idRange(1, memberCount) {
+		members = append(members, jamf.BaseType{ID: id})
+	}
+	fixture := newAdminFixture(t, nil, []jamf.Group{{BaseType: jamf.BaseType{ID: 5, Name: "Test Group"}, Members: members}})
+	builder := groupBuilder(fixture.client(), false, false)
+	resource := groupPrincipal(t, 5)
+	// Fresh reads keep the HTTP cache from hiding the Jamf reads this test counts.
+	freshGrants := func(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+		return builder.Grants(jamf.WithFreshReads(ctx), resource, attrs)
+	}
+	const groupReads = "/JSSResource/accounts/groupid/"
 
-	grants, calls := collectGrants(t, builder.Grants, groupPrincipal(t, 5), nil)
+	grants, calls := collectGrants(t, freshGrants, resource, newMemorySessionStore())
 
 	if calls != 2 {
 		t.Errorf("Grants calls = %d, want 2", calls)
 	}
 	if got := len(grantPrincipals(t, grants)); got != memberCount {
 		t.Errorf("unique principals = %d, want %d", got, memberCount)
+	}
+	if reads := fixture.requestCount(groupReads); reads != 1 {
+		t.Errorf("Jamf reads = %d, want 1: the session store serves page 1", reads)
+	}
+
+	// A page missing from the store is read from Jamf again.
+	_, firstResults, err := freshGrants(context.Background(), resource, rs.SyncOpAttrs{Session: newMemorySessionStore()})
+	if err != nil {
+		t.Fatalf("Grants page 0: %v", err)
+	}
+	secondPage, results, err := freshGrants(context.Background(), resource, rs.SyncOpAttrs{
+		Session:   newMemorySessionStore(),
+		PageToken: pagination.Token{Token: firstResults.NextPageToken},
+	})
+	if err != nil {
+		t.Fatalf("Grants page 1 on a store miss: %v", err)
+	}
+	if len(secondPage) != memberCount-grantsPageSize || results.NextPageToken != "" {
+		t.Errorf("page 1 = %d grants, next token %q; want %d grants and no token", len(secondPage), results.NextPageToken, memberCount-grantsPageSize)
+	}
+	if reads := fixture.requestCount(groupReads); reads != 3 {
+		t.Errorf("Jamf reads after the store miss = %d, want 3", reads)
 	}
 }
 

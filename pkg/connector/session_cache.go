@@ -20,6 +20,8 @@ var userIDsNamespace = sessions.WithPrefix("user_ids:")
 
 var userGroupMembersNamespace = sessions.WithPrefix("user_group_members:")
 
+var groupDetailsNamespace = sessions.WithPrefix("group_details:")
+
 // userGroupMemberPage is one grants page of a user group's member ids, sorted.
 type userGroupMemberPage struct {
 	UserIDs []int `json:"user_ids"`
@@ -44,6 +46,19 @@ func privilegeCatalog(ctx context.Context, store sessions.SessionStore, client *
 		return nil, nil, err
 	}
 	return response.Privileges, annos, nil
+}
+
+// privilegeCatalogSet returns the privilege catalog as a set, for checking a Custom account's or group's privileges.
+func privilegeCatalogSet(ctx context.Context, store sessions.SessionStore, client *jamf.Client) (map[string]struct{}, error) {
+	privileges, _, err := privilegeCatalog(ctx, store, client)
+	if err != nil {
+		return nil, err
+	}
+	catalog := make(map[string]struct{}, len(privileges))
+	for _, privilege := range privileges {
+		catalog[privilege] = struct{}{}
+	}
+	return catalog, nil
 }
 
 // cacheUserIDs stores each user's username and email -> user id.
@@ -103,4 +118,14 @@ func cachedUserGroupMemberPage(ctx context.Context, store sessions.SessionStore,
 
 func userGroupMemberPageKey(userGroupID, cursor int) string {
 	return fmt.Sprintf("%d:%d", userGroupID, cursor)
+}
+
+// cacheGroupDetails stores an admin group's detail for its later grants pages.
+func cacheGroupDetails(ctx context.Context, store sessions.SessionStore, groupID int, group *jamf.Group) error {
+	return session.SetJSON(ctx, store, strconv.Itoa(groupID), group, groupDetailsNamespace)
+}
+
+// cachedGroupDetails returns the stored detail of an admin group.
+func cachedGroupDetails(ctx context.Context, store sessions.SessionStore, groupID int) (jamf.Group, bool, error) {
+	return session.GetJSON[jamf.Group](ctx, store, strconv.Itoa(groupID), groupDetailsNamespace)
 }

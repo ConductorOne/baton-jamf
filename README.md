@@ -108,7 +108,7 @@ Requests per full sync:
 |---|---|
 | `user` | ⌈users / 1000⌉ |
 | `userAccount` | ⌈accounts / 100⌉ |
-| `group` | 1, plus per group one read per 1,000 grants (members, roles and site; at least one) |
+| `group` | 1, plus one read per group |
 | `userGroup` | 1, plus one read per user group |
 | `site` | 1, plus per site ⌊users / 1000⌋ + 1, ⌊user groups / 1000⌋ + 1 and ⌈accounts / 100⌉, each only when `user`, `userGroup` or `userAccount` is synced |
 | `role` | 1, plus ⌈accounts / 100⌉ + ⌈`Custom` accounts / 10⌉ and one read per `Custom` account, when `userAccount` is synced |
