@@ -192,7 +192,7 @@ func (o *roleResourceType) privilegeSetGrants(ctx context.Context, page string) 
 // customPrivilegeGrants grants each Custom account on the page the individual privileges it holds.
 func (o *roleResourceType) customPrivilegeGrants(ctx context.Context, store sessions.SessionStore, page string) ([]*v2.Grant, string, annotations.Annotations, error) {
 	// The accounts and detail reads below supply the annotations.
-	catalog, _, err := privilegeCatalog(ctx, store, o.client)
+	catalog, err := privilegeCatalogSet(ctx, store, o.client)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -222,13 +222,13 @@ func (o *roleResourceType) customPrivilegeGrants(ctx context.Context, store sess
 }
 
 // customPrivileges returns the catalog privileges held individually; only a Custom privilege set confers them.
-func customPrivileges(privilegeSet string, privileges *jamf.Privileges, catalog []string) []string {
+func customPrivileges(privilegeSet string, privileges *jamf.Privileges, catalog map[string]struct{}) []string {
 	if privilegeSet != privilegeSetCustom {
 		return nil
 	}
 	var held []string
 	for _, privilege := range dedupeStrings(privileges.All()) {
-		if slices.Contains(catalog, privilege) {
+		if _, inCatalog := catalog[privilege]; inCatalog {
 			held = append(held, privilege)
 		}
 	}

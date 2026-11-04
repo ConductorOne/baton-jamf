@@ -126,12 +126,14 @@ func (o *userAccountResourceType) ResourceType(_ context.Context) *v2.ResourceTy
 
 // userAccountResource creates a new connector resource for a Jamf user account.
 func userAccountResource(account *jamf.UserAccount, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
+	// first_name and last_name keep the username split they shipped with; the real name is full_name.
 	firstName, lastName := rs.SplitFullName(account.Name)
 	profile := map[string]interface{}{
-		"first_name": firstName,
-		"last_name":  lastName,
-		"login":      account.Email,
-		"user_id":    fmt.Sprintf("account:%d", account.ID),
+		"first_name":         firstName,
+		"last_name":          lastName,
+		"login":              account.Email,
+		"user_id":            fmt.Sprintf("account:%d", account.ID),
+		profileFieldFullName: account.FullName,
 	}
 
 	displayName := account.FullName

@@ -93,25 +93,45 @@ func (g *groupResourceType) Grants(ctx context.Context, resource *v2.Resource, a
 		return nil, nil, fmt.Errorf("jamf-connector: invalid group id %q: %w", resource.Id.Resource, err)
 	}
 
-	grants, annos, err := g.groupGrants(ctx, attrs.Session, resource, groupId)
+	page, nextCursor, annos, err := g.grantsPage(ctx, attrs.Session, resource, groupId, attrs.PageToken.Token)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: list group %d grants: %w", groupId, err)
-	}
-
-	page, nextCursor, err := pageGrants(grants, attrs.PageToken.Token)
-	if err != nil {
-		return nil, nil, err
 	}
 	return page, &rs.SyncOpResults{NextPageToken: nextCursor, Annotations: annos}, nil
 }
 
-// groupGrants lists the grants of one group: its members, then the roles and the site it holds.
-func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.SessionStore, resource *v2.Resource, groupId int) ([]*v2.Grant, annotations.Annotations, error) {
-	group, annos, err := g.client.GetGroupDetails(ctx, groupId)
-	if err != nil {
-		return nil, nil, err
+// grantsPage returns the group's grants page after cursor, a grant id. Classic returns the whole group at once,
+// so a read from Jamf stores the group when it has later pages; a group missing from the store is read again.
+func (g *groupResourceType) grantsPage(ctx context.Context, store sessions.SessionStore, resource *v2.Resource, groupId int, cursor string) ([]*v2.Grant, string, annotations.Annotations, error) {
+	if cursor != "" {
+		stored, found, err := cachedGroupDetails(ctx, store, groupId)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		if found {
+			page, nextCursor, err := g.groupGrants(ctx, store, resource, &stored, cursor)
+			return page, nextCursor, nil, err
+		}
 	}
 
+	group, annos, err := g.client.GetGroupDetails(ctx, groupId)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	page, nextCursor, err := g.groupGrants(ctx, store, resource, group, cursor)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if nextCursor != "" {
+		if err := cacheGroupDetails(ctx, store, groupId, group); err != nil {
+			return nil, "", nil, err
+		}
+	}
+	return page, nextCursor, annos, nil
+}
+
+// groupGrants returns the page after cursor of one group's grants: its members, then the roles and the site it holds.
+func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.SessionStore, resource *v2.Resource, group *jamf.Group, cursor string) ([]*v2.Grant, string, error) {
 	grants := make([]*v2.Grant, 0, len(group.Members))
 	for _, member := range group.Members {
 		account := &v2.ResourceId{ResourceType: resourceTypeUserAccount.Id, Resource: strconv.Itoa(member.ID)}
@@ -121,7 +141,7 @@ func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.Sess
 	if g.syncRoles {
 		roles, err := g.heldRoles(ctx, store, group)
 		if err != nil {
-			return nil, nil, err
+			return nil, "", err
 		}
 		for _, role := range roles {
 			roleID := &v2.ResourceId{ResourceType: resourceTypeRole.Id, Resource: role}
@@ -134,7 +154,7 @@ func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.Sess
 		siteID := &v2.ResourceId{ResourceType: resourceTypeSite.Id, Resource: strconv.Itoa(group.Site.ID)}
 		grants = append(grants, grant.NewGrant(&v2.Resource{Id: siteID}, memberEntitlement, resource.Id))
 	}
-	return grants, annos, nil
+	return pageGrants(grants, cursor)
 }
 
 // heldRoles returns the roles a group holds: its privilege set, or the individual privileges of a Custom group.
@@ -147,7 +167,7 @@ func (g *groupResourceType) heldRoles(ctx context.Context, store sessions.Sessio
 	}
 
 	// The group read supplies the annotations.
-	catalog, _, err := privilegeCatalog(ctx, store, g.client)
+	catalog, err := privilegeCatalogSet(ctx, store, g.client)
 	if err != nil {
 		return nil, err
 	}
