@@ -1,7 +1,13 @@
 package connector
 
 import (
+	"context"
+	"net/http"
 	"testing"
+
+	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestResolvePrivileges_CustomWithPrivileges(t *testing.T) {
@@ -61,5 +67,32 @@ func TestResolvePrivileges_DiscardsMalformedEntries(t *testing.T) {
 	want := []string{"Read User"}
 	if len(got.JSSObjects) != len(want) || got.JSSObjects[0] != want[0] {
 		t.Fatalf("expected malformed/empty entries filtered out, got %v", got.JSSObjects)
+	}
+}
+
+// Deleting the account the connector authenticates with would cut its own access, so Delete refuses it.
+func TestUserAccountDelete_RefusesTheConnectorsOwnAccount(t *testing.T) {
+	var deletes []string
+	client := newTestJamfClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/auth":
+			w.Header().Set("Content-Type", "application/json")
+			encodeJSON(t, w, map[string]any{"account": map[string]any{"id": "7", "username": "connector"}})
+		case r.Method == http.MethodDelete:
+			deletes = append(deletes, r.URL.Path)
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	})
+	builder := userAccountBuilder(client)
+
+	_, err := builder.Delete(context.Background(), &v2.ResourceId{ResourceType: resourceTypeUserAccount.Id, Resource: "7"}, nil)
+
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("Delete own account err = %v, want FailedPrecondition", err)
+	}
+	if len(deletes) != 0 {
+		t.Fatalf("want no DELETE for the connector's own account, got %v", deletes)
 	}
 }

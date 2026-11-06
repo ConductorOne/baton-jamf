@@ -59,7 +59,7 @@ func TestUpdateAccountPrivileges_MinimalBody_NoPrivileges(t *testing.T) {
 	var putBody []byte
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
-	if err := client.UpdateAccountPrivileges(context.Background(), 42, "jappleseed", "Administrator", nil); err != nil {
+	if _, err := client.UpdateAccountPrivileges(context.Background(), 42, "jappleseed", "Administrator", nil); err != nil {
 		t.Fatalf("UpdateAccountPrivileges: %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestUpdateAccountPrivileges_ExplicitEmptyPrivileges(t *testing.T) {
 	var putBody []byte
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
-	if err := client.UpdateAccountPrivileges(context.Background(), 42, "jappleseed", "Custom", &Privileges{}); err != nil {
+	if _, err := client.UpdateAccountPrivileges(context.Background(), 42, "jappleseed", "Custom", &Privileges{}); err != nil {
 		t.Fatalf("UpdateAccountPrivileges: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestUpdateAccountPrivileges_WithPrivileges_OnlyPopulatedCategories(t *testi
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
 	privileges := &Privileges{JSSObjects: []string{"Read User", "Update User"}}
-	if err := client.UpdateAccountPrivileges(context.Background(), 42, "jappleseed", "Custom", privileges); err != nil {
+	if _, err := client.UpdateAccountPrivileges(context.Background(), 42, "jappleseed", "Custom", privileges); err != nil {
 		t.Fatalf("UpdateAccountPrivileges: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestUpdateAccountPrivileges_NoPrivilegeSet_OmitsElement(t *testing.T) {
 	var putBody []byte
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
-	if err := client.UpdateAccountPrivileges(context.Background(), 42, "jappleseed", "", nil); err != nil {
+	if _, err := client.UpdateAccountPrivileges(context.Background(), 42, "jappleseed", "", nil); err != nil {
 		t.Fatalf("UpdateAccountPrivileges: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestUpdateGroupPrivileges_MinimalBody_NeverSendsMembersOrSite(t *testing.T)
 	var putBody []byte
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
-	if err := client.UpdateGroupPrivileges(context.Background(), 7, "Test Group", "Auditor", nil); err != nil {
+	if _, err := client.UpdateGroupPrivileges(context.Background(), 7, "Test Group", "Auditor", nil); err != nil {
 		t.Fatalf("UpdateGroupPrivileges: %v", err)
 	}
 
@@ -163,7 +163,7 @@ func TestUpdateGroupPrivileges_ExplicitEmptyPrivileges(t *testing.T) {
 	var putBody []byte
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
-	if err := client.UpdateGroupPrivileges(context.Background(), 7, "Test Group", "Custom", &Privileges{}); err != nil {
+	if _, err := client.UpdateGroupPrivileges(context.Background(), 7, "Test Group", "Custom", &Privileges{}); err != nil {
 		t.Fatalf("UpdateGroupPrivileges: %v", err)
 	}
 
@@ -183,7 +183,7 @@ func TestUpdateGroupMembers_NonEmpty_MinimalBody(t *testing.T) {
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
 	members := []BaseType{{ID: 10, Name: "jsmith"}, {ID: 11, Name: "jdoe"}}
-	if err := client.UpdateGroupMembers(context.Background(), 7, "Test Group", members); err != nil {
+	if _, err := client.UpdateGroupMembers(context.Background(), 7, "Test Group", members); err != nil {
 		t.Fatalf("UpdateGroupMembers: %v", err)
 	}
 
@@ -208,7 +208,7 @@ func TestUpdateGroupMembers_EmptySlice_EmitsExplicitEmptyMembersElement(t *testi
 	var putBody []byte
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
-	if err := client.UpdateGroupMembers(context.Background(), 7, "Test Group", []BaseType{}); err != nil {
+	if _, err := client.UpdateGroupMembers(context.Background(), 7, "Test Group", []BaseType{}); err != nil {
 		t.Fatalf("UpdateGroupMembers: %v", err)
 	}
 
@@ -227,7 +227,7 @@ func TestUpdateGroupMembers_NilSlice_AlsoEmitsExplicitEmptyMembersElement(t *tes
 	var putBody []byte
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
-	if err := client.UpdateGroupMembers(context.Background(), 7, "Test Group", nil); err != nil {
+	if _, err := client.UpdateGroupMembers(context.Background(), 7, "Test Group", nil); err != nil {
 		t.Fatalf("UpdateGroupMembers: %v", err)
 	}
 
@@ -261,11 +261,11 @@ func TestDoRequest_GETsAreCachedByDefault(t *testing.T) {
 	var hits int
 	client := newTestClient(t, userDetailsHandler(t, &hits))
 
-	first, err := client.GetUserDetails(context.Background(), 42)
+	first, _, err := client.GetUserDetails(context.Background(), 42)
 	if err != nil {
 		t.Fatalf("GetUserDetails: %v", err)
 	}
-	second, err := client.GetUserDetails(context.Background(), 42)
+	second, _, err := client.GetUserDetails(context.Background(), 42)
 	if err != nil {
 		t.Fatalf("GetUserDetails: %v", err)
 	}
@@ -286,11 +286,11 @@ func TestDoRequest_WithFreshReads_BypassesCache(t *testing.T) {
 	client := newTestClient(t, userDetailsHandler(t, &hits))
 	ctx := WithFreshReads(context.Background())
 
-	first, err := client.GetUserDetails(ctx, 42)
+	first, _, err := client.GetUserDetails(ctx, 42)
 	if err != nil {
 		t.Fatalf("GetUserDetails: %v", err)
 	}
-	second, err := client.GetUserDetails(ctx, 42)
+	second, _, err := client.GetUserDetails(ctx, 42)
 	if err != nil {
 		t.Fatalf("GetUserDetails: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestUpdateUserSites_MinimalBody(t *testing.T) {
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
 	sites := UserSites{{ID: 1, Name: "HQ"}, {ID: 2, Name: "Remote"}}
-	if err := client.UpdateUserSites(context.Background(), 42, sites); err != nil {
+	if _, err := client.UpdateUserSites(context.Background(), 42, sites); err != nil {
 		t.Fatalf("UpdateUserSites: %v", err)
 	}
 
@@ -328,7 +328,7 @@ func TestUpdateUserSites_EmptySlice_EmitsExplicitEmptySitesElement(t *testing.T)
 	var putBody []byte
 	client := newTestClient(t, putOnlyHandler(t, &putBody))
 
-	if err := client.UpdateUserSites(context.Background(), 42, UserSites{}); err != nil {
+	if _, err := client.UpdateUserSites(context.Background(), 42, UserSites{}); err != nil {
 		t.Fatalf("UpdateUserSites: %v", err)
 	}
 

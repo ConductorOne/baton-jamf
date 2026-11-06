@@ -1,15 +1,44 @@
 package connector
 
 import (
+	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
-	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+// grantsPageSize keeps a Grants response under gRPC's 4 MiB receive limit.
+const grantsPageSize = 1000
+
+// pageGrants returns the page of grants after cursor and the cursor of the next page, "" on the last one.
+// The cursor is a grant ID and a page starts strictly after it, so the cursor always advances.
+func pageGrants(grants []*v2.Grant, cursor string) ([]*v2.Grant, string, error) {
+	slices.SortFunc(grants, func(left, right *v2.Grant) int { return strings.Compare(left.GetId(), right.GetId()) })
+
+	start := 0
+	if cursor != "" {
+		start = sort.Search(len(grants), func(index int) bool { return grants[index].GetId() > cursor })
+	}
+
+	end := min(start+grantsPageSize, len(grants))
+	page := grants[start:end]
+	if end == len(grants) {
+		return page, "", nil
+	}
+
+	nextCursor := page[len(page)-1].GetId()
+	if nextCursor == "" {
+		return nil, "", errors.New("jamf-connector: grants page has more items but an empty cursor")
+	}
+	return page, nextCursor, nil
+}
 
 // stringSliceFromProfile reads a repeated-string field out of an account
 // creation profile map (as produced by structpb's AsMap — a []interface{} of
@@ -26,25 +55,6 @@ func stringSliceFromProfile(profileMap map[string]interface{}, key string) []str
 		}
 	}
 	return out
-}
-
-func annotationsForUserResourceType() annotations.Annotations {
-	annos := annotations.Annotations{}
-	annos.Update(&v2.SkipEntitlementsAndGrants{})
-	return annos
-}
-
-// annotationsForManagedDeviceResourceType marks the managedDevice resource type
-// as opt-in. The OptInRequired annotation is surfaced in baton_capabilities.json
-// so the C1 platform leaves device syncing OFF by default; existing installs
-// whose Jamf API role lacks "Read Computers" / "Read Mobile Devices" are
-// therefore unaffected until the type is explicitly enabled. See the
-// registration gate in (*Jamf).ResourceSyncers for the connector-side
-// enforcement that keeps local/CLI syncs off by default too.
-func annotationsForManagedDeviceResourceType() annotations.Annotations {
-	annos := annotations.Annotations{}
-	annos.Update(&v2.OptInRequired{})
-	return annos
 }
 
 // requirePrincipalType rejects principalType unless it matches want, naming

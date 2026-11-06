@@ -88,7 +88,7 @@ func TestBasicAuth_ExpiredTokenIsReMinted(t *testing.T) {
 	ctx := WithFreshReads(context.Background())
 
 	for i := 0; i < 3; i++ {
-		if _, err := client.GetUserDetails(ctx, 42); err != nil {
+		if _, _, err := client.GetUserDetails(ctx, 42); err != nil {
 			t.Fatalf("GetUserDetails call %d: %v", i+1, err)
 		}
 	}
@@ -118,7 +118,7 @@ func TestBasicAuth_ConcurrentRequestsShareTokens(t *testing.T) {
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
-			if _, err := client.GetUserDetails(ctx, 42); err != nil {
+			if _, _, err := client.GetUserDetails(ctx, 42); err != nil {
 				errs <- err
 			}
 		}()
@@ -156,7 +156,7 @@ func TestDoRequest_RejectedTokenIsRenewed(t *testing.T) {
 	})
 	client := newAuthTestClient(t, mux, NewBasicTokenSource, "user", "pass")
 
-	if err := client.UpdateUserSites(context.Background(), 42, nil); err != nil {
+	if _, err := client.UpdateUserSites(context.Background(), 42, nil); err != nil {
 		t.Fatalf("UpdateUserSites: %v", err)
 	}
 	if got := mints.Load(); got != 2 {
@@ -217,7 +217,7 @@ func TestAPIClientAuth_SendsCredentialsInForm(t *testing.T) {
 	mux.HandleFunc("/JSSResource/users/id/42", bearerHandler(t, &mints, UserResponse{}))
 	client := newAuthTestClient(t, mux, NewAPIClientTokenSource, "client-id", "client-secret")
 
-	if _, err := client.GetUserDetails(context.Background(), 42); err != nil {
+	if _, _, err := client.GetUserDetails(context.Background(), 42); err != nil {
 		t.Fatalf("GetUserDetails: %v", err)
 	}
 }
@@ -252,7 +252,7 @@ func TestAuth_TokenErrors(t *testing.T) {
 			})
 			client := newAuthTestClient(t, mux, testCase.constructor, "id", "wrong")
 
-			_, err := client.GetTokenDetails(context.Background())
+			_, _, err := client.GetTokenDetails(context.Background())
 			if got := status.Code(err); got != testCase.want {
 				t.Fatalf("code = %v, want %v (err: %v)", got, testCase.want, err)
 			}
@@ -284,18 +284,24 @@ func TestDoRequest_401Mapping(t *testing.T) {
 			path:        "/JSSResource/users/id/7",
 			contentType: "text/html;charset=utf-8",
 			body:        "<html><head><title>Status page</title></head><body><p>Unauthorized</p></body></html>",
-			call:        func(client *Client) error { return client.UpdateUserSites(context.Background(), 7, nil) },
-			want:        codes.PermissionDenied,
-			wantCalls:   1,
+			call: func(client *Client) error {
+				_, err := client.UpdateUserSites(context.Background(), 7, nil)
+				return err
+			},
+			want:      codes.PermissionDenied,
+			wantCalls: 1,
 		},
 		{
 			name:        "classic API rejected token",
 			path:        "/JSSResource/users/id/7",
 			contentType: "application/json;charset=utf-8",
 			body:        `{"httpStatus":401,"errors":[{"code":"INVALID_TOKEN","description":"Unauthorized"}]}`,
-			call:        func(client *Client) error { return client.UpdateUserSites(context.Background(), 7, nil) },
-			want:        codes.Unauthenticated,
-			wantCalls:   2,
+			call: func(client *Client) error {
+				_, err := client.UpdateUserSites(context.Background(), 7, nil)
+				return err
+			},
+			want:      codes.Unauthenticated,
+			wantCalls: 2,
 		},
 		{
 			name:        "pro API HTML 401",
@@ -303,7 +309,7 @@ func TestDoRequest_401Mapping(t *testing.T) {
 			contentType: "text/html;charset=utf-8",
 			body:        "<html><head><title>Status page</title></head><body><p>Unauthorized</p></body></html>",
 			call: func(client *Client) error {
-				_, err := client.GetTokenDetails(context.Background())
+				_, _, err := client.GetTokenDetails(context.Background())
 				return err
 			},
 			want:      codes.Unauthenticated,
@@ -363,7 +369,7 @@ func TestDoRequest_RenewFailure(t *testing.T) {
 			})
 			client := newAuthTestClient(t, mux, NewBasicTokenSource, "user", "pass")
 
-			err := client.UpdateUserSites(context.Background(), 7, nil)
+			_, err := client.UpdateUserSites(context.Background(), 7, nil)
 			if got := status.Code(err); got != testCase.want {
 				t.Fatalf("code = %v, want %v (err: %v)", got, testCase.want, err)
 			}
@@ -386,7 +392,7 @@ func TestDoRequest_DecodeErrorOmitsBody(t *testing.T) {
 	})
 	client := newAuthTestClient(t, mux, NewBasicTokenSource, "user", "pass")
 
-	_, err := client.GetUserDetails(context.Background(), 42)
+	_, _, err := client.GetUserDetails(context.Background(), 42)
 	if err == nil {
 		t.Fatal("GetUserDetails: want a decode error")
 	}

@@ -12,6 +12,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/crypto"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type userAccountResourceType struct {
@@ -85,14 +87,15 @@ func resolvePrivileges(profileMap map[string]interface{}, privilegeSet string) (
 
 	switch {
 	case privilegeSet == privilegeSetCustom && provided.IsEmpty():
-		return nil, fmt.Errorf("jamf-connector: privilege_set is %q but no privileges were set — set at least one of the Privileges fields", privilegeSetCustom)
+		return nil, status.Errorf(codes.InvalidArgument, "jamf-connector: privilege_set is %q but no privileges were set — set at least one of the Privileges fields", privilegeSetCustom)
 	case privilegeSet == privilegeSetCustom:
 		return provided, nil
 	case !provided.IsEmpty():
 		// Privileges fields are only meaningful for a Custom privilege_set — reject rather
 		// than silently discarding them, which would leave the caller with an account
 		// that has none of the access it asked for and no indication why.
-		return nil, fmt.Errorf(
+		return nil, status.Errorf(
+			codes.InvalidArgument,
 			"jamf-connector: privileges were set but privilege_set is %q, not %q — Privileges fields only apply to %q accounts",
 			privilegeSet, privilegeSetCustom, privilegeSetCustom,
 		)
@@ -123,12 +126,19 @@ func (o *userAccountResourceType) ResourceType(_ context.Context) *v2.ResourceTy
 
 // userAccountResource creates a new connector resource for a Jamf user account.
 func userAccountResource(account *jamf.UserAccount, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
+	// first_name and last_name keep the username split they shipped with; the real name is full_name.
 	firstName, lastName := rs.SplitFullName(account.Name)
 	profile := map[string]interface{}{
-		"first_name": firstName,
-		"last_name":  lastName,
-		"login":      account.Email,
-		"user_id":    fmt.Sprintf("account:%d", account.ID),
+		"first_name":         firstName,
+		"last_name":          lastName,
+		"login":              account.Email,
+		"user_id":            fmt.Sprintf("account:%d", account.ID),
+		profileFieldFullName: account.FullName,
+	}
+
+	displayName := account.FullName
+	if displayName == "" {
+		displayName = account.Name
 	}
 
 	var resourceStatus v2.Status_ResourceStatus
@@ -143,7 +153,7 @@ func userAccountResource(account *jamf.UserAccount, parentResourceID *v2.Resourc
 	}
 
 	ret, err := rs.NewUserResource(
-		account.Name,
+		displayName,
 		resourceTypeUserAccount,
 		account.ID,
 		userTraitOptions,
@@ -159,23 +169,21 @@ func userAccountResource(account *jamf.UserAccount, parentResourceID *v2.Resourc
 }
 
 func (o *userAccountResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	userAccounts, _, err := o.client.GetAccounts(ctx)
+	accounts, nextToken, annos, err := o.client.GetProAccounts(ctx, "", attrs.PageToken.Token, jamf.AccountsPageSize)
 	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: failed to list accounts: %w", err)
+		return nil, nil, fmt.Errorf("jamf-connector: list accounts: %w", err)
 	}
 
 	var rv []*v2.Resource
-
-	for _, user := range userAccounts {
-		userCopy := user
-		ur, err := userAccountResource(userCopy, parentId)
+	for _, account := range accounts {
+		resource, err := userAccountResource(account.UserAccount(), parentId)
 		if err != nil {
 			return nil, nil, err
 		}
-		rv = append(rv, ur)
+		rv = append(rv, resource)
 	}
 
-	return rv, nil, nil
+	return rv, &rs.SyncOpResults{NextPageToken: nextToken, Annotations: annos}, nil
 }
 
 func (o *userAccountResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
@@ -289,7 +297,7 @@ func (o *provisionableUserAccountType) CreateAccount(
 	privilegeSet := defaultPrivilegeSet
 	if raw, ok := profileMap[profileFieldPrivilegeSet].(string); ok && raw != "" {
 		if !isKnownPrivilegeSet(raw) {
-			return nil, nil, nil, fmt.Errorf("jamf-connector: unknown privilege_set %q (valid: %v)", raw, knownPrivilegeSets)
+			return nil, nil, nil, status.Errorf(codes.InvalidArgument, "jamf-connector: unknown privilege_set %q (valid: %v)", raw, knownPrivilegeSets)
 		}
 		privilegeSet = raw
 	}
@@ -304,7 +312,7 @@ func (o *provisionableUserAccountType) CreateAccount(
 		return nil, nil, nil, err
 	}
 
-	err = o.client.CreateUserAccount(ctx, jamf.UserAccountCreateBody{
+	writeAnnos, err := o.client.CreateUserAccount(ctx, jamf.UserAccountCreateBody{
 		Name:         name,
 		Password:     password,
 		FullName:     fullName,
@@ -320,7 +328,7 @@ func (o *provisionableUserAccountType) CreateAccount(
 	}
 
 	// Fetch the account, whether just created or already existing.
-	fetched, err := o.client.GetUserAccountByName(ctx, name)
+	fetched, annos, err := o.client.GetUserAccountByName(ctx, name)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("jamf-connector: create account %s: fetch failed: %w", name, err)
 	}
@@ -331,7 +339,7 @@ func (o *provisionableUserAccountType) CreateAccount(
 	}
 
 	if alreadyExists {
-		return &v2.CreateAccountResponse_AlreadyExistsResult{Resource: resource}, nil, nil, nil
+		return &v2.CreateAccountResponse_AlreadyExistsResult{Resource: resource}, nil, annos, nil
 	}
 
 	plaintextData := []*v2.PlaintextData{
@@ -340,7 +348,7 @@ func (o *provisionableUserAccountType) CreateAccount(
 			Bytes: []byte(password),
 		},
 	}
-	return &v2.CreateAccountResponse_SuccessResult{Resource: resource}, plaintextData, nil, nil
+	return &v2.CreateAccountResponse_SuccessResult{Resource: resource}, plaintextData, writeAnnos, nil
 }
 
 // Delete removes a Jamf console admin account. Not gated by
@@ -349,19 +357,28 @@ func (o *provisionableUserAccountType) CreateAccount(
 func (o *userAccountResourceType) Delete(ctx context.Context, resourceID *v2.ResourceId, _ *v2.ResourceId) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	id, err := strconv.Atoi(resourceID.Resource)
+	id, err := parseResourceID(resourceID.Resource, "jamf-connector: delete userAccount: invalid resource id")
 	if err != nil {
-		return nil, fmt.Errorf("jamf-connector: delete userAccount: invalid resource id %q: %w", resourceID.Resource, err)
+		return nil, err
 	}
 
-	err = o.client.DeleteUserAccount(ctx, id)
+	tokenDetails, annos, err := o.client.GetTokenDetails(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("jamf-connector: delete userAccount %d: read token details: %w", id, err)
+	}
+	if tokenDetails.Account.ID == strconv.Itoa(id) {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"jamf-connector: refusing to delete userAccount %d: it is the account the connector authenticates with", id)
+	}
+
+	writeAnnos, err := o.client.DeleteUserAccount(ctx, id)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
-			return nil, nil
+			return annos, nil
 		}
 		return nil, fmt.Errorf("jamf-connector: delete userAccount %d: %w", id, err)
 	}
-	return nil, nil
+	return writeAnnos, nil
 }
 
 func userAccountBuilder(client *jamf.Client) *userAccountResourceType {
