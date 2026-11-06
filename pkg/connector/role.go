@@ -192,7 +192,7 @@ func (o *roleResourceType) privilegeSetGrants(ctx context.Context, page string) 
 // customPrivilegeGrants grants each Custom account on the page the individual privileges it holds.
 func (o *roleResourceType) customPrivilegeGrants(ctx context.Context, store sessions.SessionStore, page string) ([]*v2.Grant, string, annotations.Annotations, error) {
 	// The accounts and detail reads below supply the annotations.
-	catalog, err := privilegeCatalogSet(ctx, store, o.client)
+	catalog, _, err := privilegeCatalogSet(ctx, store, o.client)
 	if err != nil {
 		return nil, "", nil, err
 	}

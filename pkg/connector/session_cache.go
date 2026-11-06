@@ -49,16 +49,16 @@ func privilegeCatalog(ctx context.Context, store sessions.SessionStore, client *
 }
 
 // privilegeCatalogSet returns the privilege catalog as a set, for checking a Custom account's or group's privileges.
-func privilegeCatalogSet(ctx context.Context, store sessions.SessionStore, client *jamf.Client) (map[string]struct{}, error) {
-	privileges, _, err := privilegeCatalog(ctx, store, client)
+func privilegeCatalogSet(ctx context.Context, store sessions.SessionStore, client *jamf.Client) (map[string]struct{}, annotations.Annotations, error) {
+	privileges, annos, err := privilegeCatalog(ctx, store, client)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	catalog := make(map[string]struct{}, len(privileges))
 	for _, privilege := range privileges {
 		catalog[privilege] = struct{}{}
 	}
-	return catalog, nil
+	return catalog, annos, nil
 }
 
 // cacheUserIDs stores each user's username and email -> user id.
