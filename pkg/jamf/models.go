@@ -3,8 +3,30 @@ package jamf
 import (
 	"encoding/json"
 	"encoding/xml"
+	"net/http"
 	"slices"
+	"strings"
 )
+
+// ErrorResponse is the Jamf Pro API error body. The Classic API answers errors with an HTML page.
+type ErrorResponse struct {
+	HTTPStatus int `json:"httpStatus"`
+	Errors     []struct {
+		Code        string `json:"code"`
+		Description string `json:"description"`
+	} `json:"errors"`
+}
+
+func (e *ErrorResponse) Message() string {
+	if len(e.Errors) == 0 {
+		return http.StatusText(e.HTTPStatus)
+	}
+	messages := make([]string, 0, len(e.Errors))
+	for _, apiError := range e.Errors {
+		messages = append(messages, apiError.Code+": "+apiError.Description)
+	}
+	return strings.Join(messages, "; ")
+}
 
 type BaseType struct {
 	ID   int    `json:"id" xml:"id"`

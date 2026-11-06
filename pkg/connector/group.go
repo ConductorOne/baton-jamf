@@ -109,8 +109,7 @@ func (g *groupResourceType) grantsPage(ctx context.Context, store sessions.Sessi
 			return nil, "", nil, err
 		}
 		if found {
-			page, nextCursor, err := g.groupGrants(ctx, store, resource, &stored, cursor)
-			return page, nextCursor, nil, err
+			return g.groupGrants(ctx, store, resource, &stored, cursor)
 		}
 	}
 
@@ -118,9 +117,13 @@ func (g *groupResourceType) grantsPage(ctx context.Context, store sessions.Sessi
 	if err != nil {
 		return nil, "", nil, err
 	}
-	page, nextCursor, err := g.groupGrants(ctx, store, resource, group, cursor)
+	page, nextCursor, catalogAnnos, err := g.groupGrants(ctx, store, resource, group, cursor)
 	if err != nil {
 		return nil, "", nil, err
+	}
+	// A catalog read comes after the group read.
+	if catalogAnnos != nil {
+		annos = catalogAnnos
 	}
 	if nextCursor != "" {
 		if err := cacheGroupDetails(ctx, store, groupId, group); err != nil {
@@ -131,18 +134,27 @@ func (g *groupResourceType) grantsPage(ctx context.Context, store sessions.Sessi
 }
 
 // groupGrants returns the page after cursor of one group's grants: its members, then the roles and the site it holds.
-func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.SessionStore, resource *v2.Resource, group *jamf.Group, cursor string) ([]*v2.Grant, string, error) {
+// The annotations are the privilege catalog read's, when it read the catalog.
+func (g *groupResourceType) groupGrants(
+	ctx context.Context,
+	store sessions.SessionStore,
+	resource *v2.Resource,
+	group *jamf.Group,
+	cursor string,
+) ([]*v2.Grant, string, annotations.Annotations, error) {
 	grants := make([]*v2.Grant, 0, len(group.Members))
 	for _, member := range group.Members {
 		account := &v2.ResourceId{ResourceType: resourceTypeUserAccount.Id, Resource: strconv.Itoa(member.ID)}
 		grants = append(grants, grant.NewGrant(resource, memberEntitlement, account))
 	}
 
+	var annos annotations.Annotations
 	if g.syncRoles {
-		roles, err := g.heldRoles(ctx, store, group)
+		roles, catalogAnnos, err := g.heldRoles(ctx, store, group)
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
+		annos = catalogAnnos
 		for _, role := range roles {
 			roleID := &v2.ResourceId{ResourceType: resourceTypeRole.Id, Resource: role}
 			grants = append(grants, grant.NewGrant(&v2.Resource{Id: roleID}, memberEntitlement, resource.Id))
@@ -154,24 +166,27 @@ func (g *groupResourceType) groupGrants(ctx context.Context, store sessions.Sess
 		siteID := &v2.ResourceId{ResourceType: resourceTypeSite.Id, Resource: strconv.Itoa(group.Site.ID)}
 		grants = append(grants, grant.NewGrant(&v2.Resource{Id: siteID}, memberEntitlement, resource.Id))
 	}
-	return pageGrants(grants, cursor)
+	page, nextCursor, err := pageGrants(grants, cursor)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return page, nextCursor, annos, nil
 }
 
 // heldRoles returns the roles a group holds: its privilege set, or the individual privileges of a Custom group.
-func (g *groupResourceType) heldRoles(ctx context.Context, store sessions.SessionStore, group *jamf.Group) ([]string, error) {
+func (g *groupResourceType) heldRoles(ctx context.Context, store sessions.SessionStore, group *jamf.Group) ([]string, annotations.Annotations, error) {
 	if slices.Contains(privilegeSets, group.PrivilegeSet) {
-		return []string{group.PrivilegeSet}, nil
+		return []string{group.PrivilegeSet}, nil, nil
 	}
 	if group.PrivilegeSet != privilegeSetCustom {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	// The group read supplies the annotations.
-	catalog, err := privilegeCatalogSet(ctx, store, g.client)
+	catalog, annos, err := privilegeCatalogSet(ctx, store, g.client)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return customPrivileges(group.PrivilegeSet, &group.Privileges, catalog), nil
+	return customPrivileges(group.PrivilegeSet, &group.Privileges, catalog), annos, nil
 }
 
 // Grant adds principal (a Jamf admin account) to the static admin account

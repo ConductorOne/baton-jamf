@@ -659,10 +659,12 @@ func (c *Client) doRequestWithMethodAndBodyEncoding(
 		return nil, err
 	}
 	var rateLimit v2.RateLimitDescription
-	response, err := c.wrapper.Do(request, uhttp.WithRatelimitData(&rateLimit))
+	var errorResponse ErrorResponse
+	doOptions := []uhttp.DoOption{uhttp.WithRatelimitData(&rateLimit), uhttp.WithErrorResponse(&errorResponse)}
+	response, err := c.wrapper.Do(request, doOptions...)
 	if response != nil && response.StatusCode == http.StatusUnauthorized && !missingPrivilege(response, url.Path) {
 		// Jamf can reject a token before it expires, so get a new one and retry once.
-		response, err = c.retryWithNewToken(request, token.AccessToken, uhttp.WithRatelimitData(&rateLimit))
+		response, err = c.retryWithNewToken(request, token.AccessToken, doOptions...)
 	}
 	if err != nil {
 		// uhttp already logs the underlying HTTP failure at the appropriate

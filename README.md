@@ -15,7 +15,7 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 
 Account creation/deletion and Grant/Revoke all require `-p`/`$BATON_PROVISIONING` to be set; without it the connector only syncs.
 
-Requires Jamf Pro 11.26.0 or later (`GET /api/v1/users` was added in 11.26.0). Managed Devices, which are opt-in, use the Jamf Pro API v4 computers-inventory endpoints, added in 11.30.0, and the v2 mobile-devices endpoints. Tested with Jamf Pro 11.32.1.
+Requires Jamf Pro 11.26.0 or later (`GET /api/v1/users` was added in 11.26.0). Managed Devices, which are opt-in, use the Jamf Pro API v4 computers-inventory endpoints, added in 11.30.0, and the v2 mobile-devices endpoints.
 
 ## Authentication
 
@@ -49,15 +49,12 @@ The Administrator privilege set covers everything. For least privilege, grant:
 
 `Read Accounts`/`Create Accounts`/`Update Accounts`/`Delete Accounts` cover both admin user accounts and admin groups — Jamf has no separate privilege for account groups. Every write path reads the object first, so each `Update` privilege above needs its `Read` counterpart too.
 
-Jamf reports a missing privilege differently depending on which API it uses: the Classic API (`/JSSResource` — User Groups, admin groups, Sites, and user and account details and writes) answers with HTTP 401, and the Jamf Pro API (`/api/v1`, `/api/v2`, `/api/v4` — the users and accounts lists, site objects, the roles catalog, Computers, Mobile Devices) with HTTP 403. The connector reports both as a permission error.
+A missing privilege fails the sync or the operation with a permission error.
 
 Group Grant/Revoke adds or removes a `userAccount` from an admin account
 group's member list. A group with no members cannot receive its first member
 through the connector, and Revoke on such a group returns a retryable error
-instead of reporting success. The write replaces the whole member list, so the
-connector never writes over an empty read or takes it to mean the member was
-removed: if that read were incomplete, the write would drop every real member.
-Only Group Access
+instead of reporting success. Only Group Access
 accounts can usefully be granted membership — a Full or Site Access account's
 rights come from its own `privilege_set`, not its groups, so Grant rejects
 adding one (membership grants it nothing). Do not use Grant/Revoke on
@@ -86,18 +83,15 @@ built-in privilege sets (`Administrator`, `Auditor`, `Enrollment Only`) and
 every individual privilege are grantable — `Custom` itself is not a role you
 grant directly. Granting a set displaces whichever one the principal
 previously held. Revoke moves the principal to `Custom` with only the
-`Read License Information` privilege — the lowest access Jamf allows, since
-`privilege_set` has no neutral "no access" value. Jamf keeps that privilege on
-every `Custom` set it creates and never lets a client remove it, so revoking
-it specifically is rejected. Individual privileges can
+`Read License Information` privilege, which can't be revoked itself.
+Individual privileges can
 only be granted while the principal's `privilege_set` is already `Custom`:
 the flow is Revoke the current set first (which moves it to Custom), then
 Grant the individual privileges — granting a built-in set again later leaves
 Custom and discards those individual privileges. Group Access accounts are
 not supported for Role Grant/Revoke — their rights come from their groups, so
 assign the role to the group instead. Changing a Full or Site Access
-account's role removes it from any admin group it belonged to (that
-membership granted it nothing). A write rejected for the connector's own Jamf
+account's role removes it from any admin group it belonged to. A write rejected for the connector's own Jamf
 account is reported as a permission error.
 
 ## Sync cost
