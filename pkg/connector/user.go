@@ -3,18 +3,20 @@ package connector
 import (
 	"context"
 	"fmt"
-	"strconv"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type userResourceType struct {
-	resourceType *v2.ResourceType
-	client       *jamf.Client
+	resourceType       *v2.ResourceType
+	client             *jamf.Client
+	syncManagedDevices bool
 }
 
 // Account-creation profile field names, shared between the "user" and
@@ -30,11 +32,11 @@ func (o *userResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 }
 
 // requireLogin returns AccountInfo.Login, or an error if it's empty. Shared
-// between userResourceType.CreateAccount and userAccountResourceType.CreateAccount.
+// between provisionableUserType.CreateAccount and provisionableUserAccountType.CreateAccount.
 func requireLogin(accountInfo *v2.AccountInfo) (string, error) {
 	name := accountInfo.GetLogin()
 	if name == "" {
-		return "", fmt.Errorf("jamf-connector: create account: login is required")
+		return "", status.Errorf(codes.InvalidArgument, "jamf-connector: create account: login is required")
 	}
 	return name, nil
 }
@@ -55,8 +57,17 @@ func userResource(user *jamf.User, parentResourceID *v2.ResourceId) (*v2.Resourc
 		rs.WithEmail(user.Email, true),
 	}
 
+	// Jamf users may have no full name; fall back to the username, then the email.
+	displayName := user.FullName
+	if displayName == "" {
+		displayName = user.Name
+	}
+	if displayName == "" {
+		displayName = user.Email
+	}
+
 	ret, err := rs.NewUserResource(
-		user.FullName,
+		displayName,
 		resourceTypeUser,
 		user.ID,
 		userTraitOptions,
@@ -72,22 +83,28 @@ func userResource(user *jamf.User, parentResourceID *v2.ResourceId) (*v2.Resourc
 }
 
 func (o *userResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	users, err := o.client.GetUsers(ctx)
+	users, nextToken, annos, err := o.client.GetProUsers(ctx, attrs.PageToken.Token, jamf.UsersPageSize)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("jamf-connector: list users: %w", err)
 	}
 
 	var rv []*v2.Resource
-	for _, baseUser := range users {
-		baseUserCopy := baseUser
-		ur, err := userResource(baseUserCopy, parentId)
+	for _, user := range users {
+		resource, err := userResource(user.User(), parentId)
 		if err != nil {
 			return nil, nil, err
 		}
-		rv = append(rv, ur)
+		rv = append(rv, resource)
 	}
 
-	return rv, nil, nil
+	// The device Grants resolve each owner from this cache.
+	if o.syncManagedDevices {
+		if err := cacheUserIDs(ctx, attrs.Session, users); err != nil {
+			return nil, nil, fmt.Errorf("jamf-connector: list users: %w", err)
+		}
+	}
+
+	return rv, &rs.SyncOpResults{NextPageToken: nextToken, Annotations: annos}, nil
 }
 
 func (o *userResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
@@ -172,14 +189,14 @@ func (o *provisionableUserType) CreateAccount(
 	fullName, _ := profileMap[profileFieldFullName].(string)
 	email, _ := profileMap[profileFieldEmail].(string)
 
-	err = o.client.CreateUser(ctx, name, fullName, email)
+	writeAnnos, err := o.client.CreateUser(ctx, name, fullName, email)
 	alreadyExists := err != nil && jamf.IsAlreadyExistsError(err)
 	if err != nil && !alreadyExists {
 		return nil, nil, nil, fmt.Errorf("jamf-connector: create account %s: %w", name, err)
 	}
 
 	// Fetch the user, whether just created or already existing.
-	fetched, err := o.client.GetUserByName(ctx, name)
+	fetched, annos, err := o.client.GetUserByName(ctx, name)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("jamf-connector: create account %s: fetch failed: %w", name, err)
 	}
@@ -190,9 +207,9 @@ func (o *provisionableUserType) CreateAccount(
 	}
 
 	if alreadyExists {
-		return &v2.CreateAccountResponse_AlreadyExistsResult{Resource: resource}, nil, nil, nil
+		return &v2.CreateAccountResponse_AlreadyExistsResult{Resource: resource}, nil, annos, nil
 	}
-	return &v2.CreateAccountResponse_SuccessResult{Resource: resource}, nil, nil, nil
+	return &v2.CreateAccountResponse_SuccessResult{Resource: resource}, nil, writeAnnos, nil
 }
 
 // Delete removes a Jamf directory user. Not gated by create-account-resource-type —
@@ -201,24 +218,25 @@ func (o *provisionableUserType) CreateAccount(
 func (o *userResourceType) Delete(ctx context.Context, resourceID *v2.ResourceId, _ *v2.ResourceId) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
-	id, err := strconv.Atoi(resourceID.Resource)
+	id, err := parseResourceID(resourceID.Resource, "jamf-connector: delete user: invalid resource id")
 	if err != nil {
-		return nil, fmt.Errorf("jamf-connector: delete user: invalid resource id %q: %w", resourceID.Resource, err)
+		return nil, err
 	}
 
-	err = o.client.DeleteUser(ctx, id)
+	annos, err := o.client.DeleteUser(ctx, id)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("jamf-connector: delete user %d: %w", id, err)
 	}
-	return nil, nil
+	return annos, nil
 }
 
-func userBuilder(client *jamf.Client) *userResourceType {
+func userBuilder(client *jamf.Client, syncManagedDevices bool) *userResourceType {
 	return &userResourceType{
-		resourceType: resourceTypeUser,
-		client:       client,
+		resourceType:       resourceTypeUser,
+		client:             client,
+		syncManagedDevices: syncManagedDevices,
 	}
 }

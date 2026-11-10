@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -144,7 +147,7 @@ func failOnCallHandler(t *testing.T) http.HandlerFunc {
 func TestGroupGrant_Success(t *testing.T) {
 	var putBodies [][]byte
 	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{10}, {10, 42}}, &putBodies))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	grants, annos, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
 	if err != nil {
@@ -169,7 +172,7 @@ func TestGroupGrant_Success(t *testing.T) {
 func TestGroupGrant_AlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 	var putBodies [][]byte
 	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{10, 42}}, &putBodies))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	_, annos, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
 	if err != nil {
@@ -186,7 +189,7 @@ func TestGroupGrant_AlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 func TestGroupGrant_EmptyMemberList_AbortsWithoutWrite(t *testing.T) {
 	var putBodies [][]byte
 	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{}}, &putBodies))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	_, _, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
 	if err == nil {
@@ -202,7 +205,7 @@ func TestGroupGrant_EmptyMemberList_AbortsWithoutWrite(t *testing.T) {
 
 func TestGroupGrant_Group404_MapsToNotFound(t *testing.T) {
 	client := newTestJamfClient(t, groupNotFoundHandler(t))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	_, _, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
 	if err == nil {
@@ -222,7 +225,7 @@ func TestGroupGrant_AccountFullAccess_Rejected(t *testing.T) {
 		rawGroupHandler(t, 7, "Test Group", [][]int{{10}}, &putBodies),
 		accountAccessLevelHandler("Full Access"),
 	))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	_, _, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
 	if err == nil {
@@ -244,7 +247,7 @@ func TestGroupGrant_AccountNotFound_MapsToNotFound(t *testing.T) {
 		rawGroupHandler(t, 7, "Test Group", [][]int{{10}}, &putBodies),
 		accountNotFoundHandler(t),
 	))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	_, _, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
 	if err == nil {
@@ -260,7 +263,7 @@ func TestGroupGrant_AccountNotFound_MapsToNotFound(t *testing.T) {
 
 func TestGroupGrant_NonUserAccountPrincipal_Rejected(t *testing.T) {
 	client := newTestJamfClient(t, failOnCallHandler(t))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	_, _, err := g.Grant(context.Background(), groupPrincipal(t, 99), groupEntitlement(t, 7))
 	if err == nil {
@@ -274,7 +277,7 @@ func TestGroupGrant_NonUserAccountPrincipal_Rejected(t *testing.T) {
 func TestGroupRevoke_Success(t *testing.T) {
 	var putBodies [][]byte
 	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{10, 42}}, &putBodies))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	gr := groupRevokeGrant(t, 7, 42)
 	annos, err := g.Revoke(context.Background(), gr)
@@ -301,7 +304,7 @@ func TestGroupRevoke_Success(t *testing.T) {
 func TestGroupRevoke_LastMember_ExplicitEmptyMembersElement(t *testing.T) {
 	var putBodies [][]byte
 	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{42}}, &putBodies))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	gr := groupRevokeGrant(t, 7, 42)
 	if _, err := g.Revoke(context.Background(), gr); err != nil {
@@ -318,7 +321,7 @@ func TestGroupRevoke_LastMember_ExplicitEmptyMembersElement(t *testing.T) {
 func TestGroupRevoke_NotAMember_MapsToGrantAlreadyRevoked(t *testing.T) {
 	var putBodies [][]byte
 	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{10}}, &putBodies))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	gr := groupRevokeGrant(t, 7, 42)
 	annos, err := g.Revoke(context.Background(), gr)
@@ -336,7 +339,7 @@ func TestGroupRevoke_NotAMember_MapsToGrantAlreadyRevoked(t *testing.T) {
 func TestGroupRevoke_EmptyMemberList_ReturnsRetryableErrorNoWrite(t *testing.T) {
 	var putBodies [][]byte
 	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{}}, &putBodies))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	gr := groupRevokeGrant(t, 7, 42)
 	_, err := g.Revoke(context.Background(), gr)
@@ -353,7 +356,7 @@ func TestGroupRevoke_EmptyMemberList_ReturnsRetryableErrorNoWrite(t *testing.T) 
 
 func TestGroupRevoke_Group404_MapsToGrantAlreadyRevoked(t *testing.T) {
 	client := newTestJamfClient(t, groupNotFoundHandler(t))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	gr := groupRevokeGrant(t, 7, 42)
 	annos, err := g.Revoke(context.Background(), gr)
@@ -367,7 +370,7 @@ func TestGroupRevoke_Group404_MapsToGrantAlreadyRevoked(t *testing.T) {
 
 func TestGroupRevoke_NonUserAccountPrincipal_Rejected(t *testing.T) {
 	client := newTestJamfClient(t, failOnCallHandler(t))
-	g := groupBuilder(client)
+	g := groupBuilder(client, false, false)
 
 	gr := groupRevokeGrantForPrincipal(t, 7, groupPrincipal(t, 99))
 	_, err := g.Revoke(context.Background(), gr)
@@ -389,4 +392,88 @@ func groupRevokeGrant(t *testing.T, groupID int, userID int) *v2.Grant {
 func groupRevokeGrantForPrincipal(t *testing.T, groupID int, principal *v2.Resource) *v2.Grant {
 	t.Helper()
 	return grant.NewGrant(groupEntitlement(t, groupID).Resource, memberEntitlement, principal.Id)
+}
+
+// Member grants come from one group read, and the session store serves the later pages; any per-member account
+// read would 404 and fail the sync.
+func TestGroupGrants_PagesPastOneThousandMembers(t *testing.T) {
+	const memberCount = 1500
+	members := make([]jamf.BaseType, 0, memberCount)
+	for _, id := range idRange(1, memberCount) {
+		members = append(members, jamf.BaseType{ID: id})
+	}
+	fixture := newAdminFixture(t, nil, []jamf.Group{{BaseType: jamf.BaseType{ID: 5, Name: "Test Group"}, Members: members}})
+	builder := groupBuilder(fixture.client(), false, false)
+	resource := groupPrincipal(t, 5)
+	// Fresh reads keep the HTTP cache from hiding the Jamf reads this test counts.
+	freshGrants := func(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+		return builder.Grants(jamf.WithFreshReads(ctx), resource, attrs)
+	}
+	const groupReads = "/JSSResource/accounts/groupid/"
+
+	grants, calls := collectGrants(t, freshGrants, resource, newMemorySessionStore())
+
+	if calls != 2 {
+		t.Errorf("Grants calls = %d, want 2", calls)
+	}
+	if got := len(grantPrincipals(t, grants)); got != memberCount {
+		t.Errorf("unique principals = %d, want %d", got, memberCount)
+	}
+	if reads := fixture.requestCount(groupReads); reads != 1 {
+		t.Errorf("Jamf reads = %d, want 1: the session store serves page 1", reads)
+	}
+
+	// A page missing from the store is read from Jamf again.
+	_, firstResults, err := freshGrants(context.Background(), resource, rs.SyncOpAttrs{Session: newMemorySessionStore()})
+	if err != nil {
+		t.Fatalf("Grants page 0: %v", err)
+	}
+	secondPage, results, err := freshGrants(context.Background(), resource, rs.SyncOpAttrs{
+		Session:   newMemorySessionStore(),
+		PageToken: pagination.Token{Token: firstResults.NextPageToken},
+	})
+	if err != nil {
+		t.Fatalf("Grants page 1 on a store miss: %v", err)
+	}
+	if len(secondPage) != memberCount-grantsPageSize || results.NextPageToken != "" {
+		t.Errorf("page 1 = %d grants, next token %q; want %d grants and no token", len(secondPage), results.NextPageToken, memberCount-grantsPageSize)
+	}
+	if reads := fixture.requestCount(groupReads); reads != 3 {
+		t.Errorf("Jamf reads after the store miss = %d, want 3", reads)
+	}
+}
+
+// A Custom group with a site: its member, role and site grants all come from one group read.
+func TestGroupGrants_EmitsRoleAndSiteGrantsFromTheSameRead(t *testing.T) {
+	customGroup := jamf.Group{
+		BaseType:     jamf.BaseType{ID: 30, Name: "group30"},
+		PrivilegeSet: privilegeSetCustom,
+		Privileges: jamf.Privileges{
+			JSSObjects: []string{"Read Users", "Not In Catalog"},
+			Recon:      []string{"Read Computers", "Read Users"},
+		},
+		Site:    jamf.BaseType{ID: 3},
+		Members: []jamf.BaseType{{ID: 10}, {ID: 11}},
+	}
+	fixture := newAdminFixture(t, nil, []jamf.Group{customGroup})
+	fixture.catalog = []string{"Delete Users", "Read Computers", "Read Users"}
+	builder := groupBuilder(fixture.client(), true, true)
+
+	grants, _ := collectGrants(t, builder.Grants, groupPrincipal(t, customGroup.ID), newMemorySessionStore())
+
+	// Each grant as "<target type>:<target id>|<principal type>:<principal id>".
+	got := make([]string, 0, len(grants))
+	for _, memberGrant := range grants {
+		target := memberGrant.GetEntitlement().GetResource().GetId()
+		principal := memberGrant.GetPrincipal().GetId()
+		got = append(got, fmt.Sprintf("%s:%s|%s:%s", target.GetResourceType(), target.GetResource(), principal.GetResourceType(), principal.GetResource()))
+	}
+	slices.Sort(got)
+	want := []string{"group:30|userAccount:10", "group:30|userAccount:11", "role:Read Computers|group:30", "role:Read Users|group:30", "site:3|group:30"}
+	if !slices.Equal(got, want) {
+		t.Errorf("grants = %v, want %v", got, want)
+	}
+	if reads := fixture.requestCount("/JSSResource/accounts/groupid/"); reads != 1 {
+		t.Errorf("group reads = %d, want 1", reads)
+	}
 }

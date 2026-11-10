@@ -9,6 +9,7 @@ import (
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
@@ -16,9 +17,18 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const (
+	sitePhaseUser      = "user"
+	sitePhaseUserGroup = "userGroup"
+	sitePhaseAdmins    = "admins"
+)
+
 type siteResourceType struct {
-	resourceType *v2.ResourceType
-	client       *jamf.Client
+	resourceType     *v2.ResourceType
+	client           *jamf.Client
+	syncUsers        bool
+	syncUserGroups   bool
+	syncUserAccounts bool
 }
 
 func (g *siteResourceType) ResourceType(_ context.Context) *v2.ResourceType {
@@ -40,126 +50,134 @@ func siteResource(site *jamf.Site, parentResourceID *v2.ResourceId) (*v2.Resourc
 }
 
 func (g *siteResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
-	sites, err := g.client.GetSites(ctx)
+	sites, annos, err := g.client.GetSites(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: failed to list sites: %w", err)
 	}
 
 	var rv []*v2.Resource
 	for _, site := range *sites {
-		siteCopy := site
-		ur, err := siteResource(&siteCopy, parentId)
+		ur, err := siteResource(&site, parentId)
 		if err != nil {
 			return nil, nil, err
 		}
 		rv = append(rv, ur)
 	}
 
-	return rv, nil, nil
+	return rv, &rs.SyncOpResults{Annotations: annos}, nil
 }
 
-func (g *siteResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
-	var rv []*v2.Entitlement
-
-	// WithGrantableTo intentionally names only resourceTypeUser, even though
-	// Grants() below emits grants for user, userGroup, userAccount, and group:
-	// site membership is only genuinely multi-valued for user (<sites> is a
-	// real list); for the other three, "site" is a single-valued/exclusive
-	// attribute, so Grant/Revoke provisioning is scoped to user only. Do not
-	// widen this to match Grants() without also adding exclusive-entitlement
-	// handling for the other three principal types.
-	assignmentOptions := []ent.EntitlementOption{
-		ent.WithGrantableTo(resourceTypeUser),
-		ent.WithDescription(fmt.Sprintf("Member of %s Site in Jamf", resource.DisplayName)),
-		ent.WithDisplayName(fmt.Sprintf("%s Site %s", resource.DisplayName, memberEntitlement)),
-	}
-
-	en := ent.NewAssignmentEntitlement(resource, memberEntitlement, assignmentOptions...)
-	rv = append(rv, en)
-
-	return rv, nil, nil
+// Entitlements is unused: StaticEntitlements declares the member entitlement.
+func (g *siteResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	return nil, nil, nil
 }
 
+func (g *siteResourceType) StaticEntitlements(_ context.Context, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	// Only a user's site membership is multi-valued; for the other principal types
+	// site is single-valued, so provisioning is user-only.
+	return []*v2.Entitlement{
+		ent.NewAssignmentEntitlement(nil, memberEntitlement,
+			ent.WithDisplayName("Member"),
+			ent.WithDescription("Member of the Jamf site"),
+			ent.WithGrantableTo(resourceTypeUser),
+		),
+	}, nil, nil
+}
+
+// Grants emits the site's members in one phase per synced principal type: users, user groups and admin accounts.
 func (g *siteResourceType) Grants(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
-	var rv []*v2.Grant
-
-	users, err := g.client.GetUsers(ctx)
+	siteID, err := strconv.Atoi(resource.Id.Resource)
 	if err != nil {
-		return rv, nil, err
+		return nil, nil, fmt.Errorf("jamf-connector: invalid site id %q: %w", resource.Id.Resource, err)
 	}
 
-	for _, user := range users {
-		userCopy := user
-		ur, err := userResource(userCopy, resource.Id)
-		if err != nil {
-			return nil, nil, err
+	bag := &pagination.Bag{}
+	if err := bag.Unmarshal(attrs.PageToken.Token); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: parse site %s grants page token: %w", resource.Id.Resource, err)
+	}
+	if bag.Current() == nil {
+		// Each phase grants one principal type, so a type the sync leaves out is not read.
+		if g.syncUserAccounts {
+			bag.Push(pagination.PageState{ResourceTypeID: sitePhaseAdmins})
 		}
-		for _, site := range user.Sites {
-			stringId := strconv.Itoa(site.ID)
-			if stringId == resource.Id.Resource {
-				userMembershipGrant := grant.NewGrant(resource, memberEntitlement, ur.Id)
-				rv = append(rv, userMembershipGrant)
-			}
+		if g.syncUserGroups {
+			bag.Push(pagination.PageState{ResourceTypeID: sitePhaseUserGroup})
+		}
+		if g.syncUsers {
+			bag.Push(pagination.PageState{ResourceTypeID: sitePhaseUser})
 		}
 	}
 
-	userGroups, err := g.client.GetUserGroups(ctx)
+	phase := bag.Current()
+	if phase == nil {
+		return nil, &rs.SyncOpResults{}, nil
+	}
+	var grants []*v2.Grant
+	var nextPage string
+	var annos annotations.Annotations
+	switch phase.ResourceTypeID {
+	case sitePhaseUser:
+		grants, nextPage, annos, err = g.siteObjectGrants(ctx, resource, siteID, "User", resourceTypeUser, phase.Token)
+	case sitePhaseUserGroup:
+		grants, nextPage, annos, err = g.siteObjectGrants(ctx, resource, siteID, "User Group", resourceTypeUserGroup, phase.Token)
+	case sitePhaseAdmins:
+		grants, nextPage, annos, err = g.adminGrants(ctx, resource, siteID, phase.Token)
+	default:
+		err = fmt.Errorf("unknown phase %q", phase.ResourceTypeID)
+	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("jamf-connector: list site %s %s grants: %w", resource.Id.Resource, phase.ResourceTypeID, err)
 	}
 
-	for _, userGroup := range userGroups {
-		userGroupCopy := userGroup
-		ugr, err := userGroupResource(userGroupCopy, resource.Id)
-		if err != nil {
-			return nil, nil, err
-		}
-		stringId := strconv.Itoa(userGroup.Site.ID)
-		if stringId == resource.Id.Resource {
-			userGroupMembershipGrant := grant.NewGrant(resource, memberEntitlement, ugr.Id)
-			rv = append(rv, userGroupMembershipGrant)
-		}
-	}
-
-	userAccounts, groups, err := g.client.GetAccounts(ctx)
+	nextToken, err := bag.NextToken(nextPage)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("jamf-connector: build site %s grants page token: %w", resource.Id.Resource, err)
+	}
+	return grants, &rs.SyncOpResults{NextPageToken: nextToken, Annotations: annos}, nil
+}
+
+// siteObjectGrants grants the site's objects of objectType on one page.
+func (g *siteResourceType) siteObjectGrants(
+	ctx context.Context,
+	site *v2.Resource,
+	siteID int,
+	objectType string,
+	principalType *v2.ResourceType,
+	page string,
+) ([]*v2.Grant, string, annotations.Annotations, error) {
+	objects, nextPage, annos, err := g.client.GetSiteObjects(ctx, siteID, objectType, page)
+	if err != nil {
+		return nil, "", nil, err
 	}
 
-	for _, userAccount := range userAccounts {
-		userAccountCopy := userAccount
-		uar, err := userAccountResource(userAccountCopy, resource.Id)
-		if err != nil {
-			return nil, nil, err
-		}
-		stringId := strconv.Itoa(userAccount.Site.ID)
-		if stringId == resource.Id.Resource {
-			userGroupMembershipGrant := grant.NewGrant(resource, memberEntitlement, uar.Id)
-			rv = append(rv, userGroupMembershipGrant)
-		}
+	grants := make([]*v2.Grant, 0, len(objects))
+	for _, object := range objects {
+		principal := &v2.ResourceId{ResourceType: principalType.Id, Resource: strconv.Itoa(object.ObjectID)}
+		grants = append(grants, grant.NewGrant(site, memberEntitlement, principal))
+	}
+	return grants, nextPage, annos, nil
+}
+
+// adminGrants grants the admin accounts assigned to the site on one page. Groups assigned to it come from the group Grants.
+func (g *siteResourceType) adminGrants(ctx context.Context, site *v2.Resource, siteID int, page string) ([]*v2.Grant, string, annotations.Annotations, error) {
+	accounts, nextPage, annos, err := g.client.GetProAccounts(ctx, fmt.Sprintf("siteId==%d", siteID), page, jamf.AccountsPageSize)
+	if err != nil {
+		return nil, "", nil, err
 	}
 
-	for _, group := range groups {
-		groupCopy := group
-		gr, err := groupResource(groupCopy, resource.Id)
-		if err != nil {
-			return nil, nil, err
-		}
-		stringId := strconv.Itoa(group.Site.ID)
-		if stringId == resource.Id.Resource {
-			userGroupMembershipGrant := grant.NewGrant(resource, memberEntitlement, gr.Id)
-			rv = append(rv, userGroupMembershipGrant)
-		}
+	grants := make([]*v2.Grant, 0, len(accounts))
+	for _, account := range accounts {
+		principal := &v2.ResourceId{ResourceType: resourceTypeUserAccount.Id, Resource: strconv.Itoa(account.ID)}
+		grants = append(grants, grant.NewGrant(site, memberEntitlement, principal))
 	}
-
-	return rv, nil, nil
+	return grants, nextPage, annos, nil
 }
 
 // Grant adds principal (a Jamf user) to the multi-valued <sites> list of the
 // site backing entitlement's resource. The principal-type guard is defense-
-// in-depth: Grants() emits site grants for four principal types, but only
+// in-depth: site grants are emitted for four principal types, but only
 // user is genuinely multi-valued/grantable — see the WithGrantableTo note in
-// Entitlements above.
+// StaticEntitlements above.
 func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -168,7 +186,7 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 		return nil, nil, err
 	}
 
-	user, err := g.client.GetUserDetails(ctx, userID)
+	user, annos, err := g.client.GetUserDetails(ctx, userID)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			return nil, nil, status.Errorf(codes.NotFound, "jamf-connector: grant site member: user %d not found", userID)
@@ -176,14 +194,16 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 		return nil, nil, fmt.Errorf("jamf-connector: grant site member: %w", err)
 	}
 	if slices.ContainsFunc(user.Sites, func(s jamf.BaseType) bool { return s.ID == siteID }) {
-		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+		annos.Update(&v2.GrantAlreadyExists{})
+		return nil, annos, nil
 	}
 
 	newSites := append(append(jamf.UserSites{}, user.Sites...), jamf.BaseType{ID: siteID})
-	if err := g.client.UpdateUserSites(ctx, userID, newSites); err != nil {
+	annos, err = g.client.UpdateUserSites(ctx, userID, newSites)
+	if err != nil {
 		return nil, nil, membershipWriteError("grant site member", "the user or site", err)
 	}
-	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, nil, nil
+	return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, annos, nil
 }
 
 // Revoke removes gr's principal (a Jamf user) from the <sites> list of the
@@ -197,7 +217,7 @@ func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotation
 		return nil, err
 	}
 
-	user, err := g.client.GetUserDetails(ctx, userID)
+	user, annos, err := g.client.GetUserDetails(ctx, userID)
 	if err != nil {
 		if jamf.IsNotFoundError(err) {
 			// The user has been deleted — a deleted user trivially has no
@@ -217,18 +237,23 @@ func (g *siteResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotation
 		remaining = append(remaining, s)
 	}
 	if !found {
-		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
+		annos.Update(&v2.GrantAlreadyRevoked{})
+		return annos, nil
 	}
 
-	if err := g.client.UpdateUserSites(ctx, userID, remaining); err != nil {
+	annos, err = g.client.UpdateUserSites(ctx, userID, remaining)
+	if err != nil {
 		return nil, membershipWriteError("revoke site member", "the user or site", err)
 	}
-	return nil, nil
+	return annos, nil
 }
 
-func siteBuilder(client *jamf.Client) *siteResourceType {
+func siteBuilder(client *jamf.Client, syncUsers, syncUserGroups, syncUserAccounts bool) *siteResourceType {
 	return &siteResourceType{
-		resourceType: resourceTypeSite,
-		client:       client,
+		resourceType:     resourceTypeSite,
+		client:           client,
+		syncUsers:        syncUsers,
+		syncUserGroups:   syncUserGroups,
+		syncUserAccounts: syncUserAccounts,
 	}
 }

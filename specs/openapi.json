@@ -31,43 +31,6 @@
     }
   ],
   "paths": {
-    "/JSSResource/users": {
-      "get": {
-        "operationId": "listUsers",
-        "summary": "List users (id and name only)",
-        "tags": [
-          "classic"
-        ],
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "users": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/BaseType"
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "4XX": {
-            "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
-          }
-        }
-      }
-    },
     "/JSSResource/users/id/{id}": {
       "get": {
         "operationId": "getUserById",
@@ -889,6 +852,258 @@
           },
           "4XX": {
             "description": "Error (a 401 on a /JSSResource path with Jamf's HTML status page is a missing privilege, reported as PermissionDenied; any other 401 renews the token and retries once; 404 NotFound and 409 Conflict/AlreadyExists are treated as idempotent outcomes by callers)"
+          }
+        }
+      }
+    },
+    "/api/v1/users": {
+      "get": {
+        "operationId": "listProUsers",
+        "summary": "List directory users (one page, Read User privilege)",
+        "description": "https://developer.jamf.com/jamf-pro/reference/get_v1-users. Used by User sync and by the managed device Grant owner lookup.",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "Zero-indexed page number.",
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0
+            }
+          },
+          {
+            "name": "page-size",
+            "in": "query",
+            "required": false,
+            "description": "Page size; documented maximum is 1000. The connector requests up to 1000.",
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "description": "Sort criteria, property[:asc|desc], comma-separated. The connector sends id:asc.",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "id:asc"
+              ]
+            },
+            "style": "form",
+            "explode": false
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "required": false,
+            "description": "RSQL filter. The managed device Grant lookup sends username==\"<value>\" and email==\"<value>\" terms joined by commas; User sync sends none.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProUsersResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 means this Jamf Pro version lacks the endpoint, so the client reports FailedPrecondition; 409 Conflict/AlreadyExists is treated as an idempotent outcome by callers)"
+          }
+        }
+      }
+    },
+    "/api/v1/accounts": {
+      "get": {
+        "operationId": "listProAccounts",
+        "summary": "List admin accounts (one page, Read Accounts privilege)",
+        "description": "https://developer.jamf.com/jamf-pro/reference/get_v1-accounts. Used by User Account sync and by the admin account scan behind role and site grants.",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "Zero-indexed page number.",
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0
+            }
+          },
+          {
+            "name": "page-size",
+            "in": "query",
+            "required": false,
+            "description": "Page size; no maximum is documented, so the connector requests the documented default of 100.",
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "description": "Sort criteria, property[:asc|desc], comma-separated. The connector sends id:asc.",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "username:asc"
+              ]
+            },
+            "style": "form",
+            "explode": false
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "required": false,
+            "description": "RSQL filter. The connector sends privilegeLevel==CUSTOM or siteId==<id>, or none.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProAccountsResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 means this Jamf Pro version lacks the endpoint, so the client reports FailedPrecondition; 409 Conflict/AlreadyExists is treated as an idempotent outcome by callers)"
+          }
+        }
+      }
+    },
+    "/api/v1/sites/{id}/objects": {
+      "get": {
+        "operationId": "listSiteObjects",
+        "summary": "List objects in a site (one page, Read Sites privilege)",
+        "description": "https://developer.jamf.com/jamf-pro/reference/get_v1-sites-id-objects. Returns a bare JSON array with no total count: the last page is the first one shorter than page-size.",
+        "tags": [
+          "pro"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Site ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "Zero-indexed page number.",
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0
+            }
+          },
+          {
+            "name": "page-size",
+            "in": "query",
+            "required": false,
+            "description": "Page size; no maximum is documented. The connector requests 1000, which Jamf honors.",
+            "schema": {
+              "type": "integer",
+              "default": 100
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "description": "Sort criteria, property[:asc|desc] over objectType and objectId. The connector sends objectId:asc.",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "objectType:asc"
+              ]
+            },
+            "style": "form",
+            "explode": false
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "required": false,
+            "description": "RSQL filter over objectType and objectId; objectType values are case-insensitive. The connector always sends objectType==\"User\" or objectType==\"User Group\".",
+            "schema": {
+              "type": "string",
+              "default": "objectType==\"User\""
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SiteObject"
+                  }
+                }
+              }
+            }
+          },
+          "4XX": {
+            "description": "Error (401 triggers one token re-creation and retry; 404 means this Jamf Pro version lacks the endpoint, so the client reports FailedPrecondition; 409 Conflict/AlreadyExists is treated as an idempotent outcome by callers)"
           }
         }
       }
@@ -1992,6 +2207,145 @@
             "items": {
               "$ref": "#/components/schemas/MobileDevice"
             }
+          }
+        }
+      },
+      "ProUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Numeric directory user ID as a string; the connector parses it to an integer."
+          },
+          "username": {
+            "type": "string"
+          },
+          "realname": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string",
+            "nullable": true
+          },
+          "position": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "ProUsersResponse": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer"
+          },
+          "pageSize": {
+            "type": "integer"
+          },
+          "totalCount": {
+            "type": "integer"
+          },
+          "totalPages": {
+            "type": "integer"
+          },
+          "hasNext": {
+            "type": "boolean"
+          },
+          "hasPrevious": {
+            "type": "boolean"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProUser"
+            }
+          }
+        }
+      },
+      "ProAccount": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Numeric admin account ID as a string; the connector parses it to an integer."
+          },
+          "username": {
+            "type": "string"
+          },
+          "realname": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "siteId": {
+            "type": "integer",
+            "description": "-1 when the account has no site."
+          },
+          "accessLevel": {
+            "type": "string",
+            "enum": [
+              "FullAccess",
+              "SiteAccess",
+              "GroupBasedAccess"
+            ]
+          },
+          "privilegeLevel": {
+            "type": "string",
+            "enum": [
+              "ADMINISTRATOR",
+              "AUDITOR",
+              "ENROLLMENT",
+              "CUSTOM"
+            ]
+          },
+          "accountStatus": {
+            "type": "string",
+            "enum": [
+              "Enabled",
+              "Disabled"
+            ]
+          },
+          "accountType": {
+            "type": "string",
+            "enum": [
+              "DEFAULT",
+              "FEDERATED",
+              "MIGRATED"
+            ]
+          }
+        }
+      },
+      "ProAccountsResponse": {
+        "type": "object",
+        "properties": {
+          "totalCount": {
+            "type": "integer"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProAccount"
+            }
+          }
+        }
+      },
+      "SiteObject": {
+        "type": "object",
+        "properties": {
+          "siteId": {
+            "type": "string"
+          },
+          "objectType": {
+            "type": "string",
+            "description": "For example User or User Group."
+          },
+          "objectId": {
+            "type": "string",
+            "description": "Numeric object ID as a string; the connector parses it to an integer."
           }
         }
       },

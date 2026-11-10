@@ -23,7 +23,7 @@ Yes — account creation/deletion for **User** and **User Account**, plus Grant/
 | Resource | Grant | Revoke | Create | Delete |
 |----------|-------|--------|--------|--------|
 | **User** | - | - | ✅ Creates a Jamf directory user (`POST /JSSResource/users/id/0`) | ✅ Deletes a Jamf directory user |
-| **User Account** | - | - | ✅ Creates a Jamf Pro console admin account (`POST /JSSResource/accounts/userid/0`), with a C1-generated random password returned as plaintext | ✅ Deletes a Jamf Pro console admin account |
+| **User Account** | - | - | ✅ Creates a Jamf Pro console admin account (`POST /JSSResource/accounts/userid/0`), with a C1-generated random password returned as plaintext | ✅ Deletes a Jamf Pro console admin account, except the one the connector authenticates with |
 | **Group** | ✅ `userAccount`, Group Access only | ✅ | - | - |
 | **User Group** | ✅ `user`, static groups only | ✅ | - | - |
 | **Role** | ✅ `userAccount`/`group` | ✅ | - | - |
@@ -70,7 +70,9 @@ See the "Jamf account privileges" section of the README / connector docs page fo
 None identified — every endpoint below is part of standard Jamf Pro, not gated behind a separate add-on or tier. The connector uses both the Classic API (`/JSSResource/*`) and the Jamf Pro API (`/api/*`):
 
 - Classic API: `/JSSResource/users`, `/JSSResource/accounts`, `/JSSResource/usergroups`, `/JSSResource/sites` (and their `/id/{id}` and create/update/delete variants) — see the links below.
-- Jamf Pro API: `POST /api/v1/auth/token` or `POST /api/v1/oauth/token` (authentication), `GET /api/v1/auth` (validation), `GET /api/v1/api-role-privileges` (Role sync), `GET /api/v4/computers-inventory` and `PATCH /api/v4/computers-inventory-detail/{id}` (Managed Device computers), `GET`/`PATCH /api/v2/mobile-devices[/{id}]` (Managed Device mobile devices).
+- Jamf Pro API: `POST /api/v1/auth/token` or `POST /api/v1/oauth/token` (authentication), `GET /api/v1/auth` (validation and the delete self-check), `GET /api/v1/api-role-privileges` (Role sync), `GET /api/v1/users` (User sync and managed device owner lookup), `GET /api/v1/accounts` (User Account sync, Role and Site grants), `GET /api/v1/sites/{id}/objects` (Site grants), `GET /api/v4/computers-inventory` and `PATCH /api/v4/computers-inventory-detail/{id}` (Managed Device computers), `GET`/`PATCH /api/v2/mobile-devices[/{id}]` (Managed Device mobile devices).
+
+Version requirements: Jamf Pro 11.26.0 or later. `GET /api/v1/users` was added in [11.26.0](https://developer.jamf.com/jamf-pro/changelog/11260-additions), `GET /api/v1/accounts` in [11.20.0](https://developer.jamf.com/jamf-pro/changelog/11200-additions), `GET /api/v1/sites/{id}/objects` in [11.2.0](https://developer.jamf.com/jamf-pro/changelog/1120-additions) and `GET /api/v1/api-role-privileges` in [10.49.0](https://developer.jamf.com/jamf-pro/changelog/10490-additions) (Jamf Pro API changelog); an older instance fails the sync with `FailedPrecondition` naming the missing endpoint. Managed Devices (opt-in) need [11.30.0](https://developer.jamf.com/jamf-pro/changelog/11300-additions) for `/api/v4/computers-inventory`.
 
 ### Classic API content-type contract
 
@@ -84,6 +86,9 @@ The Jamf Pro Classic API only accepts **XML** for POST/PUT request bodies — JS
 - [Create bearer token](https://developer.jamf.com/jamf-pro/reference/post_v1-auth-token)
 - [Obtain an access token using an API client](https://developer.jamf.com/jamf-pro/reference/postoauthtoken)
 - [API role privileges catalog](https://developer.jamf.com/jamf-pro/reference/get_v1-api-role-privileges)
+- [Users (v1)](https://developer.jamf.com/jamf-pro/reference/get_v1-users)
+- [Accounts (v1)](https://developer.jamf.com/jamf-pro/reference/get_v1-accounts)
+- [Site objects (v1)](https://developer.jamf.com/jamf-pro/reference/get_v1-sites-id-objects)
 - [Computers inventory (v4)](https://developer.jamf.com/jamf-pro/reference/get_v4-computers-inventory)
 - [Computers inventory detail PATCH (v4)](https://developer.jamf.com/jamf-pro/reference/patch_v4-computers-inventory-detail-id)
 - [Mobile devices (v2)](https://developer.jamf.com/jamf-pro/reference/get_v2-mobile-devices)

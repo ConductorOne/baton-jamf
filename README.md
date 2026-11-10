@@ -10,12 +10,12 @@ Check out [Baton](https://github.com/conductorone/baton) to learn more the proje
 |------------|--------|
 | Sync | Yes |
 | Account Creation (Users, User Accounts) | Yes — one type per connector instance, see `create-account-resource-type` below |
-| Account Deletion (Users, User Accounts) | Yes |
+| Account Deletion (Users, User Accounts) | Yes — except the user account the connector authenticates with |
 | Provisioning (Grant/Revoke) | Yes — Groups (`userAccount` principal only, Group Access accounts only), User Groups (static groups only), Sites (`user` principal only), Managed Devices (`assigned`, `user` principal only, opt-in — see Data Model below), Roles (built-in privilege sets and individual privileges, `userAccount`/`group` principal, see below). |
 
 Account creation/deletion and Grant/Revoke all require `-p`/`$BATON_PROVISIONING` to be set; without it the connector only syncs.
 
-Tested with Jamf Pro 11.32.1. Managed Devices use the Jamf Pro API v4 computers-inventory and v2 mobile-devices endpoints.
+Requires Jamf Pro 11.26.0 or later (`GET /api/v1/users` was added in 11.26.0). Managed Devices, which are opt-in, use the Jamf Pro API v4 computers-inventory endpoints, added in 11.30.0, and the v2 mobile-devices endpoints.
 
 ## Authentication
 
@@ -36,9 +36,9 @@ The Administrator privilege set covers everything. For least privilege, grant:
 | Sync users | `Read User` |
 | Sync user accounts and groups | `Read Accounts` |
 | Sync user groups | `Read Static User Groups`, `Read Smart User Groups` (Smart is only needed when smart groups exist — it's checked per group) |
-| Sync sites | `Read Sites`, `Read User`, `Read Static User Groups`, `Read Smart User Groups`, `Read Accounts` (site grants are built by reading users, user groups and accounts) |
+| Sync sites | `Read Sites`, `Read Accounts` |
 | Sync roles | `Read API Roles`, `Read Accounts` |
-| Sync managed devices (opt-in) | `Read Computers`, `Read Mobile Devices`, `Read User` (needed even if `user` isn't synced) |
+| Sync managed devices (opt-in) | `Read Computers`, `Read Mobile Devices` |
 | Create/delete users | `Create User` and `Read User` (the connector reads the user back after creating); `Delete User` |
 | Create/delete user accounts | `Create Accounts` and `Read Accounts`; `Delete Accounts` |
 | Group Grant/Revoke (`userAccount` principal) | `Read Accounts`, `Update Accounts` |
@@ -49,15 +49,12 @@ The Administrator privilege set covers everything. For least privilege, grant:
 
 `Read Accounts`/`Create Accounts`/`Update Accounts`/`Delete Accounts` cover both admin user accounts and admin groups — Jamf has no separate privilege for account groups. Every write path reads the object first, so each `Update` privilege above needs its `Read` counterpart too.
 
-Jamf reports a missing privilege differently depending on which API it uses: the Classic API (`/JSSResource` — Users, Accounts, Static User Groups) answers with HTTP 401, and the Jamf Pro API (`/api/v1`, `/api/v2`, `/api/v4` — the roles catalog, Computers, Mobile Devices) with HTTP 403. The connector reports both as a permission error.
+A missing privilege fails the sync or the operation with a permission error.
 
 Group Grant/Revoke adds or removes a `userAccount` from an admin account
 group's member list. A group with no members cannot receive its first member
 through the connector, and Revoke on such a group returns a retryable error
-instead of reporting success — Jamf can transiently return an empty member
-list even when the group genuinely has members, and the connector refuses to
-write over (or assume someone was removed from) a list it can't trust is
-complete. Only Group Access
+instead of reporting success. Only Group Access
 accounts can usefully be granted membership — a Full or Site Access account's
 rights come from its own `privilege_set`, not its groups, so Grant rejects
 adding one (membership grants it nothing). Do not use Grant/Revoke on
@@ -86,19 +83,32 @@ built-in privilege sets (`Administrator`, `Auditor`, `Enrollment Only`) and
 every individual privilege are grantable — `Custom` itself is not a role you
 grant directly. Granting a set displaces whichever one the principal
 previously held. Revoke moves the principal to `Custom` with only the
-`Read License Information` privilege — the lowest access Jamf allows, since
-`privilege_set` has no neutral "no access" value. Jamf keeps that privilege on
-every `Custom` set it creates and never lets a client remove it, so revoking
-it specifically is rejected. Individual privileges can
+`Read License Information` privilege, which can't be revoked itself.
+Individual privileges can
 only be granted while the principal's `privilege_set` is already `Custom`:
 the flow is Revoke the current set first (which moves it to Custom), then
 Grant the individual privileges — granting a built-in set again later leaves
 Custom and discards those individual privileges. Group Access accounts are
 not supported for Role Grant/Revoke — their rights come from their groups, so
 assign the role to the group instead. Changing a Full or Site Access
-account's role removes it from any admin group it belonged to (that
-membership granted it nothing). A write rejected for the connector's own Jamf
+account's role removes it from any admin group it belonged to. A write rejected for the connector's own Jamf
 account is reported as a permission error.
+
+## Sync cost
+
+Requests per full sync:
+
+| Resource type | Requests |
+|---|---|
+| `user` | ⌈users / 1000⌉ |
+| `userAccount` | ⌈accounts / 100⌉ |
+| `group` | 1, plus one read per group |
+| `userGroup` | 1, plus one read per user group |
+| `site` | 1, plus per site ⌊users / 1000⌋ + 1, ⌊user groups / 1000⌋ + 1 and ⌈accounts / 100⌉, each only when `user`, `userGroup` or `userAccount` is synced |
+| `role` | 1, plus ⌈accounts / 100⌉ + ⌈`Custom` accounts / 10⌉ and one read per `Custom` account, when `userAccount` is synced |
+| `managedDevice` | ⌈computers / 100⌉ + ⌈mobile devices / 100⌉ |
+
+Validation adds one request, plus one token request per new process (each Lambda container) and each time the token expires. Most SDK calls make one request; the largest is a `role` grants page of `Custom` accounts, which reads each one's details (up to 11). A group or user group detail comes back whole, so that read grows with the size of the group. For example, 50,000 users, 1,000 accounts (300 of them `Custom`), 50 groups, 200 user groups, 20 sites holding the users and 20,000 devices come to roughly 950 requests; sync time is about that count times the instance's API response time.
 
 ## Jamf Pro console admin account creation (`userAccount`)
 
