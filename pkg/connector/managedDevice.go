@@ -275,7 +275,7 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: resolve principal identity: %w", err)
 	}
-	if newAssignee.username == "" {
+	if strings.TrimSpace(newAssignee.username) == "" {
 		return nil, nil, status.Errorf(codes.FailedPrecondition, "jamf-connector: jamf user %s has no username", principal.Id.Resource)
 	}
 

@@ -655,7 +655,7 @@ func TestManagedDeviceGrant_Mobile_PatchesLocation(t *testing.T) {
 }
 
 // A mobile Grant never sends an empty or email-derived username to Jamf: a principal whose Jamf user
-// record has no username is rejected before any PATCH.
+// record has a whitespace-only username is rejected before any PATCH.
 func TestManagedDeviceGrant_Mobile_NoUsername_FailedPrecondition(t *testing.T) {
 	// Any request beyond the principal's user-detail lookup (in particular a
 	// PATCH) fails the test via t.Fatalf in the default case below.
@@ -663,7 +663,7 @@ func TestManagedDeviceGrant_Mobile_NoUsername_FailedPrecondition(t *testing.T) {
 		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/") {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"user": map[string]any{"id": 42, "email": "jappleseed@ex.com"},
+				"user": map[string]any{"id": 42, "name": "   ", "email": "jappleseed@ex.com"},
 			})
 			return
 		}
