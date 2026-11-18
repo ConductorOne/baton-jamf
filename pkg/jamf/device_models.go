@@ -93,7 +93,7 @@ type ComputerDiskEncryption struct {
 
 // BootPartitionEncryptionDetails reports the FileVault 2 state of the boot
 // partition. partitionFileVault2State is an enum string
-// (e.g. ENCRYPTED / NOT_ENCRYPTED / DECRYPTED / ...).
+// (e.g. ENCRYPTED / UNENCRYPTED / DECRYPTED / ...).
 type BootPartitionEncryptionDetails struct {
 	PartitionName            string `json:"partitionName"`
 	PartitionFileVault2State string `json:"partitionFileVault2State"`

@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
@@ -16,6 +15,7 @@ import (
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -23,14 +23,16 @@ import (
 )
 
 const (
-	// Sync phases, tracked in the pagination bag so the single ManagedDevice
-	// resource type can walk two Jamf endpoints (computers, then mobile devices)
-	// across many paginated List calls.
+	// Phases of the device walk, kept in the pagination bag: computers, then mobile devices.
 	devicePhaseComputer = "computer"
 	devicePhaseMobile   = "mobile"
 
-	// defaultDevicePageSize is used when the SDK does not supply a page size.
-	defaultDevicePageSize = 100
+	// devicePageSize is Jamf's documented default page-size for both device lists; no maximum is documented.
+	devicePageSize = 100
+
+	// deviceGrantsPageSize is larger because the grants pass reads small records (computers bring only USER_AND_LOCATION).
+	// No maximum is documented; Jamf honored 1000 and 2000 on both device lists.
+	deviceGrantsPageSize = 1000
 
 	// assignedEntitlement links a device to the user it is assigned to.
 	assignedEntitlement = "assigned"
@@ -52,8 +54,9 @@ type assignee struct {
 	phone    string
 }
 
+// empty treats whitespace-only values as blank: no principal can be built from them.
 func (a assignee) empty() bool {
-	return a.username == "" && a.email == ""
+	return strings.TrimSpace(a.username) == "" && strings.TrimSpace(a.email) == ""
 }
 
 // matches reports whether a and other identify the same assignee. Usernames
@@ -80,11 +83,8 @@ type managedDeviceResourceType struct {
 	resourceType *v2.ResourceType
 	client       *jamf.Client
 
-	// deviceOwners maps a device resource id to the assignee recorded while
-	// listing devices, so Entitlements/Grants can emit the device->user grant
-	// without carrying it on the resource. mu guards it.
-	mu           sync.Mutex
-	deviceOwners map[string]assignee
+	// Without a user sync the session store holds no user ids to resolve assignees against.
+	syncUsers bool
 }
 
 func (d *managedDeviceResourceType) ResourceType(_ context.Context) *v2.ResourceType {
@@ -94,123 +94,164 @@ func (d *managedDeviceResourceType) ResourceType(_ context.Context) *v2.Resource
 func (d *managedDeviceResourceType) List(ctx context.Context, parentId *v2.ResourceId, attrs rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	bag := &pagination.Bag{}
 	if err := bag.Unmarshal(attrs.PageToken.Token); err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: failed to parse device page token: %w", err)
+		return nil, nil, fmt.Errorf("jamf-connector: parse device page token: %w", err)
 	}
 	if bag.Current() == nil {
-		bag.Push(pagination.PageState{ResourceTypeID: devicePhaseComputer, Token: newDevicePageToken(0, 0)})
+		bag.Push(pagination.PageState{ResourceTypeID: devicePhaseMobile})
+		bag.Push(pagination.PageState{ResourceTypeID: devicePhaseComputer})
 	}
 
-	pageSize := attrs.PageToken.Size
-	if pageSize <= 0 {
-		pageSize = defaultDevicePageSize
-	}
-
-	current := bag.Current()
-	page, seen := parseDevicePageToken(current.Token)
-
+	phase := bag.Current()
 	var resources []*v2.Resource
+	var nextPage string
 	var annos annotations.Annotations
-
-	switch current.ResourceTypeID {
+	switch phase.ResourceTypeID {
 	case devicePhaseComputer:
-		resp, pageAnnos, err := d.client.GetComputersInventory(ctx, page, pageSize, jamf.ComputerInventorySections)
+		computers, next, pageAnnos, err := d.client.GetComputersInventory(ctx, phase.Token, devicePageSize, jamf.ComputerInventorySections)
 		if err != nil {
-			return nil, nil, fmt.Errorf("jamf-connector: failed to list computers inventory: %w", err)
+			return nil, nil, fmt.Errorf("jamf-connector: list computers: %w", err)
 		}
-		annos = pageAnnos
-		for i := range resp.Results {
-			c := &resp.Results[i]
-			r, err := computerResource(c, parentId)
+		for _, computer := range computers {
+			resource, err := computerResource(&computer, parentId)
 			if err != nil {
-				return nil, nil, fmt.Errorf("jamf-connector: failed to build computer resource: %w", err)
+				return nil, nil, fmt.Errorf("jamf-connector: build computer resource: %w", err)
 			}
-			if c.UserAndLocation != nil {
-				d.recordDeviceOwner(r, assignee{username: c.UserAndLocation.Username, email: c.UserAndLocation.EmailAddr()})
-			}
-			resources = append(resources, r)
+			resources = append(resources, resource)
 		}
-		if hasMorePages(seen, pageSize, resp.TotalCount, len(resp.Results)) {
-			if err := bag.Next(newDevicePageToken(page+1, seen+len(resp.Results))); err != nil {
-				return nil, nil, err
-			}
-		} else {
-			// Computers exhausted; advance to the mobile-device phase.
-			bag.Pop()
-			bag.Push(pagination.PageState{ResourceTypeID: devicePhaseMobile, Token: newDevicePageToken(0, 0)})
-		}
+		nextPage, annos = next, pageAnnos
 
 	case devicePhaseMobile:
-		resp, pageAnnos, err := d.client.GetMobileDevices(ctx, page, pageSize)
+		devices, next, pageAnnos, err := d.client.GetMobileDevices(ctx, phase.Token, devicePageSize)
 		if err != nil {
-			return nil, nil, fmt.Errorf("jamf-connector: failed to list mobile devices: %w", err)
+			return nil, nil, fmt.Errorf("jamf-connector: list mobile devices: %w", err)
 		}
-		annos = pageAnnos
-		for i := range resp.Results {
-			m := &resp.Results[i]
-			r, err := mobileDeviceResource(m, parentId)
+		for _, device := range devices {
+			resource, err := mobileDeviceResource(&device, parentId)
 			if err != nil {
-				return nil, nil, fmt.Errorf("jamf-connector: failed to build mobile device resource: %w", err)
+				return nil, nil, fmt.Errorf("jamf-connector: build mobile device resource: %w", err)
 			}
-			d.recordDeviceOwner(r, assignee{username: m.Username})
-			resources = append(resources, r)
+			resources = append(resources, resource)
 		}
-		if hasMorePages(seen, pageSize, resp.TotalCount, len(resp.Results)) {
-			if err := bag.Next(newDevicePageToken(page+1, seen+len(resp.Results))); err != nil {
-				return nil, nil, err
-			}
-		} else {
-			// Both phases exhausted; popping the last state ends the sync.
-			bag.Pop()
-		}
+		nextPage, annos = next, pageAnnos
 
 	default:
-		return nil, nil, fmt.Errorf("jamf-connector: unknown device sync phase %q", current.ResourceTypeID)
+		return nil, nil, fmt.Errorf("jamf-connector: unknown device phase %q", phase.ResourceTypeID)
 	}
 
-	nextToken, err := bag.Marshal()
+	nextToken, err := bag.NextToken(nextPage)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("jamf-connector: build device page token: %w", err)
 	}
-
 	return resources, &rs.SyncOpResults{NextPageToken: nextToken, Annotations: annos}, nil
 }
 
-// Entitlements exposes the "assigned" assignment entitlement, but only for
-// devices that actually report an assignee, so unassigned assets stay clean.
-func (d *managedDeviceResourceType) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
-	if d.deviceAssignee(resource).empty() {
-		return nil, nil, nil
-	}
-
-	opts := []ent.EntitlementOption{
-		ent.WithGrantableTo(resourceTypeUser),
-		ent.WithDescription(fmt.Sprintf("Assigned user of the %s device — granting this to a new user overwrites the current device owner", resource.DisplayName)),
-		ent.WithDisplayName(fmt.Sprintf("%s device %s", resource.DisplayName, assignedEntitlement)),
-	}
-
-	return []*v2.Entitlement{ent.NewAssignmentEntitlement(resource, assignedEntitlement, opts...)}, nil, nil
+// Entitlements is unused: StaticEntitlements declares the assigned entitlement.
+func (d *managedDeviceResourceType) Entitlements(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	return nil, nil, nil
 }
 
-// Grants emits the device->user link as a grant on the "assigned" entitlement.
-// When the assignee is a synced Jamf user it grants that user directly; otherwise
-// it annotates the grant with an ExternalResourceMatch so the platform can bind it
-// to a directory identity from an external source.
-func (d *managedDeviceResourceType) Grants(ctx context.Context, resource *v2.Resource, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
-	owner := d.deviceAssignee(resource)
-	if owner.empty() {
-		return nil, nil, nil
+// StaticEntitlements declares the assigned entitlement on every device, so an unassigned device can be granted one too.
+func (d *managedDeviceResourceType) StaticEntitlements(_ context.Context, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
+	return []*v2.Entitlement{
+		ent.NewAssignmentEntitlement(nil, assignedEntitlement,
+			ent.WithGrantableTo(resourceTypeUser),
+			ent.WithDisplayName("Assigned user"),
+			ent.WithDescription("Assigned user of the device. Granting it to a new user replaces the current assignee."),
+		),
+	}, nil, nil
+}
+
+// Grants is unused: GrantsForResourceType emits the assigned grants.
+func (d *managedDeviceResourceType) Grants(_ context.Context, _ *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	return nil, nil, nil
+}
+
+// GrantsForResourceType walks the devices again, computers with only their assignee section, 1000 devices per page,
+// and resolves each page's assignees with one GetManyJSON (the SDK sends 100 keys per request).
+func (d *managedDeviceResourceType) GrantsForResourceType(ctx context.Context, _ string, attrs rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	bag := &pagination.Bag{}
+	if err := bag.Unmarshal(attrs.PageToken.Token); err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: parse device grants page token: %w", err)
+	}
+	if bag.Current() == nil {
+		bag.Push(pagination.PageState{ResourceTypeID: devicePhaseMobile})
+		bag.Push(pagination.PageState{ResourceTypeID: devicePhaseComputer})
 	}
 
-	userIDs, err := cachedUserIDs(ctx, attrs.Session, assigneeLookupKeys(owner))
-	if err != nil {
-		return nil, nil, fmt.Errorf("jamf-connector: failed to resolve device owner: %w", err)
+	phase := bag.Current()
+	owners := make(map[string]assignee)
+	var nextPage string
+	var annos annotations.Annotations
+	switch phase.ResourceTypeID {
+	case devicePhaseComputer:
+		computers, next, pageAnnos, err := d.client.GetComputersInventory(ctx, phase.Token, deviceGrantsPageSize, jamf.ComputerAssigneeSections)
+		if err != nil {
+			return nil, nil, fmt.Errorf("jamf-connector: list computer owners: %w", err)
+		}
+		for _, computer := range computers {
+			if computer.UserAndLocation != nil {
+				owners[deviceObjectID(devicePhaseComputer, computer.ID)] = assignee{
+					username: computer.UserAndLocation.Username,
+					email:    computer.UserAndLocation.EmailAddr(),
+				}
+			}
+		}
+		nextPage, annos = next, pageAnnos
+
+	case devicePhaseMobile:
+		devices, next, pageAnnos, err := d.client.GetMobileDevices(ctx, phase.Token, deviceGrantsPageSize)
+		if err != nil {
+			return nil, nil, fmt.Errorf("jamf-connector: list mobile device owners: %w", err)
+		}
+		for _, device := range devices {
+			// The list carries only the username.
+			owners[deviceObjectID(devicePhaseMobile, device.ID)] = assignee{username: device.Username}
+		}
+		nextPage, annos = next, pageAnnos
+
+	default:
+		return nil, nil, fmt.Errorf("jamf-connector: unknown device phase %q", phase.ResourceTypeID)
 	}
 
-	grants, err := deviceGrants(resource, owner, userResourceIDs(userIDs))
+	grants, err := d.ownerGrants(ctx, attrs.Session, owners)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("jamf-connector: grant devices to their owners: %w", err)
 	}
-	return grants, nil, nil
+
+	nextToken, err := bag.NextToken(nextPage)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jamf-connector: build device grants page token: %w", err)
+	}
+	return grants, &rs.SyncOpResults{NextPageToken: nextToken, Annotations: annos}, nil
+}
+
+// ownerGrants grants each device to its owner, resolving the owners to synced users with one GetManyJSON.
+func (d *managedDeviceResourceType) ownerGrants(ctx context.Context, store sessions.SessionStore, owners map[string]assignee) ([]*v2.Grant, error) {
+	var userIndex map[string]*v2.ResourceId
+	if d.syncUsers {
+		lookupKeys := make([]string, 0, len(owners)*2)
+		for _, owner := range owners {
+			lookupKeys = append(lookupKeys, assigneeLookupKeys(owner)...)
+		}
+		slices.Sort(lookupKeys)
+
+		userIDs, err := cachedUserIDs(ctx, store, slices.Compact(lookupKeys))
+		if err != nil {
+			return nil, err
+		}
+		userIndex = userResourceIDs(userIDs)
+	}
+
+	var grants []*v2.Grant
+	for deviceID, owner := range owners {
+		deviceResource := &v2.Resource{Id: &v2.ResourceId{ResourceType: resourceTypeManagedDevice.Id, Resource: deviceID}}
+		assignedGrants, err := deviceGrants(deviceResource, owner, userIndex)
+		if err != nil {
+			return nil, err
+		}
+		grants = append(grants, assignedGrants...)
+	}
+	return grants, nil
 }
 
 // Grant sets principal (a Jamf user) as the assigned user of the device
@@ -261,9 +302,8 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 	}
 
 	if !current.empty() {
-		replacedGrantID, ok, rerr := d.replacedGrantID(ctx, current, entitlement)
-		switch {
-		case rerr != nil:
+		replacedGrantID, rerr := d.replacedGrantID(ctx, current, entitlement)
+		if rerr != nil {
 			// The assignment PATCH above already succeeded; failing to resolve
 			// the outgoing assignee for the GrantReplaced annotation is not
 			// worth failing (and retrying) an otherwise-successful Grant over.
@@ -272,7 +312,7 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 			// rather than Warn.
 			ctxzap.Extract(ctx).Debug("jamf-connector: grant device assigned: failed to resolve previous assignee for GrantReplaced",
 				zap.Error(rerr))
-		case ok:
+		} else {
 			annos.Update(&v2.GrantReplaced{ReplacedGrantId: replacedGrantID})
 		}
 	}
@@ -280,12 +320,8 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 	return []*v2.Grant{newGrant}, annos, nil
 }
 
-// Revoke clears the assigned user of the device backing gr's entitlement
-// resource — but only if the grant's principal is still the CURRENT
-// assignee. The device may have been reassigned to a different user (or
-// unassigned entirely) since this grant was last synced; blindly PATCHing
-// username="" in that case would silently wipe out the new assignment
-// instead of just removing the stale grant.
+// Revoke clears the device's assignee only while it matches the grant's principal (see matches). If the device
+// was reassigned or unassigned since the grant was synced, the grant is already gone and the live assignment is left alone.
 func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -320,6 +356,18 @@ func (d *managedDeviceResourceType) Revoke(ctx context.Context, gr *v2.Grant) (a
 		// this specific grant as already gone rather than touching the device.
 		annos.Update(&v2.GrantAlreadyRevoked{})
 		return annos, nil
+	}
+
+	// Jamf never refreshes a computer's email, so once the device's username is a synced user the email grant is stale.
+	if strings.TrimSpace(principal.username) == "" && strings.TrimSpace(current.username) != "" {
+		index, err := d.syncedUserIndex(ctx, current)
+		if err != nil {
+			return nil, fmt.Errorf("jamf-connector: revoke device assigned: resolve current assignee: %w", err)
+		}
+		if _, synced := resolveUser(index, current.username, ""); synced {
+			annos.Update(&v2.GrantAlreadyRevoked{})
+			return annos, nil
+		}
 	}
 
 	// Clearing the whole assignee identity: for computers, every
@@ -451,26 +499,30 @@ func assigneePrincipal(idx map[string]*v2.ResourceId, a assignee) (*v2.ResourceI
 	return rid, matchKey, nil
 }
 
-// replacedGrantID resolves a device's outgoing assignee to the grant id
-// Grants() would have emitted for them, so Grant can report a GrantReplaced
-// annotation naming the exact grant being displaced. ok is false only when
-// there is truly nothing to resolve (owner is empty).
-func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, owner assignee, entitlement *v2.Entitlement) (string, bool, error) {
-	keys := assigneeLookupKeys(owner)
-	if len(keys) == 0 {
-		return "", false, nil
+// replacedGrantID returns the grant id GrantsForResourceType emits for the device's outgoing assignee, for Grant's GrantReplaced annotation.
+func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, owner assignee, entitlement *v2.Entitlement) (string, error) {
+	index, err := d.syncedUserIndex(ctx, owner)
+	if err != nil {
+		return "", err
 	}
+	principal, _, err := assigneePrincipal(index, owner)
+	if err != nil {
+		return "", err
+	}
+	return grant.NewGrantID(principal, entitlement), nil
+}
 
-	// Grant has no session store, so ask Jamf. Grant returns the PATCH's annotations, not this read's.
-	users, _, err := d.client.GetProUsersByUsernameOrEmail(ctx, keys)
-	if err != nil {
-		return "", false, err
+// syncedUserIndex resolves owner the way sync does: nil without a user sync, else the Jamf users matching its username or email.
+func (d *managedDeviceResourceType) syncedUserIndex(ctx context.Context, owner assignee) (map[string]*v2.ResourceId, error) {
+	if !d.syncUsers {
+		return nil, nil
 	}
-	principal, _, err := assigneePrincipal(userResourceIDs(userIDsByLookupKey(users)), owner)
+	// Grant and Revoke have no session store, so ask Jamf. They return the write's annotations, not this read's.
+	users, _, err := d.client.GetProUsersByUsernameOrEmail(ctx, assigneeLookupKeys(owner))
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
-	return grant.NewGrantID(principal, entitlement), true, nil
+	return userResourceIDs(userIDsByLookupKey(users)), nil
 }
 
 // principalIdentityForRevoke resolves gr's principal to the assignee Revoke
@@ -508,10 +560,11 @@ func principalIdentityForRevoke(ctx context.Context, client *jamf.Client, gr *v2
 	return resolvePrincipalUser(ctx, client, gr.Principal)
 }
 
-func managedDeviceBuilder(client *jamf.Client) *managedDeviceResourceType {
+func managedDeviceBuilder(client *jamf.Client, syncUsers bool) *managedDeviceResourceType {
 	return &managedDeviceResourceType{
 		resourceType: resourceTypeManagedDevice,
 		client:       client,
+		syncUsers:    syncUsers,
 	}
 }
 
@@ -627,51 +680,6 @@ func deviceObjectID(phase, id string) string {
 	return fmt.Sprintf("%s:%s", phase, id)
 }
 
-// newDevicePageToken encodes the next zero-indexed page together with the number
-// of records seen across all prior pages. Carrying the cumulative count lets
-// pagination terminate on actual progress rather than on the requested pageSize,
-// which Jamf may silently cap below the SDK-supplied value.
-func newDevicePageToken(page, seen int) string {
-	return fmt.Sprintf("%d:%d", page, seen)
-}
-
-// parseDevicePageToken decodes a token produced by newDevicePageToken. It also
-// accepts a bare page number ("0") for backward-compatibility with any token
-// that predates the cumulative-count format, treating seen as unknown (0).
-func parseDevicePageToken(token string) (int, int) {
-	if token == "" {
-		return 0, 0
-	}
-	parts := strings.SplitN(token, ":", 2)
-	page, err := strconv.Atoi(parts[0])
-	if err != nil {
-		page = 0
-	}
-	seen := 0
-	if len(parts) == 2 {
-		if s, err := strconv.Atoi(parts[1]); err == nil {
-			seen = s
-		}
-	}
-	return page, seen
-}
-
-// hasMorePages reports whether another page should be fetched. When the API
-// reports a totalCount it compares the cumulative records seen (seenBefore plus
-// this page) against it, so a Jamf-imposed page-size cap that returns short
-// pages cannot make the arithmetic overshoot totalCount and drop devices. When
-// totalCount is absent it falls back to "a full page means there is probably
-// more". An empty page always terminates, guarding against runaway pagination.
-func hasMorePages(seenBefore, pageSize, totalCount, gotThisPage int) bool {
-	if gotThisPage == 0 {
-		return false
-	}
-	if totalCount > 0 {
-		return seenBefore+gotThisPage < totalCount
-	}
-	return gotThisPage >= pageSize
-}
-
 // computerDeviceType derives LAPTOP vs DESKTOP from the Apple model identifier.
 // Every Mac is one or the other, so once a model string exists the only
 // ambiguity is laptop vs desktop, which "book" (MacBook / MacBook Pro / Air)
@@ -750,9 +758,9 @@ func isEncrypted(de *jamf.ComputerDiskEncryption) (bool, bool) {
 		return false, false
 	}
 	switch strings.ToUpper(strings.TrimSpace(de.BootPartitionEncryptionDetails.PartitionFileVault2State)) {
-	case "ENCRYPTED", "VALID":
+	case "ENCRYPTED":
 		return true, true
-	case "NOT_ENCRYPTED", "DECRYPTED":
+	case "UNENCRYPTED", "DECRYPTED":
 		return false, true
 	default:
 		return false, false
@@ -849,29 +857,6 @@ func resolveUser(idx map[string]*v2.ResourceId, username, email string) (*v2.Res
 		}
 	}
 	return nil, false
-}
-
-// recordDeviceOwner caches a device's assignee (keyed by device resource id)
-// while listing devices, so Entitlements/Grants can emit the device->user
-// grant. No-op when the device reports no owner.
-func (d *managedDeviceResourceType) recordDeviceOwner(resource *v2.Resource, a assignee) {
-	if a.empty() {
-		return
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.deviceOwners == nil {
-		d.deviceOwners = make(map[string]assignee)
-	}
-	d.deviceOwners[resource.GetId().GetResource()] = a
-}
-
-// deviceAssignee returns the assignee recorded for a device during List. The
-// zero assignee means the device reports no owner.
-func (d *managedDeviceResourceType) deviceAssignee(resource *v2.Resource) assignee {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.deviceOwners[resource.GetId().GetResource()]
 }
 
 // deviceGrants builds the device->user grant(s) for the assignee. A synced Jamf

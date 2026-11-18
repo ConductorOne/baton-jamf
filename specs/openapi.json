@@ -860,7 +860,7 @@
       "get": {
         "operationId": "listProUsers",
         "summary": "List directory users (one page, Read User privilege)",
-        "description": "https://developer.jamf.com/jamf-pro/reference/get_v1-users. Used by User sync and by the managed device Grant owner lookup.",
+        "description": "https://developer.jamf.com/jamf-pro/reference/get_v1-users. Used by User sync and by the managed device Grant and Revoke assignee lookups.",
         "tags": [
           "pro"
         ],
@@ -914,7 +914,7 @@
             "name": "filter",
             "in": "query",
             "required": false,
-            "description": "RSQL filter. The managed device Grant lookup sends username==\"<value>\" and email==\"<value>\" terms joined by commas; User sync sends none.",
+            "description": "RSQL filter. The managed device Grant and Revoke assignee lookups send username==\"<value>\" and email==\"<value>\" terms joined by commas; User sync sends none.",
             "schema": {
               "type": "string"
             }
@@ -1127,7 +1127,7 @@
             "required": false,
             "style": "form",
             "explode": true,
-            "description": "Inventory section; repeated. The connector always sends GENERAL, HARDWARE, OPERATING_SYSTEM, USER_AND_LOCATION, DISK_ENCRYPTION and SECURITY; only GENERAL is returned when omitted.",
+            "description": "Inventory section; repeated. The connector sends GENERAL, HARDWARE, OPERATING_SYSTEM, DISK_ENCRYPTION and SECURITY to list devices, and USER_AND_LOCATION alone to read their assignees; only GENERAL is returned when omitted.",
             "schema": {
               "type": "array",
               "items": {
@@ -1145,7 +1145,6 @@
                 "GENERAL",
                 "HARDWARE",
                 "OPERATING_SYSTEM",
-                "USER_AND_LOCATION",
                 "DISK_ENCRYPTION",
                 "SECURITY"
               ]
@@ -1165,9 +1164,18 @@
             "name": "page-size",
             "in": "query",
             "required": false,
-            "description": "Page size; set by the connector on every call.",
+            "description": "Page size; set by the connector on every call: 100 to list devices, 1000 to read their assignees.",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "description": "Sort order; the connector always sends id:asc so pages stay stable within a pass.",
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -1297,9 +1305,18 @@
             "name": "page-size",
             "in": "query",
             "required": false,
-            "description": "Page size; set by the connector on every call.",
+            "description": "Page size; set by the connector on every call: 100 to list devices, 1000 to read their assignees.",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "description": "Sort order; the connector always sends id:asc so pages stay stable within a pass.",
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -2115,7 +2132,7 @@
                   },
                   "partitionFileVault2State": {
                     "type": "string",
-                    "description": "Enum string, e.g. ENCRYPTED / NOT_ENCRYPTED / DECRYPTED; full value set unproven"
+                    "description": "Enum string: UNKNOWN, UNENCRYPTED, INELIGIBLE, DECRYPTED, DECRYPTING, ENCRYPTED, ENCRYPTING, RESTART_NEEDED, OPTIMIZING, DECRYPTING_PAUSED or ENCRYPTING_PAUSED"
                   }
                 }
               }
