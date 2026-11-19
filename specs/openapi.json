@@ -993,7 +993,7 @@
             "name": "filter",
             "in": "query",
             "required": false,
-            "description": "RSQL filter. The connector sends privilegeLevel==CUSTOM or siteId==<id>, or none.",
+            "description": "RSQL filter. The connector sends siteId==<id>, or none.",
             "schema": {
               "type": "string"
             }

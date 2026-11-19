@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
@@ -475,5 +476,35 @@ func TestGroupGrants_EmitsRoleAndSiteGrantsFromTheSameRead(t *testing.T) {
 	}
 	if reads := fixture.requestCount("/JSSResource/accounts/groupid/"); reads != 1 {
 		t.Errorf("group reads = %d, want 1", reads)
+	}
+}
+
+// An Administrator group gets its set grant and each catalog privilege Jamf lists for it; only the privileges are immutable.
+func TestGroupGrants_BuiltInSetEmitsImmutablePrivileges(t *testing.T) {
+	adminGroup := jamf.Group{
+		BaseType:     jamf.BaseType{ID: 31, Name: "group31"},
+		PrivilegeSet: privilegeSetAdministrator,
+		Privileges: jamf.Privileges{
+			JSSObjects: []string{"Read Users", "Not In Catalog"},
+			Recon:      []string{"Read Computers"},
+		},
+	}
+	fixture := newAdminFixture(t, nil, []jamf.Group{adminGroup})
+	fixture.catalog = []string{"Delete Users", "Read Computers", "Read Users"}
+	builder := groupBuilder(fixture.client(), true, false)
+
+	grants, _ := collectGrants(t, builder.Grants, groupPrincipal(t, adminGroup.ID), newMemorySessionStore())
+
+	// Each grant as "<role> immutable=<bool>".
+	got := make([]string, 0, len(grants))
+	for _, memberGrant := range grants {
+		grantAnnos := annotations.Annotations(memberGrant.GetAnnotations())
+		role := memberGrant.GetEntitlement().GetResource().GetId().GetResource()
+		got = append(got, fmt.Sprintf("%s immutable=%t", role, grantAnnos.Contains(&v2.GrantImmutable{})))
+	}
+	slices.Sort(got)
+	want := []string{"Administrator immutable=false", "Read Computers immutable=true", "Read Users immutable=true"}
+	if !slices.Equal(got, want) {
+		t.Errorf("grants = %v, want %v", got, want)
 	}
 }

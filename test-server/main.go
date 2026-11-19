@@ -151,8 +151,8 @@ var copiedFullPrivilegeList = jamf.Privileges{
 // privilege_set (Administrator, Auditor, Enrollment Only) reads back as.
 // Jamf always expands a built-in set to the privileges it grants rather than
 // returning an empty list — the exact contents are arbitrary here, only
-// "non-empty" matters, so a connector that incorrectly treated a built-in
-// set's privileges as an individual-privilege grant would be caught by tests.
+// "non-empty" matters: the connector emits the ones in the catalog as the
+// principal's immutable privilege grants.
 var expandedBuiltInPrivileges = jamf.Privileges{
 	JSSObjects: []string{privilegeReadUser, privilegeUpdateUser, privilegeReadAdvancedComputerSearches, privilegeReadLicenseInformation},
 }
@@ -854,7 +854,7 @@ func (s *server) removeAccountFromAllGroupsLocked(accountID int) {
 }
 
 // accountPrivilegesPutBody decodes PUT /JSSResource/accounts/userid/{id} —
-// the minimal body Role Grant/Revoke sends (pkg/jamf.AccountPrivilegesUpdateBody).
+// the minimal body Role Grant/Revoke sends (pkg/jamf.privilegesUpdateBody).
 // Site is included here purely as a defensive 409 guard: the connector never
 // sends it for this endpoint, but the mock should reject it exactly like a
 // live tenant if it ever appears.
