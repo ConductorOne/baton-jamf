@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"fmt"
-	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -191,7 +190,7 @@ func (s *server) handleProListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleProListAccounts serves one page of GET /api/v1/accounts. The only filter
-// it accepts is a single privilegeLevel==<ENUM> or siteId==<int> term.
+// it accepts is a single siteId==<int> term.
 //
 // Doc URL: https://developer.jamf.com/jamf-pro/reference/get_v1-accounts
 func (s *server) handleProListAccounts(w http.ResponseWriter, r *http.Request) {
@@ -374,10 +373,10 @@ var (
 		privilegeSetCustom:        "CUSTOM",
 	}
 
-	accountsFilterPattern = regexp.MustCompile(`^\s*(privilegeLevel|siteId)\s*==\s*(?:"([^"]*)"|([^\s"]+))\s*$`)
+	accountsFilterPattern = regexp.MustCompile(`^\s*siteId\s*==\s*(\d+)\s*$`)
 )
 
-// parseAccountsFilter reads privilegeLevel==<ENUM> (the enum may be quoted) or siteId==<int>.
+// parseAccountsFilter reads siteId==<int>.
 // The predicate matches the accounts that satisfy it; no filter matches every account.
 func parseAccountsFilter(filter string) (func(*jamf.UserAccount) bool, error) {
 	if filter == "" {
@@ -386,22 +385,13 @@ func parseAccountsFilter(filter string) (func(*jamf.UserAccount) bool, error) {
 
 	match := accountsFilterPattern.FindStringSubmatch(filter)
 	if match == nil {
-		return nil, fmt.Errorf("unsupported filter %q: the mock only accepts privilegeLevel==<ENUM> and siteId==<int>", filter)
+		return nil, fmt.Errorf("unsupported filter %q: the mock only accepts siteId==<int>", filter)
 	}
-	field, value := match[1], cmp.Or(match[2], match[3])
-
-	if field == "siteId" {
-		siteID, err := strconv.Atoi(value)
-		if err != nil {
-			return nil, fmt.Errorf("invalid siteId %q: %w", value, err)
-		}
-		return func(account *jamf.UserAccount) bool { return proAccountSiteID(account) == siteID }, nil
+	siteID, err := strconv.Atoi(match[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid siteId %q: %w", match[1], err)
 	}
-
-	if !slices.Contains(slices.Collect(maps.Values(proPrivilegeLevels)), value) {
-		return nil, fmt.Errorf("invalid privilegeLevel %q", value)
-	}
-	return func(account *jamf.UserAccount) bool { return proAccountPrivilegeLevel(account) == value }, nil
+	return func(account *jamf.UserAccount) bool { return proAccountSiteID(account) == siteID }, nil
 }
 
 func proAccountSiteID(account *jamf.UserAccount) int {
