@@ -118,9 +118,9 @@ type UserAccount struct {
 	Site         BaseType   `json:"site"`
 }
 
-// Privileges models the Classic API's <privileges> block, which gives a
-// Custom privilege_set its actual meaning. Each category is a list of
-// privilege names.
+// Privileges models the Classic API's <privileges> block: the privileges a
+// Custom privilege_set was given, or on reads, a built-in set's privileges
+// already expanded. Each category is a list of privilege names.
 type Privileges struct {
 	JSSObjects    []string `json:"jss_objects" xml:"jss_objects>privilege,omitempty"`
 	JSSSettings   []string `json:"jss_settings" xml:"jss_settings>privilege,omitempty"`

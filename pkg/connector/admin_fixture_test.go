@@ -20,8 +20,8 @@ var proPrivilegeLevelsByName = map[string]string{
 	privilegeSetCustom:         "CUSTOM",
 }
 
-// adminFixture is a fake Jamf for the role, group and site syncers: the Pro accounts list (privilegeLevel and
-// siteId filters, any page size), a site's objects, the Classic account and group details, and the privilege
+// adminFixture is a fake Jamf for the role, group and site syncers: the Pro accounts list (siteId filter, any
+// page size), a site's objects, the Classic account and group details, and the privilege
 // catalog. It records every request so tests can assert what the syncers asked for.
 type adminFixture struct {
 	t        *testing.T
@@ -111,7 +111,7 @@ func (fixture *adminFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveAccounts answers GET /api/v1/accounts. It only knows a single-term privilegeLevel==<ENUM> or siteId==<int> filter.
+// serveAccounts answers GET /api/v1/accounts. It only knows a single-term siteId==<int> filter.
 func (fixture *adminFixture) serveAccounts(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	page, pageErr := strconv.Atoi(query.Get("page"))
@@ -128,10 +128,6 @@ func (fixture *adminFixture) serveAccounts(w http.ResponseWriter, r *http.Reques
 	siteID, siteIDErr := strconv.Atoi(value)
 	switch {
 	case filter == "":
-	case found && field == "privilegeLevel":
-		matching = slices.DeleteFunc(matching, func(account jamf.UserAccount) bool {
-			return proPrivilegeLevelsByName[account.PrivilegeSet] != value
-		})
 	case found && field == "siteId" && siteIDErr == nil:
 		matching = slices.DeleteFunc(matching, func(account jamf.UserAccount) bool { return account.Site.ID != siteID })
 	default:

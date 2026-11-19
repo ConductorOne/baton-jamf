@@ -88,7 +88,9 @@ Individual privileges can
 only be granted while the principal's `privilege_set` is already `Custom`:
 the flow is Revoke the current set first (which moves it to Custom), then
 Grant the individual privileges — granting a built-in set again later leaves
-Custom and discards those individual privileges. Group Access accounts are
+Custom and discards those individual privileges. A principal with a built-in
+set also holds each of its privileges; those can't be revoked one at a time —
+change the set instead. Group Access accounts are
 not supported for Role Grant/Revoke — their rights come from their groups, so
 assign the role to the group instead. Changing a Full or Site Access
 account's role removes it from any admin group it belonged to. A write rejected for the connector's own Jamf
@@ -105,10 +107,10 @@ Requests per full sync:
 | `group` | 1, plus one read per group |
 | `userGroup` | 1, plus one read per user group |
 | `site` | 1, plus per site ⌊users / 1000⌋ + 1, ⌊user groups / 1000⌋ + 1 and ⌈accounts / 100⌉, each only when `user`, `userGroup` or `userAccount` is synced |
-| `role` | 1, plus ⌈accounts / 100⌉ + ⌈`Custom` accounts / 10⌉ and one read per `Custom` account, when `userAccount` is synced |
+| `role` | 1, plus ⌈accounts / 10⌉ and one read per account, when `userAccount` is synced |
 | `managedDevice` | ⌈computers / 100⌉ + ⌈mobile devices / 100⌉ |
 
-Validation adds one request, plus one token request per new process (each Lambda container) and each time the token expires. Most SDK calls make one request; the largest is a `role` grants page of `Custom` accounts, which reads each one's details (up to 11). A group or user group detail comes back whole, so that read grows with the size of the group. For example, 50,000 users, 1,000 accounts (300 of them `Custom`), 50 groups, 200 user groups, 20 sites holding the users and 20,000 devices come to roughly 950 requests; sync time is about that count times the instance's API response time.
+Validation adds one request, plus one token request per new process (each Lambda container) and each time the token expires. Most SDK calls make one request; the largest is a `role` grants page of accounts, which reads each one's details (up to 11). A group or user group detail comes back whole, so that read grows with the size of the group. For example, 50,000 users, 1,000 accounts, 50 groups, 200 user groups, 20 sites holding the users and 20,000 devices come to roughly 1,700 requests; sync time is about that count times the instance's API response time.
 
 ## Jamf Pro console admin account creation (`userAccount`)
 
