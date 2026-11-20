@@ -359,7 +359,7 @@ func jamfDeviceAssignHandlerEmail(t *testing.T, principalUsername, principalEmai
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/users":
-			// Grant (GrantReplaced) and Revoke (stale-email check) look up the current assignee here; no match is fine.
+			// Revoke's stale-email check looks up the current assignee here; no match is fine.
 			w.Header().Set("Content-Type", "application/json")
 			encodeJSON(t, w, map[string]any{"totalCount": 0, "results": []any{}})
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/JSSResource/users/"):
@@ -484,41 +484,41 @@ func TestManagedDeviceRevoke_ExternalMatchPrincipal_EmailOnly_AssigneeNowSyncedU
 	tests := []struct {
 		name      string
 		syncUsers bool
-		scenario  deviceGrantDisplaceScenario
+		scenario  deviceRevokeScenario
 		wantPatch bool
 	}{
 		{
 			name:      "users synced, username is a synced user: already revoked",
 			syncUsers: true,
-			scenario: deviceGrantDisplaceScenario{
+			scenario: deviceRevokeScenario{
 				currentUsername: "bob", currentEmail: "ghost@ex.com",
-				oldUserID: 7, oldUsername: "bob", oldEmail: "bob@ex.com",
+				syncedUsername: "bob", syncedEmail: "bob@ex.com",
 			},
 		},
 		{
 			name:      "users synced, blank username with a synced user's email: clears the device",
 			syncUsers: true,
-			scenario: deviceGrantDisplaceScenario{
-				currentEmail: "ghost@ex.com",
-				oldUserID:    7, oldUsername: "bob", oldEmail: "ghost@ex.com",
+			scenario: deviceRevokeScenario{
+				currentEmail:   "ghost@ex.com",
+				syncedUsername: "bob", syncedEmail: "ghost@ex.com",
 			},
 			wantPatch: true,
 		},
 		{
 			name:      "users synced, unknown username with a synced user's email: clears the device",
 			syncUsers: true,
-			scenario: deviceGrantDisplaceScenario{
+			scenario: deviceRevokeScenario{
 				currentUsername: "carol", currentEmail: "ghost@ex.com",
-				oldUserID: 7, oldUsername: "bob", oldEmail: "ghost@ex.com",
+				syncedUsername: "bob", syncedEmail: "ghost@ex.com",
 			},
 			wantPatch: true,
 		},
 		{
 			name:      "users not synced: clears the device",
 			syncUsers: false,
-			scenario: deviceGrantDisplaceScenario{
+			scenario: deviceRevokeScenario{
 				currentUsername: "bob", currentEmail: "ghost@ex.com",
-				oldUserID: 7, oldUsername: "bob", oldEmail: "bob@ex.com",
+				syncedUsername: "bob", syncedEmail: "bob@ex.com",
 			},
 			wantPatch: true,
 		},
@@ -527,7 +527,7 @@ func TestManagedDeviceRevoke_ExternalMatchPrincipal_EmailOnly_AssigneeNowSyncedU
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var patchBody []byte
-			client := newTestJamfClient(t, jamfDeviceGrantDisplaceHandler(t, tc.scenario, &patchBody))
+			client := newTestJamfClient(t, jamfDeviceRevokeHandler(t, tc.scenario, &patchBody))
 			d := managedDeviceBuilder(client, tc.syncUsers)
 
 			principal, err := rs.NewResourceID(resourceTypeUser, "ghost@ex.com")
@@ -564,7 +564,7 @@ func TestManagedDeviceRevoke_ExternalMatchPrincipal_EmailOnly_AssigneeNowSyncedU
 	}
 }
 
-// Granting an unassigned device displaces nobody, so no GrantReplaced. The mock's user record only has a
+// Granting an unassigned device returns no marker annotation. The mock's user record only has a
 // username, so the other four userAndLocation keys are sent as empty strings.
 func TestManagedDeviceGrant_Computer_PatchesUserAndLocation(t *testing.T) {
 	var patchBody []byte
@@ -803,29 +803,20 @@ func TestManagedDeviceGrant_SameAssignee_ReturnsGrantAlreadyExists(t *testing.T)
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
 		t.Error("expected a GrantAlreadyExists annotation when granting the already-assigned user")
 	}
-	if ok, _ := annos.Pick(&v2.GrantReplaced{}); ok {
-		t.Error("expected no GrantReplaced annotation when nothing was displaced")
-	}
 }
 
-// deviceGrantDisplaceScenario is the principal being granted (Grant only), the device's current assignee, and the
-// synced user that assignee resolves to. oldUserID 0 means the assignee is not a synced user: the owner lookup finds nobody.
-type deviceGrantDisplaceScenario struct {
-	principalID                       int
-	principalUsername, principalEmail string
-	currentUsername, currentEmail     string
-	oldUserID                         int
-	oldUsername, oldEmail             string
+// deviceRevokeScenario is the device's current assignee and the synced user the /api/v1/users lookup returns.
+type deviceRevokeScenario struct {
+	currentUsername, currentEmail string
+	syncedUsername, syncedEmail   string
 }
 
-// jamfDeviceGrantDisplaceHandler extends jamfDeviceAssignHandlerWithCurrent's computer-only endpoints with
-// GET /api/v1/users, which replacedGrantID (Grant's GrantReplaced) and syncedUserIndex (Revoke's stale-email check)
-// use to resolve the current assignee.
-func jamfDeviceGrantDisplaceHandler(t *testing.T, sc deviceGrantDisplaceScenario, gotPATCHBody *[]byte) http.HandlerFunc {
+// jamfDeviceRevokeHandler serves the computer-only endpoints plus GET /api/v1/users, which
+// syncedUserIndex (Revoke's stale-email check) uses to resolve the current assignee.
+func jamfDeviceRevokeHandler(t *testing.T, sc deviceRevokeScenario, gotPATCHBody *[]byte) http.HandlerFunc {
 	t.Helper()
-	principalID, principalUsername, principalEmail := sc.principalID, sc.principalUsername, sc.principalEmail
 	currentUsername, currentEmail := sc.currentUsername, sc.currentEmail
-	oldUserID, oldUsername, oldEmail := sc.oldUserID, sc.oldUsername, sc.oldEmail
+	syncedUsername, syncedEmail := sc.syncedUsername, sc.syncedEmail
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/users":
@@ -836,17 +827,9 @@ func jamfDeviceGrantDisplaceHandler(t *testing.T, sc deviceGrantDisplaceScenario
 			if got, want := r.URL.Query().Get("filter"), strings.Join(wantTerms, ","); got != want {
 				t.Errorf("users filter = %q, want %q", got, want)
 			}
-			users := []map[string]any{}
-			if oldUserID != 0 {
-				users = append(users, map[string]any{"id": strconv.Itoa(oldUserID), "username": oldUsername, "email": oldEmail})
-			}
+			users := []map[string]any{{"id": "7", "username": syncedUsername, "email": syncedEmail}}
 			w.Header().Set("Content-Type", "application/json")
 			encodeJSON(t, w, map[string]any{"totalCount": len(users), "results": users})
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, fmt.Sprintf("/JSSResource/users/id/%d", principalID)):
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"user": map[string]any{"id": principalID, "name": principalUsername, "username": principalUsername, "email": principalEmail},
-			})
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/api/v4/computers-inventory-detail/"):
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -863,88 +846,6 @@ func jamfDeviceGrantDisplaceHandler(t *testing.T, sc deviceGrantDisplaceScenario
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-	}
-}
-
-// Granting a device held by a different synced Jamf user PATCHes the new assignment and reports a GrantReplaced
-// naming the displaced user's grant id.
-func TestManagedDeviceGrant_DisplacesDifferentUser_ReturnsGrantReplaced(t *testing.T) {
-	var patchBody []byte
-	client := newTestJamfClient(t, jamfDeviceGrantDisplaceHandler(t, deviceGrantDisplaceScenario{
-		principalID: 42, principalUsername: "new.user",
-		currentUsername: "old.user", currentEmail: "old.user@ex.com",
-		oldUserID: 7, oldUsername: "old.user", oldEmail: "old.user@ex.com",
-	}, &patchBody))
-	d := managedDeviceBuilder(client, true)
-
-	en := deviceEntitlement(t, "computer:17")
-	grants, annos, err := d.Grant(context.Background(), userPrincipal(t, 42), en)
-	if err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
-	if len(grants) != 1 {
-		t.Fatalf("want 1 grant, got %d", len(grants))
-	}
-	if patchBody == nil {
-		t.Fatal("expected a PATCH to be sent when displacing a different user")
-	}
-
-	oldRid := &v2.ResourceId{}
-	oldRid.SetResourceType(resourceTypeUser.Id)
-	oldRid.SetResource("7")
-	wantReplacedID := grant.NewGrantID(oldRid, en)
-
-	replaced := &v2.GrantReplaced{}
-	ok, err := annos.Pick(replaced)
-	if err != nil {
-		t.Fatalf("pick GrantReplaced: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected a GrantReplaced annotation when displacing a different assigned user")
-	}
-	if got := replaced.GetReplacedGrantId(); got != wantReplacedID {
-		t.Errorf("replaced grant id = %q, want %q", got, wantReplacedID)
-	}
-}
-
-// TestManagedDeviceGrant_DisplacesUnsyncedUser_ReturnsGrantReplacedExternalMatch
-// is the unsynced-assignee counterpart: the outgoing assignee doesn't resolve
-// to any synced Jamf user via the owner lookup (oldUserID 0 — the API finds
-// nobody), so GrantReplaced must fall back to the same external-match-style
-// principal id deviceGrants builds for that case.
-func TestManagedDeviceGrant_DisplacesUnsyncedUser_ReturnsGrantReplacedExternalMatch(t *testing.T) {
-	var patchBody []byte
-	client := newTestJamfClient(t, jamfDeviceGrantDisplaceHandler(t, deviceGrantDisplaceScenario{
-		principalID: 42, principalUsername: "new.user",
-		currentUsername: "ghost", currentEmail: "ghost@ex.com",
-	}, &patchBody))
-	d := managedDeviceBuilder(client, true)
-
-	en := deviceEntitlement(t, "computer:17")
-	_, annos, err := d.Grant(context.Background(), userPrincipal(t, 42), en)
-	if err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
-	if patchBody == nil {
-		t.Fatal("expected a PATCH to be sent when displacing an unsynced assignee")
-	}
-
-	externalRid, err := rs.NewResourceID(resourceTypeUser, "ghost@ex.com")
-	if err != nil {
-		t.Fatalf("NewResourceID: %v", err)
-	}
-	wantReplacedID := grant.NewGrantID(externalRid, en)
-
-	replaced := &v2.GrantReplaced{}
-	ok, err := annos.Pick(replaced)
-	if err != nil {
-		t.Fatalf("pick GrantReplaced: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected a GrantReplaced annotation when displacing an unsynced assignee")
-	}
-	if got := replaced.GetReplacedGrantId(); got != wantReplacedID {
-		t.Errorf("replaced grant id = %q, want %q", got, wantReplacedID)
 	}
 }
 
@@ -1250,99 +1151,6 @@ func TestOSTypeFromName(t *testing.T) {
 		if ok != tc.ok || got != tc.want {
 			t.Errorf("osTypeFromName(%q) = (%v,%v), want (%v,%v)", name, got, ok, tc.want, tc.ok)
 		}
-	}
-}
-
-// replacedGrantIDHandler serves GET /api/v1/users with users as the results and counts the requests.
-func replacedGrantIDHandler(t *testing.T, users []map[string]any, usersCalls *int) http.HandlerFunc {
-	t.Helper()
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/users" {
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
-		}
-		*usersCalls++
-		w.Header().Set("Content-Type", "application/json")
-		encodeJSON(t, w, map[string]any{"totalCount": len(users), "results": users})
-	}
-}
-
-// wantReplacedGrantID builds the grant id replacedGrantID should return for a
-// synced user with the given numeric id.
-func wantReplacedGrantID(t *testing.T, userID string, en *v2.Entitlement) string {
-	t.Helper()
-	rid := &v2.ResourceId{}
-	rid.SetResourceType(resourceTypeUser.Id)
-	rid.SetResource(userID)
-	return grant.NewGrantID(rid, en)
-}
-
-// A synced outgoing assignee resolves to that user's grant ID through the filtered users lookup.
-func TestReplacedGrantID_ResolvesViaLookup(t *testing.T) {
-	var usersCalls int
-	users := []map[string]any{{"id": "7", "username": "old.user", "email": "old.user@ex.com"}}
-	client := newTestJamfClient(t, replacedGrantIDHandler(t, users, &usersCalls))
-	devices := managedDeviceBuilder(client, true)
-	entitlement := deviceEntitlement(t, "computer:17")
-
-	got, err := devices.replacedGrantID(context.Background(), assignee{username: "old.user", email: "old.user@ex.com"}, entitlement)
-
-	if err != nil {
-		t.Fatalf("replacedGrantID: %v", err)
-	}
-	if want := wantReplacedGrantID(t, "7", entitlement); got != want {
-		t.Errorf("replacedGrantID = %q, want %q", got, want)
-	}
-	if usersCalls != 1 {
-		t.Errorf("users requests = %d, want 1", usersCalls)
-	}
-}
-
-// An outgoing assignee that is not a synced user falls back to the external-match user ID deviceGrants emits.
-func TestReplacedGrantID_NotFound_ExternalMatch(t *testing.T) {
-	var usersCalls int
-	client := newTestJamfClient(t, replacedGrantIDHandler(t, nil, &usersCalls))
-	devices := managedDeviceBuilder(client, true)
-	entitlement := deviceEntitlement(t, "computer:17")
-
-	got, err := devices.replacedGrantID(context.Background(), assignee{email: "ghost@ex.com"}, entitlement)
-
-	if err != nil {
-		t.Fatalf("replacedGrantID: %v", err)
-	}
-	externalUserID, err := rs.NewResourceID(resourceTypeUser, "ghost@ex.com")
-	if err != nil {
-		t.Fatalf("NewResourceID: %v", err)
-	}
-	if want := grant.NewGrantID(externalUserID, entitlement); got != want {
-		t.Errorf("replacedGrantID = %q, want %q", got, want)
-	}
-	if usersCalls != 1 {
-		t.Errorf("users requests = %d, want 1", usersCalls)
-	}
-}
-
-// Without a user sync the outgoing assignee is the ExternalResourceMatch user ID sync emits, with no users lookup.
-func TestReplacedGrantID_UsersNotSynced_ExternalMatch(t *testing.T) {
-	var usersCalls int
-	users := []map[string]any{{"id": "7", "username": "old.user", "email": "old.user@ex.com"}}
-	client := newTestJamfClient(t, replacedGrantIDHandler(t, users, &usersCalls))
-	devices := managedDeviceBuilder(client, false)
-	entitlement := deviceEntitlement(t, "computer:17")
-
-	got, err := devices.replacedGrantID(context.Background(), assignee{username: "old.user", email: "old.user@ex.com"}, entitlement)
-
-	if err != nil {
-		t.Fatalf("replacedGrantID: %v", err)
-	}
-	externalUserID, err := rs.NewResourceID(resourceTypeUser, "old.user@ex.com")
-	if err != nil {
-		t.Fatalf("NewResourceID: %v", err)
-	}
-	if want := grant.NewGrantID(externalUserID, entitlement); got != want {
-		t.Errorf("replacedGrantID = %q, want %q", got, want)
-	}
-	if usersCalls != 0 {
-		t.Errorf("users requests = %d, want 0", usersCalls)
 	}
 }
 

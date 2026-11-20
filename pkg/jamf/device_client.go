@@ -100,7 +100,7 @@ func (c *Client) GetMobileDevices(ctx context.Context, pageToken string, pageSiz
 
 // GetComputerInventoryDetail fetches a computer's current inventory detail.
 // Grant and Revoke read it first since the device may have been reassigned
-// since last sync; Grant reports a displaced assignee via GrantReplaced.
+// since last sync.
 func (c *Client) GetComputerInventoryDetail(ctx context.Context, computerID string) (*ComputerInventory, annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
 	if err != nil {

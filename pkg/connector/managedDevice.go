@@ -11,13 +11,12 @@ import (
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/conductorone/baton-sdk/pkg/types/sessions"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -86,6 +85,8 @@ type managedDeviceResourceType struct {
 	// Without a user sync the session store holds no user ids to resolve assignees against.
 	syncUsers bool
 }
+
+var _ connectorbuilder.TypeScopedGrantsSyncer = (*managedDeviceResourceType)(nil)
 
 func (d *managedDeviceResourceType) ResourceType(_ context.Context) *v2.ResourceType {
 	return d.resourceType
@@ -179,7 +180,7 @@ func (d *managedDeviceResourceType) GrantsForResourceType(ctx context.Context, _
 	}
 
 	phase := bag.Current()
-	owners := make(map[string]assignee)
+	owners := make(map[string]assignee, deviceGrantsPageSize)
 	var nextPage string
 	var annos annotations.Annotations
 	switch phase.ResourceTypeID {
@@ -242,7 +243,7 @@ func (d *managedDeviceResourceType) ownerGrants(ctx context.Context, store sessi
 		userIndex = userResourceIDs(userIDs)
 	}
 
-	var grants []*v2.Grant
+	grants := make([]*v2.Grant, 0, len(owners))
 	for deviceID, owner := range owners {
 		deviceResource := &v2.Resource{Id: &v2.ResourceId{ResourceType: resourceTypeManagedDevice.Id, Resource: deviceID}}
 		assignedGrants, err := deviceGrants(deviceResource, owner, userIndex)
@@ -255,15 +256,9 @@ func (d *managedDeviceResourceType) ownerGrants(ctx context.Context, store sessi
 }
 
 // Grant sets principal (a Jamf user) as the assigned user of the device
-// backing entitlement's resource. Single-valued/exclusive: this displaces
-// whatever user was previously assigned. Two idempotency cases are handled
-// before any write:
-//   - principal is already the device's current assignee: no-op, reported as
-//     GrantAlreadyExists rather than re-sending an identical PATCH.
-//   - a DIFFERENT user currently holds the assignment: the write proceeds
-//     (that is the point of granting), but the response carries a
-//     GrantReplaced annotation naming the grant that write just displaced, so
-//     ConductorOne can mark it revoked without a separate Revoke RPC.
+// backing entitlement's resource. If principal is already the current
+// assignee it is a no-op reported as GrantAlreadyExists, without a PATCH.
+// A different current assignee is overwritten; that user's grant drops on the next sync.
 func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
 	ctx = jamf.WithFreshReads(ctx)
 
@@ -299,22 +294,6 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 	annos, err = d.setAssignedUser(ctx, entitlement.Resource, newAssignee)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jamf-connector: grant device assigned: %w", err)
-	}
-
-	if !current.empty() {
-		replacedGrantID, rerr := d.replacedGrantID(ctx, current, entitlement)
-		if rerr != nil {
-			// The assignment PATCH above already succeeded; failing to resolve
-			// the outgoing assignee for the GrantReplaced annotation is not
-			// worth failing (and retrying) an otherwise-successful Grant over.
-			// The stale grant is cleaned up on the next sync instead of
-			// atomically. Not actionable by the client, so this is Debug
-			// rather than Warn.
-			ctxzap.Extract(ctx).Debug("jamf-connector: grant device assigned: failed to resolve previous assignee for GrantReplaced",
-				zap.Error(rerr))
-		} else {
-			annos.Update(&v2.GrantReplaced{ReplacedGrantId: replacedGrantID})
-		}
 	}
 
 	return []*v2.Grant{newGrant}, annos, nil
@@ -499,25 +478,12 @@ func assigneePrincipal(idx map[string]*v2.ResourceId, a assignee) (*v2.ResourceI
 	return rid, matchKey, nil
 }
 
-// replacedGrantID returns the grant id GrantsForResourceType emits for the device's outgoing assignee, for Grant's GrantReplaced annotation.
-func (d *managedDeviceResourceType) replacedGrantID(ctx context.Context, owner assignee, entitlement *v2.Entitlement) (string, error) {
-	index, err := d.syncedUserIndex(ctx, owner)
-	if err != nil {
-		return "", err
-	}
-	principal, _, err := assigneePrincipal(index, owner)
-	if err != nil {
-		return "", err
-	}
-	return grant.NewGrantID(principal, entitlement), nil
-}
-
 // syncedUserIndex resolves owner the way sync does: nil without a user sync, else the Jamf users matching its username or email.
 func (d *managedDeviceResourceType) syncedUserIndex(ctx context.Context, owner assignee) (map[string]*v2.ResourceId, error) {
 	if !d.syncUsers {
 		return nil, nil
 	}
-	// Grant and Revoke have no session store, so ask Jamf. They return the write's annotations, not this read's.
+	// Revoke has no session store, so ask Jamf. This read's annotations are dropped: Revoke returns the write's.
 	users, _, err := d.client.GetProUsersByUsernameOrEmail(ctx, assigneeLookupKeys(owner))
 	if err != nil {
 		return nil, err

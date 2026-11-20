@@ -860,7 +860,7 @@
       "get": {
         "operationId": "listProUsers",
         "summary": "List directory users (one page, Read User privilege)",
-        "description": "https://developer.jamf.com/jamf-pro/reference/get_v1-users. Used by User sync and by the managed device Grant and Revoke assignee lookups.",
+        "description": "https://developer.jamf.com/jamf-pro/reference/get_v1-users. Used by User sync and by the managed device Revoke assignee lookup.",
         "tags": [
           "pro"
         ],
@@ -914,7 +914,7 @@
             "name": "filter",
             "in": "query",
             "required": false,
-            "description": "RSQL filter. The managed device Grant and Revoke assignee lookups send username==\"<value>\" and email==\"<value>\" terms joined by commas; User sync sends none.",
+            "description": "RSQL filter. The managed device Revoke assignee lookup sends username==\"<value>\" and email==\"<value>\" terms joined by commas; User sync sends none.",
             "schema": {
               "type": "string"
             }
