@@ -67,10 +67,9 @@ Jamf API. Site Grant/Revoke is only provisionable for the `user` principal;
 `userGroup`/`userAccount`/`group` site membership remains sync-only (single-
 valued/exclusive, not a true membership list). Managed Device `assigned` is
 single-valued — granting it to a new user displaces whichever user was
-previously assigned. Grant currently only works on devices that already have
-an assigned user (the `assigned` entitlement is only emitted for devices that
-report an assignee) — it cannot be used to assign a previously-unassigned
-device to a user. Computers use the Jamf Pro v4 computers-inventory API.
+previously assigned. Every device has the `assigned` entitlement, so Grant
+also assigns a previously-unassigned device to a user. Computers use the Jamf
+Pro v4 computers-inventory API.
 Granting a computer overwrites the assignee's username, name, email,
 position and phone with the new user's values (Jamf never fills these in on
 its own for computers); Revoke clears all five. Mobile devices only ever
@@ -106,9 +105,9 @@ Requests per full sync:
 | `userGroup` | 1, plus one read per user group |
 | `site` | 1, plus per site ⌊users / 1000⌋ + 1, ⌊user groups / 1000⌋ + 1 and ⌈accounts / 100⌉, each only when `user`, `userGroup` or `userAccount` is synced |
 | `role` | 1, plus ⌈accounts / 100⌉ + ⌈`Custom` accounts / 10⌉ and one read per `Custom` account, when `userAccount` is synced |
-| `managedDevice` | ⌈computers / 100⌉ + ⌈mobile devices / 100⌉ |
+| `managedDevice` | max(1, ⌈computers / 100⌉) + max(1, ⌈mobile devices / 100⌉) for the device list, plus max(1, ⌈computers / 1000⌉) + max(1, ⌈mobile devices / 1000⌉) for the grants |
 
-Validation adds one request, plus one token request per new process (each Lambda container) and each time the token expires. Most SDK calls make one request; the largest is a `role` grants page of `Custom` accounts, which reads each one's details (up to 11). A group or user group detail comes back whole, so that read grows with the size of the group. For example, 50,000 users, 1,000 accounts (300 of them `Custom`), 50 groups, 200 user groups, 20 sites holding the users and 20,000 devices come to roughly 950 requests; sync time is about that count times the instance's API response time.
+Validation adds one request, plus one token request per new process (each Lambda container) and each time the token expires. Most SDK calls make one request; the largest is a `role` grants page of `Custom` accounts, which reads each one's details (up to 11). A group or user group detail comes back whole, so that read grows with the size of the group. For example, 50,000 users, 1,000 accounts (300 of them `Custom`), 50 groups, 200 user groups, 20 sites holding the users and 20,000 devices come to roughly 1,000 requests; sync time is about that count times the instance's API response time.
 
 ## Jamf Pro console admin account creation (`userAccount`)
 

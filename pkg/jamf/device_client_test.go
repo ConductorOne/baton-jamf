@@ -17,7 +17,7 @@ func TestGetComputersInventory_QueryEncoding(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(ComputersInventoryResponse{TotalCount: 0})
 	})
 
-	_, _, err := client.GetComputersInventory(context.Background(), 2, 50, ComputerInventorySections)
+	_, _, _, err := client.GetComputersInventory(context.Background(), "2", 50, ComputerInventorySections)
 	if err != nil {
 		t.Fatalf("GetComputersInventory: %v", err)
 	}
@@ -31,6 +31,9 @@ func TestGetComputersInventory_QueryEncoding(t *testing.T) {
 	}
 	if got := q.Get("page-size"); got != "50" {
 		t.Errorf("page-size = %q, want %q", got, "50")
+	}
+	if got := q.Get("sort"); got != "id:asc" {
+		t.Errorf("sort = %q, want %q", got, "id:asc")
 	}
 	if got := q["section"]; len(got) != len(ComputerInventorySections) {
 		t.Errorf("section params = %v, want %v", got, ComputerInventorySections)
@@ -51,7 +54,7 @@ func TestGetMobileDevices_QueryEncoding(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(MobileDevicesResponse{TotalCount: 0})
 	})
 
-	_, _, err := client.GetMobileDevices(context.Background(), 3, 25)
+	_, _, _, err := client.GetMobileDevices(context.Background(), "3", 25)
 	if err != nil {
 		t.Fatalf("GetMobileDevices: %v", err)
 	}
@@ -65,6 +68,9 @@ func TestGetMobileDevices_QueryEncoding(t *testing.T) {
 	}
 	if got := q.Get("page-size"); got != "25" {
 		t.Errorf("page-size = %q, want %q", got, "25")
+	}
+	if got := q.Get("sort"); got != "id:asc" {
+		t.Errorf("sort = %q, want %q", got, "id:asc")
 	}
 }
 

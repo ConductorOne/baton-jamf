@@ -18,32 +18,36 @@ const (
 	mobileDevicesUrlPath           = "/api/v2/mobile-devices"
 	mobileDeviceUrlPath            = "/api/v2/mobile-devices/%s"
 	mobileDeviceDetailUrlPath      = "/api/v2/mobile-devices/%s/detail"
+
+	// deviceSort keeps offset pages stable within a pass; computers default to name order,
+	// which shifts when a device is renamed mid-sync.
+	deviceSort = "id:asc"
 )
 
-// ComputerInventorySections are the inventory sections requested from the v4
-// list endpoint, which only returns the sections requested via `section=`
-// (only GENERAL when none is sent).
+// ComputerInventorySections are the sections List requests from the v4 list endpoint,
+// which returns only the requested sections (only GENERAL when none is sent).
 var ComputerInventorySections = []string{
 	"GENERAL",
 	"HARDWARE",
 	"OPERATING_SYSTEM",
-	"USER_AND_LOCATION",
 	"DISK_ENCRYPTION",
 	"SECURITY",
 }
 
-// GetComputersInventory returns a single page of the computers inventory.
-// The Jamf API is zero-indexed on `page`; callers drive pagination by
-// incrementing page until (page+1)*pageSize >= totalCount.
-func (c *Client) GetComputersInventory(
-	ctx context.Context,
-	page int,
-	pageSize int,
-	sections []string,
-) (*ComputersInventoryResponse, annotations.Annotations, error) {
+// ComputerAssigneeSections is the only section the grants pass reads: the assignee.
+var ComputerAssigneeSections = []string{"USER_AND_LOCATION"}
+
+// GetComputersInventory returns one page of computers ordered by id, holding only the requested sections,
+// and the next page token, "" after the last page. GET /api/v4/computers-inventory, needs the Read Computers privilege.
+func (c *Client) GetComputersInventory(ctx context.Context, pageToken string, pageSize int, sections []string) ([]ComputerInventory, string, annotations.Annotations, error) {
+	page, err := parsePageToken(pageToken)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
 	url, err := c.getUrl(computersInventoryUrlPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 
 	query := liburl.Values{}
@@ -52,47 +56,51 @@ func (c *Client) GetComputersInventory(
 	}
 	query.Set("page", strconv.Itoa(page))
 	query.Set("page-size", strconv.Itoa(pageSize))
+	query.Set("sort", deviceSort)
 	url.RawQuery = query.Encode()
 
-	var target ComputersInventoryResponse
-	annos, err := c.doRequest(ctx, url, &target)
+	var response ComputersInventoryResponse
+	annos, err := c.doRequest(ctx, url, &response)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, proEndpointError(computersInventoryUrlPath, err)
 	}
 
-	return &target, annos, nil
+	nextPage := nextPageToken(page, pageSize, len(response.Results), response.TotalCount)
+	return response.Results, nextPage, annos, nil
 }
 
-// GetMobileDevices returns a single page of mobile devices from the v2 list
-// endpoint. Pagination follows the same zero-indexed page convention as the
-// computers inventory endpoint.
-func (c *Client) GetMobileDevices(
-	ctx context.Context,
-	page int,
-	pageSize int,
-) (*MobileDevicesResponse, annotations.Annotations, error) {
+// GetMobileDevices returns one page of mobile devices ordered by id and the next page token, "" after the last page.
+// GET /api/v2/mobile-devices, needs the Read Mobile Devices privilege.
+func (c *Client) GetMobileDevices(ctx context.Context, pageToken string, pageSize int) ([]MobileDevice, string, annotations.Annotations, error) {
+	page, err := parsePageToken(pageToken)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
 	url, err := c.getUrl(mobileDevicesUrlPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 
 	query := liburl.Values{}
 	query.Set("page", strconv.Itoa(page))
 	query.Set("page-size", strconv.Itoa(pageSize))
+	query.Set("sort", deviceSort)
 	url.RawQuery = query.Encode()
 
-	var target MobileDevicesResponse
-	annos, err := c.doRequest(ctx, url, &target)
+	var response MobileDevicesResponse
+	annos, err := c.doRequest(ctx, url, &response)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, proEndpointError(mobileDevicesUrlPath, err)
 	}
 
-	return &target, annos, nil
+	nextPage := nextPageToken(page, pageSize, len(response.Results), response.TotalCount)
+	return response.Results, nextPage, annos, nil
 }
 
 // GetComputerInventoryDetail fetches a computer's current inventory detail.
 // Grant and Revoke read it first since the device may have been reassigned
-// since last sync; Grant reports a displaced assignee via GrantReplaced.
+// since last sync.
 func (c *Client) GetComputerInventoryDetail(ctx context.Context, computerID string) (*ComputerInventory, annotations.Annotations, error) {
 	url, err := c.getUrl(fmt.Sprintf(computerInventoryDetailUrlPath, computerID))
 	if err != nil {

@@ -118,7 +118,7 @@ func (j *Jamf) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceS
 		userGroupBuilder(j.client),
 		siteBuilder(j.client, j.syncUsers, j.syncUserGroups, j.syncUserAccounts),
 		roleBuilder(j.client, j.syncUserAccounts),
-		managedDeviceBuilder(j.client),
+		managedDeviceBuilder(j.client, j.syncUsers),
 	}
 }
 

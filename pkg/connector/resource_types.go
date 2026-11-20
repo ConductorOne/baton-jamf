@@ -58,6 +58,6 @@ var (
 			v2.ResourceType_TRAIT_MANAGED_DEVICE,
 		},
 		// Opt-in: existing API roles may lack Read Computers and Read Mobile Devices.
-		Annotations: annotations.New(&v2.OptInRequired{}),
+		Annotations: annotations.New(&v2.OptInRequired{}, &v2.SkipEntitlements{}, &v2.TypeScopedGrants{}),
 	}
 )
