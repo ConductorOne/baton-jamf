@@ -429,30 +429,20 @@ type ProUsersResponse struct {
 
 // ProAccount is an admin account in the Jamf Pro API accounts list (GET /api/v1/accounts).
 type ProAccount struct {
-	ID             int    `json:"id,string"`
-	Username       string `json:"username"`
-	Realname       string `json:"realname"`
-	Email          string `json:"email"`
-	AccountStatus  string `json:"accountStatus"`
-	PrivilegeLevel string `json:"privilegeLevel"`
-}
-
-// proPrivilegeLevels maps the Pro API privilegeLevel enum to the Classic privilege_set names.
-var proPrivilegeLevels = map[string]string{
-	"ADMINISTRATOR": "Administrator",
-	"AUDITOR":       "Auditor",
-	"ENROLLMENT":    "Enrollment Only",
-	"CUSTOM":        "Custom",
+	ID            int    `json:"id,string"`
+	Username      string `json:"username"`
+	Realname      string `json:"realname"`
+	Email         string `json:"email"`
+	AccountStatus string `json:"accountStatus"`
 }
 
 // UserAccount returns a in the Classic UserAccount shape.
 func (a ProAccount) UserAccount() *UserAccount {
 	return &UserAccount{
-		BaseType:     BaseType{ID: a.ID, Name: a.Username},
-		FullName:     a.Realname,
-		Email:        a.Email,
-		Enabled:      a.AccountStatus,
-		PrivilegeSet: proPrivilegeLevels[a.PrivilegeLevel],
+		BaseType: BaseType{ID: a.ID, Name: a.Username},
+		FullName: a.Realname,
+		Email:    a.Email,
+		Enabled:  a.AccountStatus,
 	}
 }
 

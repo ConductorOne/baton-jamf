@@ -12,14 +12,6 @@ import (
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 )
 
-// proPrivilegeLevelsByName maps a Classic privilege set to the privilegeLevel the Pro accounts API reports.
-var proPrivilegeLevelsByName = map[string]string{
-	privilegeSetAdministrator:  "ADMINISTRATOR",
-	privilegeSetAuditor:        "AUDITOR",
-	privilegeSetEnrollmentOnly: "ENROLLMENT",
-	privilegeSetCustom:         "CUSTOM",
-}
-
 // adminFixture is a fake Jamf for the role, group and site syncers: the Pro accounts list (siteId filter, any
 // page size), a site's objects, the Classic account and group details, and the privilege
 // catalog. It records every request so tests can assert what the syncers asked for.
@@ -145,12 +137,11 @@ func (fixture *adminFixture) serveAccounts(w http.ResponseWriter, r *http.Reques
 	results := make([]map[string]any, 0, end-start)
 	for _, account := range matching[start:end] {
 		results = append(results, map[string]any{
-			"id":             strconv.Itoa(account.ID),
-			"username":       account.Name,
-			"realname":       account.FullName,
-			"email":          account.Email,
-			"accountStatus":  "Enabled",
-			"privilegeLevel": proPrivilegeLevelsByName[account.PrivilegeSet],
+			"id":            strconv.Itoa(account.ID),
+			"username":      account.Name,
+			"realname":      account.FullName,
+			"email":         account.Email,
+			"accountStatus": "Enabled",
 		})
 	}
 	encodeJSON(fixture.t, w, map[string]any{"totalCount": len(matching), "results": results})

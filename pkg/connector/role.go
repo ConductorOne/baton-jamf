@@ -143,11 +143,6 @@ func (o *roleResourceType) GrantsForResourceType(ctx context.Context, _ string, 
 
 	var grants []*v2.Grant
 	for _, account := range accounts {
-		privilegeSet := account.UserAccount().PrivilegeSet
-		if slices.Contains(privilegeSets, privilegeSet) {
-			grants = append(grants, roleGrant(privilegeSet, account.ID))
-		}
-
 		// The accounts list has no privileges; only the account detail does.
 		detail, detailAnnos, err := o.client.GetUserAccountDetails(ctx, account.ID)
 		if jamf.IsNotFoundError(err) {
@@ -162,6 +157,7 @@ func (o *roleResourceType) GrantsForResourceType(ctx context.Context, _ string, 
 		var grantOptions []grant.GrantOption
 		// Jamf locks a built-in set's privileges; only a set change removes them.
 		if slices.Contains(privilegeSets, detail.PrivilegeSet) {
+			grants = append(grants, roleGrant(detail.PrivilegeSet, account.ID))
 			grantOptions = append(grantOptions, grant.WithAnnotation(&v2.GrantImmutable{}))
 		}
 		for _, privilege := range heldPrivileges(&detail.Privileges, catalog) {
@@ -515,7 +511,7 @@ func (o *roleResourceType) revokeIndividualPrivilege(ctx context.Context, p *rol
 
 	if p.privilegeSet != privilegeSetCustom {
 		return nil, status.Errorf(codes.FailedPrecondition,
-			"jamf-connector: cannot revoke privilege %q from %q: its %s privilege set includes it; change the privilege set instead", target, p.name, p.privilegeSet)
+			"jamf-connector: cannot revoke privilege %q from %q: its privilege set includes it; change the privilege set instead", target, p.name)
 	}
 
 	if target == privilegeReadLicenseInformation {
