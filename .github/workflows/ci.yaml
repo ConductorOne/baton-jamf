@@ -118,28 +118,22 @@ jobs:
           baton-principal: '103'
           baton-principal-type: userAccount
           required-secrets: BATON_USERNAME,BATON_PASSWORD
-      # sync-test re-grants after revoking, but a device's assigned
-      # entitlement only exists while the device has an assignee, so devices
-      # run grant, re-grant, revoke and re-revoke without the final re-grant.
-      - name: Install baton
-        uses: ConductorOne/github-workflows/actions/get-baton@v4
-      - name: Grant/Revoke managed devices
-        run: |
-          set -euo pipefail
-          grants() {
-            baton grants --entitlement="$1" --output-format=json \
-              | jq "[.grants // [] | .[] | select(.principal.id.resource == \"$2\")]"
-          }
-          for ent in managedDevice:computer:2:assigned managedDevice:mobile:1:assigned; do
-            ./baton-jamf --grant-entitlement="$ent" --grant-principal=3 --grant-principal-type=user
-            ./baton-jamf --grant-entitlement="$ent" --grant-principal=3 --grant-principal-type=user
-            ./baton-jamf
-            grant_id=$(grants "$ent" 3 | jq --raw-output --exit-status '.[0].grant.id')
-            ./baton-jamf --revoke-grant="$grant_id"
-            ./baton-jamf --revoke-grant="$grant_id"
-            ./baton-jamf
-            grants "$ent" 3 | jq --exit-status 'length == 0'
-          done
+      - name: Grant/Revoke managed computer
+        uses: ConductorOne/github-workflows/actions/sync-test@v4
+        with:
+          connector: ./baton-jamf
+          baton-entitlement: managedDevice:computer:2:assigned
+          baton-principal: '3'
+          baton-principal-type: user
+          required-secrets: BATON_USERNAME,BATON_PASSWORD
+      - name: Grant/Revoke managed mobile device
+        uses: ConductorOne/github-workflows/actions/sync-test@v4
+        with:
+          connector: ./baton-jamf
+          baton-entitlement: managedDevice:mobile:1:assigned
+          baton-principal: '3'
+          baton-principal-type: user
+          required-secrets: BATON_USERNAME,BATON_PASSWORD
       - name: Stop test server
         if: always()
         run: pkill -f test-server-bin || true

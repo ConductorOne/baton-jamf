@@ -35,6 +35,14 @@ func TestProListEndpoints_MissingEndpointIsFailedPrecondition(t *testing.T) {
 			_, _, _, err := client.GetSiteObjects(ctx, 3, "User", "")
 			return err
 		},
+		"GetComputersInventory": func() error {
+			_, _, _, err := client.GetComputersInventory(ctx, "", 100, ComputerAssigneeSections)
+			return err
+		},
+		"GetMobileDevices": func() error {
+			_, _, _, err := client.GetMobileDevices(ctx, "", 100)
+			return err
+		},
 		"GetPrivileges": func() error {
 			_, _, err := client.GetPrivileges(ctx)
 			return err

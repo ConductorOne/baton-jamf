@@ -101,7 +101,7 @@ func (s *server) seedDevices() {
 			OperatingSystem: &jamf.ComputerOperatingSystem{Name: "macOS", Version: "15.3", Build: "24D60"},
 			UserAndLocation: &jamf.ComputerUserAndLocation{Username: "eve.miller", Realname: "Eve Miller", Email: "eve.miller@example.com"},
 			DiskEncryption: &jamf.ComputerDiskEncryption{
-				BootPartitionEncryptionDetails: &jamf.BootPartitionEncryptionDetails{PartitionName: "Macintosh HD", PartitionFileVault2State: "NOT_ENCRYPTED"},
+				BootPartitionEncryptionDetails: &jamf.BootPartitionEncryptionDetails{PartitionName: "Macintosh HD", PartitionFileVault2State: "UNENCRYPTED"},
 			},
 		},
 		{
