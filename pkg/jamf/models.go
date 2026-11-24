@@ -436,7 +436,7 @@ type ProAccount struct {
 	AccountStatus string `json:"accountStatus"`
 }
 
-// UserAccount returns a in the Classic UserAccount shape.
+// UserAccount returns the account in the Classic UserAccount shape, without privileges.
 func (a ProAccount) UserAccount() *UserAccount {
 	return &UserAccount{
 		BaseType: BaseType{ID: a.ID, Name: a.Username},

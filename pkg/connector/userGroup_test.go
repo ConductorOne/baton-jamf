@@ -227,8 +227,8 @@ func TestUserGroupGrant_AlreadyMember_MapsToGrantAlreadyExistsWithoutCallingAPI(
 	if putCalled {
 		t.Error("expected no PUT when the pre-write check already shows the principal as a member")
 	}
-	if grants != nil {
-		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "1938" {
+		t.Errorf("expected the existing grant returned on the already-exists path, got %v", grants)
 	}
 	got := annos
 	if ok, _ := got.Pick(&v2.GrantAlreadyExists{}); !ok {

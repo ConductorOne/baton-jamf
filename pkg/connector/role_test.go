@@ -251,8 +251,8 @@ func TestRoleGrant_AlreadyHasPrivilegeSet_MapsToGrantAlreadyExists(t *testing.T)
 	if len(putBodies) != 0 {
 		t.Error("expected no PUT when the principal already holds this privilege set")
 	}
-	if grants != nil {
-		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "42" {
+		t.Errorf("expected the existing grant returned on the already-exists path, got %v", grants)
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
 		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)
@@ -388,8 +388,8 @@ func TestRoleGrant_IndividualPrivilege_AlreadyHeld_MapsToGrantAlreadyExists(t *t
 	if len(putBodies) != 0 {
 		t.Error("expected no PUT when the privilege is already held")
 	}
-	if grants != nil {
-		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "42" {
+		t.Errorf("expected the existing grant returned on the already-exists path, got %v", grants)
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
 		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)

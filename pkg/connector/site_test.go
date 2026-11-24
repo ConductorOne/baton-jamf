@@ -105,9 +105,9 @@ func TestSiteGrant_UserNotYetMember_IssuesPUT(t *testing.T) {
 }
 
 // TestSiteGrant_UserAlreadyMember_MapsToGrantAlreadyExists exercises the
-// idempotency mapping for Grant: when AddUserSite reports the user is
-// already a site member, Grant returns a GrantAlreadyExists annotation
-// instead of a fresh grant, mirroring userGroup.go's Grant pattern.
+// idempotency mapping for Grant: when the user's sites already include the
+// site, Grant returns the grant with a GrantAlreadyExists
+// annotation and no write, mirroring userGroup.go's Grant pattern.
 func TestSiteGrant_UserAlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 	var putBody []byte
 	client := newTestJamfClient(t, jamfUserSitesHandler(t, []int{2}, &putBody))
@@ -117,8 +117,8 @@ func TestSiteGrant_UserAlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	if grants != nil {
-		t.Errorf("expected no grants returned on the already-member path, got %v", grants)
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "42" {
+		t.Errorf("expected the existing grant returned on the already-member path, got %v", grants)
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
 		t.Errorf("expected a GrantAlreadyExists annotation for an already-member grant, got %v", annos)

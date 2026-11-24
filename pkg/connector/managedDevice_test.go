@@ -713,8 +713,8 @@ func TestManagedDeviceGrant_EmptyUsernameMatchesViaEmail_AlreadyExists(t *testin
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	if grants != nil {
-		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "42" {
+		t.Errorf("expected the existing grant returned on the already-exists path, got %v", grants)
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
 		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)
@@ -794,8 +794,8 @@ func TestManagedDeviceGrant_SameAssignee_ReturnsGrantAlreadyExists(t *testing.T)
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	if grants != nil {
-		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "42" {
+		t.Errorf("expected the existing grant returned on the already-exists path, got %v", grants)
 	}
 	if patchBody != nil {
 		t.Errorf("expected no PATCH to be sent when principal is already the current assignee, got body %q", string(patchBody))

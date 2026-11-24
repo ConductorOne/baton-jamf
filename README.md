@@ -88,10 +88,9 @@ only be granted while the principal's `privilege_set` is already `Custom`:
 the flow is Revoke the current set first (which moves it to Custom), then
 Grant the individual privileges — granting a built-in set again later leaves
 Custom and discards those individual privileges. A principal with a built-in
-set also holds each of its privileges; those can't be revoked one at a time —
-change the set instead. Sync reads those privileges from the principal's
-Classic detail, where Jamf Pro lists a built-in set's privileges expanded
-(checked on Jamf Pro 11.34). Group Access accounts are
+set already holds each of its privileges: granting one succeeds without a
+change, and revoking one fails with "its privilege set includes it; change the
+privilege set instead". Group Access accounts are
 not supported for Role Grant/Revoke — their rights come from their groups, so
 assign the role to the group instead. Changing a Full or Site Access
 account's role removes it from any admin group it belonged to. A write rejected for the connector's own Jamf

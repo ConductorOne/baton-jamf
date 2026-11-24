@@ -188,7 +188,7 @@ func (g *userGroupResourceType) Grant(ctx context.Context, principal *v2.Resourc
 	}
 	if isUserGroupMember(group.Users, userID) {
 		annos.Update(&v2.GrantAlreadyExists{})
-		return nil, annos, nil
+		return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, annos, nil
 	}
 
 	annos, err = g.client.AddUserGroupMembers(ctx, groupID, []int{userID})

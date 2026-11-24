@@ -175,12 +175,15 @@ func TestGroupGrant_AlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{10, 42}}, &putBodies))
 	g := groupBuilder(client, false, false)
 
-	_, annos, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
+	grants, annos, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 	if len(putBodies) != 0 {
 		t.Errorf("expected no PUT when the principal is already a member, got %d", len(putBodies))
+	}
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "42" {
+		t.Errorf("expected the existing grant returned on the already-member path, got %v", grants)
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
 		t.Errorf("expected GrantAlreadyExists, got %v", annos)

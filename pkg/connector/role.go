@@ -151,38 +151,36 @@ func (o *roleResourceType) GrantsForResourceType(ctx context.Context, _ string, 
 			continue
 		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("jamf-connector: list role grants: %w", err)
+			return nil, nil, fmt.Errorf("jamf-connector: read account %d detail: %w", account.ID, err)
 		}
 		annos = detailAnnos
-		var grantOptions []grant.GrantOption
-		// Jamf locks a built-in set's privileges; only a set change removes them.
-		if slices.Contains(privilegeSets, detail.PrivilegeSet) {
-			grants = append(grants, roleGrant(detail.PrivilegeSet, account.ID))
-			grantOptions = append(grantOptions, grant.WithAnnotation(&v2.GrantImmutable{}))
-		}
-		for _, privilege := range heldPrivileges(&detail.Privileges, catalog) {
-			grants = append(grants, roleGrant(privilege, account.ID, grantOptions...))
-		}
+		accountID := &v2.ResourceId{ResourceType: resourceTypeUserAccount.Id, Resource: strconv.Itoa(account.ID)}
+		grants = append(grants, principalRoleGrants(accountID, detail.PrivilegeSet, &detail.Privileges, catalog)...)
 	}
 	return grants, &resource.SyncOpResults{NextPageToken: nextPage, Annotations: annos}, nil
 }
 
-// heldPrivileges returns the catalog privileges in privileges. Jamf lists a built-in set's privileges already expanded.
-func heldPrivileges(privileges *jamf.Privileges, catalog map[string]struct{}) []string {
-	var held []string
+// principalRoleGrants returns a principal's grants on its built-in set and its catalog privileges. Jamf lists a
+// built-in set's privileges expanded (checked on Jamf Pro 11.34) and locks them; only a set change removes them.
+func principalRoleGrants(principal *v2.ResourceId, privilegeSet string, privileges *jamf.Privileges, catalog map[string]struct{}) []*v2.Grant {
+	var grants []*v2.Grant
+	var privilegeOptions []grant.GrantOption
+	if slices.Contains(privilegeSets, privilegeSet) {
+		grants = append(grants, roleGrant(privilegeSet, principal))
+		privilegeOptions = append(privilegeOptions, grant.WithAnnotation(&v2.GrantImmutable{}))
+	}
 	for _, privilege := range dedupeStrings(privileges.All()) {
 		if _, inCatalog := catalog[privilege]; inCatalog {
-			held = append(held, privilege)
+			grants = append(grants, roleGrant(privilege, principal, privilegeOptions...))
 		}
 	}
-	return held
+	return grants
 }
 
-// roleGrant is an account's member grant on a role.
-func roleGrant(role string, accountID int, options ...grant.GrantOption) *v2.Grant {
+// roleGrant is principal's member grant on a role.
+func roleGrant(role string, principal *v2.ResourceId, options ...grant.GrantOption) *v2.Grant {
 	roleID := &v2.ResourceId{ResourceType: resourceTypeRole.Id, Resource: role}
-	account := &v2.ResourceId{ResourceType: resourceTypeUserAccount.Id, Resource: strconv.Itoa(accountID)}
-	return grant.NewGrant(&v2.Resource{Id: roleID}, memberEntitlement, account, options...)
+	return grant.NewGrant(&v2.Resource{Id: roleID}, memberEntitlement, principal, options...)
 }
 
 // rolePrincipal is the account or group whose role is being changed, as last
@@ -315,7 +313,7 @@ func (o *roleResourceType) grantPrivilegeSet(
 		// displaced, and re-sending the same PUT would only churn Jamf's
 		// audit log.
 		annos.Update(&v2.GrantAlreadyExists{})
-		return nil, annos, nil
+		return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principalID)}, annos, nil
 	}
 
 	if p.privilegeSet == privilegeSetCustom {
@@ -329,6 +327,7 @@ func (o *roleResourceType) grantPrivilegeSet(
 	}
 
 	newGrant := grant.NewGrant(entitlement.Resource, memberEntitlement, principalID)
+	// GrantReplaced names only the old set's grant; the old set's privilege grants drop on the next sync.
 	replaced := replacedPrivilegeSetAnnotation(ctx, p.privilegeSet, target, principalID, entitlement)
 	annos.Merge(replaced...)
 	return []*v2.Grant{newGrant}, annos, nil
@@ -346,7 +345,7 @@ func (o *roleResourceType) grantIndividualPrivilege(
 ) ([]*v2.Grant, annotations.Annotations, error) {
 	if p.privileges.Contains(target) {
 		annos.Update(&v2.GrantAlreadyExists{})
-		return nil, annos, nil
+		return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principalID)}, annos, nil
 	}
 
 	if p.privilegeSet != privilegeSetCustom {
@@ -500,6 +499,7 @@ func (o *roleResourceType) revokePrivilegeSet(ctx context.Context, p *rolePrinci
 }
 
 // revokeIndividualPrivilege handles Revoke of a single named privilege.
+// A privilege held through a built-in set is rejected: only a set change removes it.
 // "Read License Information" is rejected outright — Jamf requires it on
 // every Custom privilege set and silently keeps it even if asked to remove
 // it, so reporting success here would be a lie.

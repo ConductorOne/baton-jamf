@@ -195,7 +195,7 @@ func (g *siteResourceType) Grant(ctx context.Context, principal *v2.Resource, en
 	}
 	if slices.ContainsFunc(user.Sites, func(s jamf.BaseType) bool { return s.ID == siteID }) {
 		annos.Update(&v2.GrantAlreadyExists{})
-		return nil, annos, nil
+		return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, annos, nil
 	}
 
 	newSites := append(append(jamf.UserSites{}, user.Sites...), jamf.BaseType{ID: siteID})
