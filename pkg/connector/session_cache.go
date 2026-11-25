@@ -48,7 +48,7 @@ func privilegeCatalog(ctx context.Context, store sessions.SessionStore, client *
 	return response.Privileges, annos, nil
 }
 
-// privilegeCatalogSet returns the privilege catalog as a set, for checking a Custom account's or group's privileges.
+// privilegeCatalogSet returns the privilege catalog as a set, for checking an account's or group's privileges.
 func privilegeCatalogSet(ctx context.Context, store sessions.SessionStore, client *jamf.Client) (map[string]struct{}, annotations.Annotations, error) {
 	privileges, annos, err := privilegeCatalog(ctx, store, client)
 	if err != nil {

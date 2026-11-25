@@ -150,15 +150,12 @@ func (g *groupResourceType) groupGrants(
 
 	var annos annotations.Annotations
 	if g.syncRoles {
-		roles, catalogAnnos, err := g.heldRoles(ctx, store, group)
+		catalog, catalogAnnos, err := privilegeCatalogSet(ctx, store, g.client)
 		if err != nil {
 			return nil, "", nil, err
 		}
 		annos = catalogAnnos
-		for _, role := range roles {
-			roleID := &v2.ResourceId{ResourceType: resourceTypeRole.Id, Resource: role}
-			grants = append(grants, grant.NewGrant(&v2.Resource{Id: roleID}, memberEntitlement, resource.Id))
-		}
+		grants = append(grants, principalRoleGrants(resource.Id, group.PrivilegeSet, &group.Privileges, catalog)...)
 	}
 
 	// Jamf reports a site id of -1 for none.
@@ -171,22 +168,6 @@ func (g *groupResourceType) groupGrants(
 		return nil, "", nil, err
 	}
 	return page, nextCursor, annos, nil
-}
-
-// heldRoles returns the roles a group holds: its privilege set, or the individual privileges of a Custom group.
-func (g *groupResourceType) heldRoles(ctx context.Context, store sessions.SessionStore, group *jamf.Group) ([]string, annotations.Annotations, error) {
-	if slices.Contains(privilegeSets, group.PrivilegeSet) {
-		return []string{group.PrivilegeSet}, nil, nil
-	}
-	if group.PrivilegeSet != privilegeSetCustom {
-		return nil, nil, nil
-	}
-
-	catalog, annos, err := privilegeCatalogSet(ctx, store, g.client)
-	if err != nil {
-		return nil, nil, err
-	}
-	return customPrivileges(group.PrivilegeSet, &group.Privileges, catalog), annos, nil
 }
 
 // Grant adds principal (a Jamf admin account) to the static admin account
@@ -223,7 +204,7 @@ func (g *groupResourceType) Grant(ctx context.Context, principal *v2.Resource, e
 
 	if slices.ContainsFunc(current.Members, func(m jamf.BaseType) bool { return m.ID == userID }) {
 		annos.Update(&v2.GrantAlreadyExists{})
-		return nil, annos, nil
+		return []*v2.Grant{grant.NewGrant(entitlement.Resource, memberEntitlement, principal.Id)}, annos, nil
 	}
 
 	// Membership only grants anything to a Group Access account — a Full or

@@ -11,6 +11,7 @@ import (
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
@@ -250,8 +251,8 @@ func TestRoleGrant_AlreadyHasPrivilegeSet_MapsToGrantAlreadyExists(t *testing.T)
 	if len(putBodies) != 0 {
 		t.Error("expected no PUT when the principal already holds this privilege set")
 	}
-	if grants != nil {
-		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "42" {
+		t.Errorf("expected the existing grant returned on the already-exists path, got %v", grants)
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
 		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)
@@ -387,10 +388,30 @@ func TestRoleGrant_IndividualPrivilege_AlreadyHeld_MapsToGrantAlreadyExists(t *t
 	if len(putBodies) != 0 {
 		t.Error("expected no PUT when the privilege is already held")
 	}
-	if grants != nil {
-		t.Errorf("expected no grants returned on the already-exists path, got %v", grants)
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "42" {
+		t.Errorf("expected the existing grant returned on the already-exists path, got %v", grants)
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
+		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)
+	}
+}
+
+// An Administrator whose detail lists the privilege already holds it, so the Grant is a no-op, not a FailedPrecondition.
+func TestRoleGrant_IndividualPrivilege_HeldThroughSet_MapsToGrantAlreadyExists(t *testing.T) {
+	var putBodies [][]byte
+	client := newTestJamfClient(t, accountRoleHandler(t, 42, "jappleseed", []jamf.UserAccount{
+		{PrivilegeSet: privilegeSetAdministrator, Privileges: jamf.Privileges{JSSObjects: []string{"Read User"}}},
+	}, &putBodies))
+	builder := roleBuilder(client, false)
+
+	_, annos, err := builder.Grant(context.Background(), userAccountPrincipal(t, 42), roleEntitlement(t, "Read User"))
+	if err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	if len(putBodies) != 0 {
+		t.Error("expected no PUT when the privilege is already held")
+	}
+	if !annos.Contains(&v2.GrantAlreadyExists{}) {
 		t.Errorf("expected a GrantAlreadyExists annotation, got %v", annos)
 	}
 }
@@ -656,23 +677,43 @@ func TestRoleRevoke_IndividualPrivilege_NotHeld_MapsToGrantAlreadyRevoked(t *tes
 	}
 }
 
-func TestRoleRevoke_IndividualPrivilege_NotCustom_MapsToGrantAlreadyRevoked(t *testing.T) {
+// A privilege grant left over from a set change (Administrator → Enrollment Only) is already revoked, not blocked
+// by the new set.
+func TestRoleRevoke_IndividualPrivilege_NotHeldThroughSet_MapsToGrantAlreadyRevoked(t *testing.T) {
 	var putBodies [][]byte
 	client := newTestJamfClient(t, accountRoleHandler(t, 42, "jappleseed", []jamf.UserAccount{
-		{PrivilegeSet: privilegeSetAdministrator},
+		{PrivilegeSet: privilegeSetEnrollmentOnly, Privileges: jamf.Privileges{JSSObjects: []string{"Read Computers"}}},
 	}, &putBodies))
-	r := roleBuilder(client, false)
+	builder := roleBuilder(client, false)
 
-	gr := grant.NewGrant(roleEntitlement(t, "Read User").Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
-	annos, err := r.Revoke(context.Background(), gr)
+	staleGrant := grant.NewGrant(roleEntitlement(t, "Read User").Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
+	annos, err := builder.Revoke(context.Background(), staleGrant)
 	if err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
 	if len(putBodies) != 0 {
-		t.Error("expected no PUT when the principal isn't Custom")
+		t.Error("expected no PUT when the privilege isn't held")
 	}
-	if ok, _ := annos.Pick(&v2.GrantAlreadyRevoked{}); !ok {
+	if !annos.Contains(&v2.GrantAlreadyRevoked{}) {
 		t.Errorf("expected a GrantAlreadyRevoked annotation, got %v", annos)
+	}
+}
+
+// A privilege held through a built-in set can't be revoked alone; reporting it revoked would be a lie.
+func TestRoleRevoke_IndividualPrivilege_HeldThroughSet_FailedPrecondition(t *testing.T) {
+	var putBodies [][]byte
+	client := newTestJamfClient(t, accountRoleHandler(t, 42, "jappleseed", []jamf.UserAccount{
+		{PrivilegeSet: privilegeSetAdministrator, Privileges: jamf.Privileges{JSSObjects: []string{"Read User"}}},
+	}, &putBodies))
+	builder := roleBuilder(client, false)
+
+	privilegeGrant := grant.NewGrant(roleEntitlement(t, "Read User").Resource, memberEntitlement, userAccountPrincipal(t, 42).Id)
+	_, err := builder.Revoke(context.Background(), privilegeGrant)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition, got %v", err)
+	}
+	if len(putBodies) != 0 {
+		t.Error("expected no PUT when the privilege comes from a built-in set")
 	}
 }
 
@@ -721,10 +762,14 @@ func TestRoleEntitlements_AllGrantableToBothPrincipalTypes(t *testing.T) {
 	}
 }
 
-// Privilege-set grants come from every account; individual-privilege grants only from Custom accounts, 10 per page.
+// Each account gets its built-in set grant, if any, and its catalog privileges, 10 accounts per page; only a
+// built-in set's privileges are immutable.
 func TestRoleGrantsForResourceType_EmitsAccountRoles(t *testing.T) {
+	// Jamf lists an Administrator's privileges already expanded.
+	adminAccount := testAccount(1, privilegeSetAdministrator)
+	adminAccount.Privileges = jamf.Privileges{JSSObjects: []string{"Delete Users", "Read Computers", "Read Users"}}
 	accounts := []jamf.UserAccount{
-		testAccount(1, privilegeSetAdministrator),
+		adminAccount,
 		testAccount(2, privilegeSetAuditor),
 		testAccount(3, privilegeSetEnrollmentOnly),
 	}
@@ -735,7 +780,7 @@ func TestRoleGrantsForResourceType_EmitsAccountRoles(t *testing.T) {
 		JSSSettings: []string{"Read Users", "Not In Catalog"},
 	}
 	accounts = append(accounts, multiCategoryAccount)
-	// Custom accounts 4-15 span two pages of 10.
+	// Accounts 1-15 span two pages of 10.
 	for id := 5; id <= 15; id++ {
 		customAccount := testAccount(id, privilegeSetCustom)
 		customAccount.Privileges = jamf.Privileges{JSSObjects: []string{"Read Computers"}}
@@ -753,14 +798,22 @@ func TestRoleGrantsForResourceType_EmitsAccountRoles(t *testing.T) {
 	grants, _ := collectGrants(t, roleGrants, nil, newMemorySessionStore())
 
 	got := make([]string, 0, len(grants))
+	var immutable []string
 	for _, memberGrant := range grants {
 		got = append(got, memberGrant.GetId())
+		grantAnnos := annotations.Annotations(memberGrant.GetAnnotations())
+		if grantAnnos.Contains(&v2.GrantImmutable{}) {
+			immutable = append(immutable, memberGrant.GetId())
+		}
 	}
 	slices.Sort(got)
+	slices.Sort(immutable)
 	want := []string{
 		"role:Administrator:member:userAccount:1",
 		"role:Auditor:member:userAccount:2",
+		"role:Delete Users:member:userAccount:1",
 		"role:Enrollment Only:member:userAccount:3",
+		"role:Read Computers:member:userAccount:1",
 		"role:Read Computers:member:userAccount:10",
 		"role:Read Computers:member:userAccount:11",
 		"role:Read Computers:member:userAccount:12",
@@ -772,19 +825,26 @@ func TestRoleGrantsForResourceType_EmitsAccountRoles(t *testing.T) {
 		"role:Read Computers:member:userAccount:6",
 		"role:Read Computers:member:userAccount:7",
 		"role:Read Computers:member:userAccount:8",
+		"role:Read Users:member:userAccount:1",
 		"role:Read Users:member:userAccount:4",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("grant IDs = %v, want %v", got, want)
 	}
-
-	var customPageSizes []int
-	for _, request := range fixture.accountsRequestsSeen() {
-		if request.filter == "privilegeLevel==CUSTOM" {
-			customPageSizes = append(customPageSizes, request.pageSize)
-		}
+	wantImmutable := []string{
+		"role:Delete Users:member:userAccount:1",
+		"role:Read Computers:member:userAccount:1",
+		"role:Read Users:member:userAccount:1",
 	}
-	if !slices.Equal(customPageSizes, []int{10, 10}) {
-		t.Errorf("Custom accounts page sizes = %v, want [10 10]", customPageSizes)
+	if !slices.Equal(immutable, wantImmutable) {
+		t.Errorf("immutable grant IDs = %v, want %v", immutable, wantImmutable)
+	}
+
+	var pageSizes []int
+	for _, request := range fixture.accountsRequestsSeen() {
+		pageSizes = append(pageSizes, request.pageSize)
+	}
+	if want := []int{10, 10}; !slices.Equal(pageSizes, want) {
+		t.Errorf("accounts page sizes = %v, want %v", pageSizes, want)
 	}
 }

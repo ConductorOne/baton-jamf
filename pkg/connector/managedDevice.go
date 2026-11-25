@@ -288,7 +288,7 @@ func (d *managedDeviceResourceType) Grant(ctx context.Context, principal *v2.Res
 		// principal is already the live assignee — nothing would be displaced,
 		// and re-sending the same PATCH would only churn Jamf's audit log.
 		annos.Update(&v2.GrantAlreadyExists{})
-		return nil, annos, nil
+		return []*v2.Grant{newGrant}, annos, nil
 	}
 
 	annos, err = d.setAssignedUser(ctx, entitlement.Resource, newAssignee)

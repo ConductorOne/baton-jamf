@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/conductorone/baton-jamf/pkg/jamf"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	ent "github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
@@ -174,12 +175,15 @@ func TestGroupGrant_AlreadyMember_MapsToGrantAlreadyExists(t *testing.T) {
 	client := newTestJamfClient(t, groupHandler(t, 7, "Test Group", [][]int{{10, 42}}, &putBodies))
 	g := groupBuilder(client, false, false)
 
-	_, annos, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
+	grants, annos, err := g.Grant(context.Background(), userAccountPrincipal(t, 42), groupEntitlement(t, 7))
 	if err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 	if len(putBodies) != 0 {
 		t.Errorf("expected no PUT when the principal is already a member, got %d", len(putBodies))
+	}
+	if len(grants) != 1 || grants[0].GetPrincipal().GetId().GetResource() != "42" {
+		t.Errorf("expected the existing grant returned on the already-member path, got %v", grants)
 	}
 	if ok, _ := annos.Pick(&v2.GrantAlreadyExists{}); !ok {
 		t.Errorf("expected GrantAlreadyExists, got %v", annos)
@@ -475,5 +479,35 @@ func TestGroupGrants_EmitsRoleAndSiteGrantsFromTheSameRead(t *testing.T) {
 	}
 	if reads := fixture.requestCount("/JSSResource/accounts/groupid/"); reads != 1 {
 		t.Errorf("group reads = %d, want 1", reads)
+	}
+}
+
+// An Administrator group gets its set grant and each catalog privilege Jamf lists for it; only the privileges are immutable.
+func TestGroupGrants_BuiltInSetEmitsImmutablePrivileges(t *testing.T) {
+	adminGroup := jamf.Group{
+		BaseType:     jamf.BaseType{ID: 31, Name: "group31"},
+		PrivilegeSet: privilegeSetAdministrator,
+		Privileges: jamf.Privileges{
+			JSSObjects: []string{"Read Users", "Not In Catalog"},
+			Recon:      []string{"Read Computers"},
+		},
+	}
+	fixture := newAdminFixture(t, nil, []jamf.Group{adminGroup})
+	fixture.catalog = []string{"Delete Users", "Read Computers", "Read Users"}
+	builder := groupBuilder(fixture.client(), true, false)
+
+	grants, _ := collectGrants(t, builder.Grants, groupPrincipal(t, adminGroup.ID), newMemorySessionStore())
+
+	// Each grant as "<role> immutable=<bool>".
+	got := make([]string, 0, len(grants))
+	for _, memberGrant := range grants {
+		grantAnnos := annotations.Annotations(memberGrant.GetAnnotations())
+		role := memberGrant.GetEntitlement().GetResource().GetId().GetResource()
+		got = append(got, fmt.Sprintf("%s immutable=%t", role, grantAnnos.Contains(&v2.GrantImmutable{})))
+	}
+	slices.Sort(got)
+	want := []string{"Administrator immutable=false", "Read Computers immutable=true", "Read Users immutable=true"}
+	if !slices.Equal(got, want) {
+		t.Errorf("grants = %v, want %v", got, want)
 	}
 }
