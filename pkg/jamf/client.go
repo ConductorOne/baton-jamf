@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	liburl "net/url"
@@ -257,7 +258,7 @@ func (c *Client) GetUserGroupDetails(ctx context.Context, userGroupId int) (*Use
 // GetProUsers returns one page of users ordered by id and the next page token, "" after the last page.
 // GET /api/v1/users, needs the Read User privilege.
 func (c *Client) GetProUsers(ctx context.Context, pageToken string, pageSize int) ([]ProUser, string, annotations.Annotations, error) {
-	page, err := parsePageToken(pageToken)
+	page, received, err := parsePageToken(pageToken)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -278,7 +279,7 @@ func (c *Client) GetProUsers(ctx context.Context, pageToken string, pageSize int
 		return nil, "", nil, proEndpointError(proUsersUrlPath, err)
 	}
 
-	nextPage := nextPageToken(page, pageSize, len(response.Results), response.TotalCount)
+	nextPage := nextPageToken(page, received, len(response.Results), response.TotalCount)
 	return response.Results, nextPage, annos, nil
 }
 
@@ -318,7 +319,7 @@ func (c *Client) GetProUsersByUsernameOrEmail(ctx context.Context, values []stri
 // GetProAccounts returns one page of admin accounts ordered by id and the next page token, "" after the last page.
 // filter is an optional RSQL expression. GET /api/v1/accounts, needs the Read Accounts privilege.
 func (c *Client) GetProAccounts(ctx context.Context, filter, pageToken string, pageSize int) ([]ProAccount, string, annotations.Annotations, error) {
-	page, err := parsePageToken(pageToken)
+	page, received, err := parsePageToken(pageToken)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -342,15 +343,15 @@ func (c *Client) GetProAccounts(ctx context.Context, filter, pageToken string, p
 		return nil, "", nil, proEndpointError(proAccountsUrlPath, err)
 	}
 
-	nextPage := nextPageToken(page, pageSize, len(response.Results), response.TotalCount)
+	nextPage := nextPageToken(page, received, len(response.Results), response.TotalCount)
 	return response.Results, nextPage, annos, nil
 }
 
 // GetSiteObjects returns one page of the site's objects of objectType (for example "User") and the next page
-// token, "" after the last page. GET /api/v1/sites/{id}/objects, needs the Read Sites privilege.
+// token, "" once a page comes back empty. GET /api/v1/sites/{id}/objects, needs the Read Sites privilege.
 // An unknown site answers an empty list, so a 404 means the instance lacks the endpoint.
 func (c *Client) GetSiteObjects(ctx context.Context, siteID int, objectType, pageToken string) ([]SiteObject, string, annotations.Annotations, error) {
-	page, err := parsePageToken(pageToken)
+	page, received, err := parsePageToken(pageToken)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -372,11 +373,9 @@ func (c *Client) GetSiteObjects(ctx context.Context, siteID int, objectType, pag
 		return nil, "", nil, proEndpointError(url.Path, err)
 	}
 
-	// The response has no total count: a full page may be followed by another.
-	if len(objects) == SiteObjectsPageSize {
-		return objects, strconv.Itoa(page + 1), annos, nil
-	}
-	return objects, "", annos, nil
+	// No total count: only an empty page ends the list, even if Jamf serves fewer than page-size.
+	nextPage := nextPageToken(page, received, len(objects), math.MaxInt)
+	return objects, nextPage, annos, nil
 }
 
 // AddUserGroupMembers adds the given user IDs to a static Jamf user group via

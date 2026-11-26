@@ -321,12 +321,12 @@ func TestSiteGrants_WalksUsersUserGroupsThenAdmins(t *testing.T) {
 
 	grants, calls := collectGrants(t, builder.Grants, site, newMemorySessionStore())
 
-	// Two user pages, one user group page, one admin page.
-	if calls != 4 {
-		t.Errorf("Grants calls = %d, want 4", calls)
+	// Three user pages and two user group pages (each walk ends on an empty page), one admin page.
+	if calls != 6 {
+		t.Errorf("Grants calls = %d, want 6", calls)
 	}
-	if got := fixture.requestCount("/api/v1/sites/1/objects"); got != 3 {
-		t.Errorf("site objects requests = %d, want 3", got)
+	if got := fixture.requestCount("/api/v1/sites/1/objects"); got != 5 {
+		t.Errorf("site objects requests = %d, want 5", got)
 	}
 	if got := fixture.accountsRequestsSeen(); len(got) != 1 || got[0].filter != "siteId==1" {
 		t.Errorf("accounts requests = %v, want one with filter siteId==1", got)

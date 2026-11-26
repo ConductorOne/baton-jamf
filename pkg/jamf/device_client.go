@@ -40,7 +40,7 @@ var ComputerAssigneeSections = []string{"USER_AND_LOCATION"}
 // GetComputersInventory returns one page of computers ordered by id, holding only the requested sections,
 // and the next page token, "" after the last page. GET /api/v4/computers-inventory, needs the Read Computers privilege.
 func (c *Client) GetComputersInventory(ctx context.Context, pageToken string, pageSize int, sections []string) ([]ComputerInventory, string, annotations.Annotations, error) {
-	page, err := parsePageToken(pageToken)
+	page, received, err := parsePageToken(pageToken)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -65,14 +65,14 @@ func (c *Client) GetComputersInventory(ctx context.Context, pageToken string, pa
 		return nil, "", nil, proEndpointError(computersInventoryUrlPath, err)
 	}
 
-	nextPage := nextPageToken(page, pageSize, len(response.Results), response.TotalCount)
+	nextPage := nextPageToken(page, received, len(response.Results), response.TotalCount)
 	return response.Results, nextPage, annos, nil
 }
 
 // GetMobileDevices returns one page of mobile devices ordered by id and the next page token, "" after the last page.
 // GET /api/v2/mobile-devices, needs the Read Mobile Devices privilege.
 func (c *Client) GetMobileDevices(ctx context.Context, pageToken string, pageSize int) ([]MobileDevice, string, annotations.Annotations, error) {
-	page, err := parsePageToken(pageToken)
+	page, received, err := parsePageToken(pageToken)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -94,7 +94,7 @@ func (c *Client) GetMobileDevices(ctx context.Context, pageToken string, pageSiz
 		return nil, "", nil, proEndpointError(mobileDevicesUrlPath, err)
 	}
 
-	nextPage := nextPageToken(page, pageSize, len(response.Results), response.TotalCount)
+	nextPage := nextPageToken(page, received, len(response.Results), response.TotalCount)
 	return response.Results, nextPage, annos, nil
 }
 
