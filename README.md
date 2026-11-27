@@ -102,12 +102,12 @@ Requests per full sync:
 
 | Resource type | Requests |
 |---|---|
-| `user` | ⌈users / 1000⌉ |
-| `userAccount` | ⌈accounts / 100⌉ |
+| `user` | max(1, ⌈users / 1000⌉) |
+| `userAccount` | max(1, ⌈accounts / 100⌉) |
 | `group` | 1, plus one read per group |
 | `userGroup` | 1, plus one read per user group |
 | `site` | 1, plus per site ⌈users / 1000⌉ + 1, ⌈user groups / 1000⌉ + 1 and max(1, ⌈accounts / 100⌉), each only when `user`, `userGroup` or `userAccount` is synced |
-| `role` | 1, plus ⌈accounts / 10⌉ and one read per account, when `userAccount` is synced |
+| `role` | 1, plus max(1, ⌈accounts / 10⌉) and one read per account, when `userAccount` is synced |
 | `managedDevice` | max(1, ⌈computers / 100⌉) + max(1, ⌈mobile devices / 100⌉) for the device list, plus max(1, ⌈computers / 1000⌉) + max(1, ⌈mobile devices / 1000⌉) for the grants |
 
 Validation adds one request, plus one token request per new process (each Lambda container) and each time the token expires. Most SDK calls make one request; the largest is a `role` grants page of accounts, which reads each one's details (up to 11). A group or user group detail comes back whole, so that read grows with the size of the group. For example, 50,000 users, 1,000 accounts, 50 groups, 200 user groups, 20 sites holding the users and 20,000 devices come to roughly 1,800 requests; sync time is about that count times the instance's API response time.

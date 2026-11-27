@@ -20,7 +20,6 @@ func TestPagination_ServerServesFewerRecordsThanRequested(t *testing.T) {
 	testCases := []struct {
 		name         string
 		idKey        string
-		objectType   string
 		hasTotal     bool
 		wantRequests int
 		fetch        func(client *Client, pageToken string) ([]string, string, error)
@@ -84,7 +83,6 @@ func TestPagination_ServerServesFewerRecordsThanRequested(t *testing.T) {
 		{
 			name:         "GetSiteObjects",
 			idKey:        "objectId",
-			objectType:   "User",
 			wantRequests: 5, // The last page is empty: the response has no total.
 			fetch: func(client *Client, pageToken string) ([]string, string, error) {
 				objects, next, _, err := client.GetSiteObjects(ctx, 3, "User", pageToken)
@@ -114,9 +112,6 @@ func TestPagination_ServerServesFewerRecordsThanRequested(t *testing.T) {
 				records := make([]map[string]any, 0, servedPerPage)
 				for id := start + 1; id <= end; id++ {
 					record := map[string]any{testCase.idKey: strconv.Itoa(id)}
-					if testCase.objectType != "" {
-						record["objectType"] = testCase.objectType
-					}
 					records = append(records, record)
 				}
 				var body any = records

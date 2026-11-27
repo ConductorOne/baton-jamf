@@ -1,22 +1,26 @@
 package jamf
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 )
 
-// parsePageToken decodes a page token "<page>:<received>": the zero-indexed page to request and the
-// records received before it. "" is the first page.
+// parsePageToken decodes a page token "<page>" or "<page>:<received>": the zero-indexed page to request and the
+// records received before it, 0 when absent. "" is the first page.
 func parsePageToken(pageToken string) (int, int, error) {
 	if pageToken == "" {
 		return 0, 0, nil
 	}
-	pageText, receivedText, found := strings.Cut(pageToken, ":")
+	pageText, receivedText, hasReceived := strings.Cut(pageToken, ":")
+	if !hasReceived {
+		receivedText = "0"
+	}
 	page, pageErr := strconv.Atoi(pageText)
 	received, receivedErr := strconv.Atoi(receivedText)
-	if !found || pageErr != nil || receivedErr != nil {
-		return 0, 0, fmt.Errorf("invalid page token %q", pageToken)
+	if err := errors.Join(pageErr, receivedErr); err != nil {
+		return 0, 0, fmt.Errorf("invalid page token %q: %w", pageToken, err)
 	}
 	return page, received, nil
 }
