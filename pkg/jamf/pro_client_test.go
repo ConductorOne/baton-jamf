@@ -80,7 +80,7 @@ func TestGetProUsers_SendsPagingAndSort_DecodesStringIDs(t *testing.T) {
 		]
 	}`))
 
-	users, _, _, err := client.GetProUsers(context.Background(), "2", 50)
+	users, _, _, err := client.GetProUsers(context.Background(), "2:100", 50)
 	if err != nil {
 		t.Fatalf("GetProUsers: %v", err)
 	}

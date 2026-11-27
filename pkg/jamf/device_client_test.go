@@ -17,7 +17,7 @@ func TestGetComputersInventory_QueryEncoding(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(ComputersInventoryResponse{TotalCount: 0})
 	})
 
-	_, _, _, err := client.GetComputersInventory(context.Background(), "2", 50, ComputerInventorySections)
+	_, _, _, err := client.GetComputersInventory(context.Background(), "2:100", 50, ComputerInventorySections)
 	if err != nil {
 		t.Fatalf("GetComputersInventory: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestGetMobileDevices_QueryEncoding(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(MobileDevicesResponse{TotalCount: 0})
 	})
 
-	_, _, _, err := client.GetMobileDevices(context.Background(), "3", 25)
+	_, _, _, err := client.GetMobileDevices(context.Background(), "3:75", 25)
 	if err != nil {
 		t.Fatalf("GetMobileDevices: %v", err)
 	}

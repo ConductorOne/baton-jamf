@@ -147,10 +147,8 @@ func (s *server) handleProListUsers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if pageSize > proUsersMaxPageSize {
-		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("page-size must be at most %d", proUsersMaxPageSize))
-		return
-	}
+	// Jamf caps page-size silently and numbers the pages by the size it serves.
+	pageSize = min(pageSize, proUsersMaxPageSize)
 	matches, err := parseUserFilter(r.URL.Query().Get("filter"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
